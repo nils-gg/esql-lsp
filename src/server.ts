@@ -87,6 +87,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
   return {
     capabilities: {
       textDocumentSync: {
+        openClose: true,
         change: TextDocumentSyncKind.Incremental,
         save: true,
       },

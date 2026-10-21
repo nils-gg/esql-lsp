@@ -135,28 +135,41 @@ function rangeOf(node: SyntaxNode): Range {
 /**
  * Extract everything the analyzers need from a parse tree in one walk:
  * declared names (DECLARE name lists + routine parameters), bare-word SET
- * targets, and syntax errors (outermost ERROR/MISSING regions only).
+ * targets, and syntax errors (outermost ERROR regions plus silently
+ * inserted tokens — see isInsertedNode).
  */
+
+/**
+ * Tree-sitter's cheap error recovery repairs e.g. a missing `;` between
+ * otherwise clean statements by INSERTING the token: it shows up as a
+ * zero-width, empty-text leaf node typed after the expected token, without
+ * any MISSING marker in the npm binding. Real nodes always have text, so
+ * this pattern can only be an insertion.
+ */
+function isInsertedNode(node: SyntaxNode): boolean {
+  return node.childCount === 0 && node.text === '';
+}
+
 export function analyzeDocument(tree: Tree): DocAnalysis {
   const declaredNames: DeclaredName[] = [];
   const setTargets: SetTarget[] = [];
   const syntaxIssues: SyntaxIssue[] = [];
 
   const visit = (node: SyntaxNode): void => {
-    if (node.type === 'ERROR' || node.type === 'MISSING' || node.isMissing) {
+    if (node.type === 'ERROR' || node.type === 'MISSING' || node.isMissing || isInsertedNode(node)) {
       syntaxIssues.push({
-        message:
-          node.type === 'MISSING' || node.isMissing
-            ? 'Missing syntax element (a required token is absent).'
-            : 'Syntax error.',
+        message: isInsertedNode(node)
+          ? `Missing syntax: expected '${node.type}' here.`
+          : 'Syntax error.',
         range: rangeOf(node),
       });
       // Error recovery preserves intact subtrees inside the damaged region
       // (e.g. a complete CREATE FUNCTION inside a module missing its
       // END MODULE). Mine those for semantics, but never descend through
-      // another broken node.
+      // another broken node — and skip insertion markers, which would
+      // re-report positions already covered by the outer error.
       for (const child of node.children) {
-        if (!child.hasError) visit(child);
+        if (!child.hasError && !isInsertedNode(child)) visit(child);
       }
       return;
     }
@@ -176,7 +189,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
             declaredNames.push({ name: child.text, detail, range: rangeOf(child) });
           }
         }
-        return; // initial-value expressions contain no further declarations
+        break; // keep descending: a recovered missing ';' lives in here
       }
       case 'routine_parameter': {
         // One identifier child: the parameter name.
@@ -185,7 +198,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
             declaredNames.push({ name: child.text, detail: 'parameter', range: rangeOf(child) });
           }
         }
-        return;
+        break; // keep descending for recovered missing tokens
       }
       case 'set_statement': {
         const target = node.children.find((c) => c.type === 'field_reference');

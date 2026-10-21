@@ -21,6 +21,7 @@ local cmd = { "esql-lsp" }
 local settings = {
   diagnostics = {
     enabled = true,
+    checkSyntaxErrors = true,
     checkUndeclaredVariables = true,
     checkPropagation = true,
     checkMissingSemicolon = true,

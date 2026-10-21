@@ -96,6 +96,28 @@ test('semantics are mined from intact subtrees inside error regions', async () =
   assert.deepEqual(doc.setTargets.map((t) => t.name), ['myVar']);
 });
 
+test('recovered missing tokens (invisible insertions) are reported', async () => {
+  await initGrammar();
+  // Tree-sitter repairs a missing `;` between otherwise clean statements
+  // by inserting a zero-width token node — no ERROR region anywhere.
+  const src = [
+    'CREATE COMPUTE MODULE M',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    'DECLARE x INT 0',
+    'SET x = 1;',
+    'RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  const tree = parse(src)!;
+  const doc = analyzeDocument(tree);
+  assert.equal(doc.syntaxIssues.length, 1, 'exactly the missing ";"');
+  assert.match(doc.syntaxIssues[0].message, /Missing syntax: expected ';'/);
+  assert.equal(doc.syntaxIssues[0].range.start.line, 3);
+});
+
 test('syntax errors are detected from ERROR/MISSING nodes', async () => {
   await initGrammar();
   const tree = parse('CREATE COMPUTE MODULE M\nSET x = (1;\n')!;
