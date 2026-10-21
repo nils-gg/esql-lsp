@@ -1,0 +1,351 @@
+===
+function with typed parameters
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Add(IN a INT, IN b INT) RETURNS INTEGER
+BEGIN
+  RETURN a + b;
+END;
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (routine_parameter
+        (kw_IN)
+        (identifier)
+        (datatype
+          (kw_INT)))
+      (routine_parameter
+        (kw_IN)
+        (identifier)
+        (datatype
+          (kw_INT)))
+      (kw_RETURNS)
+      (datatype
+        (kw_INTEGER))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)))
+              (primary_expression
+                (field_reference
+                  (identifier))))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+function with out inout constant parameters
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION F(IN a INT, OUT b DECIMAL, INOUT c CONSTANT DECIMAL(5, 2))
+BEGIN
+  RETURN TRUE;
+END;
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (routine_parameter
+        (kw_IN)
+        (identifier)
+        (datatype
+          (kw_INT)))
+      (routine_parameter
+        (kw_OUT)
+        (identifier)
+        (datatype
+          (kw_DECIMAL)))
+      (routine_parameter
+        (kw_INOUT)
+        (identifier)
+        (kw_CONSTANT)
+        (datatype
+          (kw_DECIMAL)
+          (number_literal)
+          (number_literal)))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+function returns nullable and not null
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION F() RETURNS VARCHAR(10) NULLABLE
+BEGIN
+  RETURN 'x';
+END;
+CREATE FUNCTION G() RETURNS INT NOT NULL
+BEGIN
+  RETURN 1;
+END;
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_VARCHAR)
+        (number_literal))
+      (kw_NULLABLE)
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (kw_END)))
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_INT))
+      (kw_NOT)
+      (kw_NULL)
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (number_literal)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+procedure with reference parameters
+===
+
+CREATE COMPUTE MODULE M
+CREATE PROCEDURE P(IN root REFERENCE, OUT ref REFERENCE TO InputRoot)
+BEGIN
+  SET ref.Data = root.Data;
+END;
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_PROCEDURE)
+      (identifier)
+      (routine_parameter
+        (kw_IN)
+        (identifier)
+        (datatype
+          (kw_REFERENCE)))
+      (routine_parameter
+        (kw_OUT)
+        (identifier)
+        (datatype
+          (kw_REFERENCE)
+          (kw_TO))
+        (field_reference
+          (identifier)))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier)
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier))))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+function with language and dynamic result sets
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION F() LANGUAGE DATABASE DYNAMIC RESULT SETS 2
+BEGIN
+  RETURN TRUE;
+END;
+CREATE FUNCTION J() LANGUAGE JAVA
+BEGIN
+  RETURN TRUE;
+END;
+CREATE FUNCTION C() LANGUAGE CLR
+BEGIN
+  RETURN TRUE;
+END;
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_LANGUAGE)
+      (kw_DATABASE)
+      (kw_DYNAMIC)
+      (kw_RESULT)
+      (kw_SETS)
+      (number_literal)
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_LANGUAGE)
+      (kw_JAVA)
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_LANGUAGE)
+      (kw_CLR)
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+external name functions
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION F() LANGUAGE .NET EXTERNAL NAME "MyClass" ASSEMBLY "MyAssembly" CLASSLOADER "cl";
+CREATE FUNCTION G() LANGUAGE JAVA EXTERNAL NAME 'com.MyClass' VERSION '1.0';
+CREATE FUNCTION H() LANGUAGE CLR EXTERNAL NAME "Ns.Type" APPDOMAIN "dom" CULTURE "en-US" PUBLICKEYTOKEN "tok";
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_LANGUAGE)
+      (kw_EXTERNAL)
+      (kw_NAME)
+      (quoted_identifier)
+      (kw_ASSEMBLY)
+      (quoted_identifier)
+      (kw_CLASSLOADER)
+      (quoted_identifier))
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_LANGUAGE)
+      (kw_JAVA)
+      (kw_EXTERNAL)
+      (kw_NAME)
+      (string_literal)
+      (kw_VERSION)
+      (string_literal))
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_LANGUAGE)
+      (kw_CLR)
+      (kw_EXTERNAL)
+      (kw_NAME)
+      (quoted_identifier)
+      (kw_APPDOMAIN)
+      (quoted_identifier)
+      (kw_CULTURE)
+      (quoted_identifier)
+      (kw_PUBLICKEYTOKEN)
+      (quoted_identifier))
+    (kw_END)
+    (kw_MODULE)))

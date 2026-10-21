@@ -1,0 +1,1308 @@
+===
+set simple assignment
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  SET OutputRoot.Data.X = 'hello';
+  SET x = 1 + 1;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (number_literal))
+              (primary_expression
+                (number_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+set named clauses without equals
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  SET OutputRoot.Data.Item TYPE 'NameValue' VALUE 'x';
+  SET OutputRoot.Data.Item NAMESPACE 'http://x';
+  SET OutputRoot.Data.Item NAME 'Item';
+  SET OutputRoot.Data.Item VALUE = 'x';
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_TYPE)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_VALUE)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_NAMESPACE)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_NAME)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_VALUE)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+set named clauses with equals (G2 regression)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  SET OutputRoot.Data.Item TYPE = 'JSON.Array' NAME = 'Item';
+  SET ref NAMESPACE = 'http://x';
+  SET ref NAME = 'N' VALUE = 1;
+  SET ref TYPE = 'int';
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_TYPE)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_NAME)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (kw_NAMESPACE)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (kw_NAME)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_VALUE)
+            (expression
+              (primary_expression
+                (number_literal)))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (kw_TYPE)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+field reference type clause (G1 regression)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  SET x = InputRoot.Data.(XML.Element)Item;
+  SET x = Data.(.Attribute)Title;
+  SET x = Item.(XMLNS.Element)Value[1];
+  SET x = Data.(XML.Element)*;
+  SET x = Data.(JSON.Array)Item[LAST];
+  SET x = OutputRoot.(XML.Element)Value;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier)
+                  (identifier)
+                  (identifier))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier)
+                  (identifier)
+                  (expression
+                    (primary_expression
+                      (number_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier)
+                  (identifier)
+                  (kw_LAST))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier)
+                  (identifier))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+field reference namespaces and wildcards
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  SET x = InputRoot.*;
+  SET x = InputRoot.Data.*;
+  SET x = InputRoot.Data.:Name;
+  SET x = InputRoot.Data.:*;
+  SET x = InputRoot.Data.*:*;
+  SET x = InputRoot.Data.*:Name2;
+  SET x = InputRoot.Data.sp1:data1;
+  SET x = InputRoot.Data.{'dynamic'};
+  SET x = InputRoot.Data."quoted name";
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier)
+                  (identifier))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (expression
+                    (primary_expression
+                      (string_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (quoted_identifier))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+create field basic forms
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  CREATE FIELD OutputRoot.Data.X;
+  CREATE FIELD OutputRoot.Data.Y AS cursor;
+  CREATE FIELD OutputRoot.Data.Z AS cursor TYPE 'int' NAME 'Z' VALUE 1;
+  CREATE FIELD OutputRoot.Data.W NAMESPACE 'http://x' NAME 'W';
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_AS)
+            (field_reference
+              (identifier))))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_AS)
+            (field_reference
+              (identifier))
+            (kw_TYPE)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_NAME)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_VALUE)
+            (expression
+              (primary_expression
+                (number_literal)))))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_NAMESPACE)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_NAME)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+create field sibling and child forms
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  CREATE NEXTSIBLING OF ref AS cursor REPEAT;
+  CREATE PREVIOUSSIBLING OF ref TYPE 'int' NAME 'S';
+  CREATE FIRSTCHILD OF ref AS cursor;
+  CREATE LASTCHILD OF ref NAME 'C' VALUE 'v';
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_NEXTSIBLING)
+            (kw_OF)
+            (field_reference
+              (identifier))
+            (kw_AS)
+            (field_reference
+              (identifier))
+            (kw_REPEAT)))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_PREVIOUSSIBLING)
+            (kw_OF)
+            (field_reference
+              (identifier))
+            (kw_TYPE)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_NAME)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIRSTCHILD)
+            (kw_OF)
+            (field_reference
+              (identifier))
+            (kw_AS)
+            (field_reference
+              (identifier))))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_LASTCHILD)
+            (kw_OF)
+            (field_reference
+              (identifier))
+            (kw_NAME)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_VALUE)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+create field identity and parse
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  CREATE FIELD OutputRoot.XMLNS.Root IDENTITY (XML.ParserRoot)Root;
+  CREATE FIELD OutputRoot.XMLNS.Root.Attribute IDENTITY (XML.Attribute)NSpace1:Attribute VALUE 'Attrib Value';
+  CREATE LASTCHILD OF OutputRoot.XMLNS.Root IDENTITY (XML.Element)NSpace1:Element1[1] VALUE 'Element 1 Value';
+  CREATE FIELD OutputRoot.JSON.Data IDENTITY (JSON.Array)Data;
+  CREATE FIELD OutputRoot.Data.P PARSE (InputRoot.Data.Raw);
+  CREATE FIELD OutputRoot.Data.Q PARSE (InputRoot.Data.Raw, 'b', 'c');
+  CREATE FIELD OutputRoot.Data.R PARSE (InputRoot.Data.Raw TYPE 'XMLNSC' FORMAT 'fmt');
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_IDENTITY)
+            (identifier)
+            (identifier)
+            (identifier)))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_IDENTITY)
+            (identifier)
+            (identifier)
+            (identifier)
+            (identifier)
+            (kw_VALUE)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_LASTCHILD)
+            (kw_OF)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_IDENTITY)
+            (identifier)
+            (identifier)
+            (identifier)
+            (identifier)
+            (expression
+              (primary_expression
+                (number_literal)))
+            (kw_VALUE)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_IDENTITY)
+            (identifier)
+            (identifier)
+            (identifier)))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_PARSE)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))))))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_PARSE)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))))
+            (expression
+              (primary_expression
+                (string_literal)))
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_PARSE)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))))
+            (kw_TYPE)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_FORMAT)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+create field from and domain
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  CREATE FIELD OutputRoot.Data.X FROM InputRoot.Data.Y;
+  CREATE FIELD OutputRoot.Data.X DOMAIN 'XMLNS';
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_FROM)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))))
+        (esql_statement
+          (create_field_statement
+            (kw_CREATE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_DOMAIN)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+delete field forms
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DELETE FIELD OutputRoot.Data.X;
+  DELETE FIRSTCHILD OF OutputRoot.Data.X;
+  DELETE LASTCHILD OF OutputRoot.Data.X;
+  DELETE NEXTSIBLING OF OutputRoot.Data.X;
+  DELETE PREVIOUSSIBLING OF OutputRoot.Data.X;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (delete_field_statement
+            (kw_DELETE)
+            (kw_FIELD)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))))
+        (esql_statement
+          (delete_field_statement
+            (kw_DELETE)
+            (kw_FIRSTCHILD)
+            (kw_OF)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))))
+        (esql_statement
+          (delete_field_statement
+            (kw_DELETE)
+            (kw_LASTCHILD)
+            (kw_OF)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))))
+        (esql_statement
+          (delete_field_statement
+            (kw_DELETE)
+            (kw_NEXTSIBLING)
+            (kw_OF)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))))
+        (esql_statement
+          (delete_field_statement
+            (kw_DELETE)
+            (kw_PREVIOUSSIBLING)
+            (kw_OF)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+attach detach
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  ATTACH OutputRoot.Data.A TO OutputRoot.Data.B AS FIRSTCHILD;
+  ATTACH OutputRoot.Data.A TO OutputRoot.Data.B AS LASTCHILD;
+  ATTACH OutputRoot.Data.A TO OutputRoot.Data.B AS NEXTSIBLING;
+  ATTACH OutputRoot.Data.A TO OutputRoot.Data.B AS PREVIOUSSIBLING;
+  DETACH OutputRoot.Data.A;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (attach_statement
+            (kw_ATTACH)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_TO)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_AS)
+            (kw_FIRSTCHILD)))
+        (esql_statement
+          (attach_statement
+            (kw_ATTACH)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_TO)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_AS)
+            (kw_LASTCHILD)))
+        (esql_statement
+          (attach_statement
+            (kw_ATTACH)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_TO)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_AS)
+            (kw_NEXTSIBLING)))
+        (esql_statement
+          (attach_statement
+            (kw_ATTACH)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_TO)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_AS)
+            (kw_PREVIOUSSIBLING)))
+        (esql_statement
+          (detach_statement
+            (kw_DETACH)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+move forms
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  MOVE OutputRoot.Data.A TO OutputRoot.Data.B;
+  MOVE OutputRoot.Data.A PARENT;
+  MOVE OutputRoot.Data.A FIRSTCHILD;
+  MOVE OutputRoot.Data.A LASTCHILD TYPE 'int' NAME 'x';
+  MOVE OutputRoot.Data.A FIRSTCHILD IDENTITY (XML.Element)X;
+  MOVE OutputRoot.Data.A NEXTSIBLING REPEAT;
+  MOVE OutputRoot.Data.A LASTCHILD REPEAT TYPE NAME;
+  MOVE OutputRoot.Data.A FIRSTCHILD NAMESPACE '*';
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (move_statement
+            (kw_MOVE)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_TO)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))))
+        (esql_statement
+          (move_statement
+            (kw_MOVE)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_PARENT)))
+        (esql_statement
+          (move_statement
+            (kw_MOVE)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_FIRSTCHILD)))
+        (esql_statement
+          (move_statement
+            (kw_MOVE)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_LASTCHILD)
+            (kw_TYPE)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_NAME)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (move_statement
+            (kw_MOVE)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_FIRSTCHILD)
+            (kw_IDENTITY)
+            (identifier)
+            (identifier)
+            (identifier)))
+        (esql_statement
+          (move_statement
+            (kw_MOVE)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_NEXTSIBLING)
+            (kw_REPEAT)))
+        (esql_statement
+          (move_statement
+            (kw_MOVE)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_LASTCHILD)
+            (kw_REPEAT)
+            (kw_TYPE)
+            (kw_NAME)))
+        (esql_statement
+          (move_statement
+            (kw_MOVE)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_FIRSTCHILD)
+            (kw_NAMESPACE)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+propagate forms
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  PROPAGATE;
+  PROPAGATE TO TERMINAL 'next';
+  PROPAGATE WHERE MESSAGE x;
+  PROPAGATE FINALIZE NONE DELETE DEFAULT;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (propagate_statement
+            (kw_PROPAGATE)))
+        (esql_statement
+          (propagate_statement
+            (kw_PROPAGATE)
+            (kw_TO)
+            (kw_TERMINAL)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (propagate_statement
+            (kw_PROPAGATE)
+            (kw_WHERE)
+            (kw_MESSAGE)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier))))))
+        (esql_statement
+          (propagate_statement
+            (kw_PROPAGATE)
+            (kw_FINALIZE)
+            (kw_NONE)
+            (kw_DELETE)
+            (kw_DEFAULT)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))

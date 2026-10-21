@@ -1,0 +1,35 @@
+// Example OpenCode project config for ESQL LSP support.
+//
+// Merge the "lsp" section into your existing opencode.json / opencode.jsonc
+// (project root or .opencode/). LSP support is DISABLED by default in
+// OpenCode, so this entry is what activates it for .esql files.
+//
+// With this configured, OpenCode spawns esql-lsp whenever it reads or edits
+// a .esql file and feeds the published diagnostics back to the agent.
+
+{
+  "$schema": "https://opencode.ai/config.json",
+  "lsp": {
+    "esql": {
+      // Command to start the server. Use the linked binary, or point at the
+      // build output directly, e.g.:
+      //   ["node", "/abs/path/to/esql-lsp/dist/src/server.js"]
+      "command": ["esql-lsp"],
+      "extensions": [".esql"],
+      // Optional per-check toggles (all default to true).
+      "initialization": {
+        "diagnostics": {
+          "enabled": true,
+          "checkUndeclaredVariables": true,
+          "checkPropagation": true,
+          "checkMissingSemicolon": true,
+          "checkDeprecatedParsers": true,
+          "checkOutputRootProperties": true
+        },
+        "completion": {
+          "enabled": true
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,724 @@
+===
+if with elseif and else
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  IF InputRoot.Data.X = 1 THEN
+    SET OutputRoot.Data.Y = 10;
+  ELSEIF InputRoot.Data.X = 2 THEN
+    SET OutputRoot.Data.Y = 20;
+    SET OutputRoot.Data.Z = 'z';
+  ELSE
+    SET OutputRoot.Data.Y = 30;
+  END IF;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (if_statement
+            (kw_IF)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier)))
+              (primary_expression
+                (number_literal)))
+            (kw_THEN)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_ELSEIF)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier)))
+              (primary_expression
+                (number_literal)))
+            (kw_THEN)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (string_literal)))))
+            (kw_ELSE)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_END)
+            (kw_IF)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+simple if
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  IF x > 5 THEN SET y = 1;
+  END IF;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (if_statement
+            (kw_IF)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)))
+              (primary_expression
+                (number_literal)))
+            (kw_THEN)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_END)
+            (kw_IF)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+case statement with source
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE x INT 1;
+  CASE x
+    WHEN 1 THEN SET y = 1;
+    WHEN 2 THEN SET y = 2;
+    ELSE SET y = 3;
+  END CASE;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (datatype
+              (kw_INT))
+            (expression
+              (primary_expression
+                (number_literal)))))
+        (esql_statement
+          (case_statement
+            (kw_CASE)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier))))
+            (kw_WHEN)
+            (expression
+              (primary_expression
+                (number_literal)))
+            (kw_THEN)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_WHEN)
+            (expression
+              (primary_expression
+                (number_literal)))
+            (kw_THEN)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_ELSE)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_END)
+            (kw_CASE)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+case statement without source
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  CASE
+    WHEN x = 1 THEN SET y = 1;
+    WHEN x = 2 THEN SET y = 2;
+  END CASE;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (case_statement
+            (kw_CASE)
+            (kw_WHEN)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)))
+              (primary_expression
+                (number_literal)))
+            (kw_THEN)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_WHEN)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)))
+              (primary_expression
+                (number_literal)))
+            (kw_THEN)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_END)
+            (kw_CASE)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+while loop
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  WHILE x > 0 DO
+    SET x = x - 1;
+  END WHILE;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (while_statement
+            (kw_WHILE)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)))
+              (primary_expression
+                (number_literal)))
+            (kw_DO)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (field_reference
+                      (identifier)))
+                  (primary_expression
+                    (number_literal)))))
+            (kw_END)
+            (kw_WHILE)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+while with label
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  L1:
+  WHILE x > 0 DO
+    IF x < 0 THEN
+      ITERATE L1;
+    END IF;
+    LEAVE L1;
+  END WHILE L1;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (while_statement
+            (label_before)
+            (kw_WHILE)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)))
+              (primary_expression
+                (number_literal)))
+            (kw_DO)
+            (esql_statement
+              (if_statement
+                (kw_IF)
+                (expression
+                  (primary_expression
+                    (field_reference
+                      (identifier)))
+                  (primary_expression
+                    (number_literal)))
+                (kw_THEN)
+                (esql_statement
+                  (iterate_statement
+                    (kw_ITERATE)
+                    (label_end)))
+                (kw_END)
+                (kw_IF)))
+            (esql_statement
+              (leave_statement
+                (kw_LEAVE)
+                (label_end)))
+            (kw_END)
+            (kw_WHILE)
+            (label_end)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+repeat until
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  REPEAT
+    SET x = x + 1;
+  UNTIL x >= 10 END REPEAT;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (repeat_statement
+            (kw_REPEAT)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (field_reference
+                      (identifier)))
+                  (primary_expression
+                    (number_literal)))))
+            (kw_UNTIL)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)))
+              (primary_expression
+                (number_literal)))
+            (kw_END)
+            (kw_REPEAT)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+infinite loop
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  LOOP
+    SET x = x + 1;
+  END LOOP;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (loop_statement
+            (kw_LOOP)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (field_reference
+                      (identifier)))
+                  (primary_expression
+                    (number_literal)))))
+            (kw_END)
+            (kw_LOOP)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+for loop over list index
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  FOR i AS InputRoot.Data.Item[*] DO
+    SET OutputRoot.Data.Items[i] = i.Value;
+  END FOR;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (for_statement
+            (kw_FOR)
+            (identifier)
+            (kw_AS)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))
+            (kw_DO)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier)
+                  (expression
+                    (primary_expression
+                      (field_reference
+                        (identifier)))))
+                (expression
+                  (primary_expression
+                    (field_reference
+                      (identifier)
+                      (identifier))))))
+            (kw_END)
+            (kw_FOR)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+not atomic block
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  BEGIN NOT ATOMIC
+    SET x = 1;
+  END;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (block_statement
+            (kw_BEGIN)
+            (kw_NOT)
+            (kw_ATOMIC)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_END)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))

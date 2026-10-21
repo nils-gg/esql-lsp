@@ -1,0 +1,155 @@
+===
+broker schema statement
+===
+
+BROKER SCHEMA .mft.MySchema;
+---
+
+(source_file
+  (broker_schema_statement
+    (kw_BROKER)
+    (kw_SCHEMA)
+    (schema_name
+      (identifier)
+      (identifier))))
+
+===
+broker schema with path clause
+===
+
+BROKER SCHEMA .mft.MySchema PATH .mft.Other;
+---
+
+(source_file
+  (broker_schema_statement
+    (kw_BROKER)
+    (kw_SCHEMA)
+    (schema_name
+      (identifier)
+      (identifier))
+    (kw_PATH)
+    (schema_name
+      (identifier)
+      (identifier))))
+
+===
+broker schema without terminator
+===
+
+BROKER SCHEMA mft.MySchema
+---
+
+(source_file
+  (broker_schema_statement
+    (kw_BROKER)
+    (kw_SCHEMA)
+    (schema_name
+      (identifier)
+      (identifier))))
+
+===
+minimal compute module
+===
+
+CREATE COMPUTE MODULE MyModule
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (kw_END)
+    (kw_MODULE)))
+
+===
+module without semicolon after name
+===
+
+CREATE COMPUTE MODULE MyModule
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+database and filter modules
+===
+
+CREATE DATABASE MODULE DbModule
+END MODULE;
+
+CREATE FILTER MODULE FilterModule
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_DATABASE)
+    (kw_MODULE)
+    (identifier)
+    (kw_END)
+    (kw_MODULE))
+  (create_module_statement
+    (kw_CREATE)
+    (kw_FILTER)
+    (kw_MODULE)
+    (identifier)
+    (kw_END)
+    (kw_MODULE)))
+
+===
+module with module-level declare
+===
+
+CREATE COMPUTE MODULE M
+DECLARE g INT 5;
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (declare_statement
+      (kw_DECLARE)
+      (identifier)
+      (datatype
+        (kw_INT))
+      (expression
+        (primary_expression
+          (number_literal))))
+    (kw_END)
+    (kw_MODULE)))

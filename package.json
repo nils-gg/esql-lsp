@@ -1,0 +1,45 @@
+{
+  "name": "esql-lsp",
+  "version": "0.1.0",
+  "description": "ESQL language server for IBM App Connect Enterprise (ACE) / IIB — diagnostics, completion, hover and document symbols for Neovim, OpenCode and any LSP client",
+  "license": "MIT",
+  "bin": {
+    "esql-lsp": "bin/esql-lsp.js"
+  },
+  "main": "dist/src/server.js",
+  "files": [
+    "bin",
+    "dist/src",
+    "LICENSE",
+    "ATTRIBUTION.md",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "start": "node dist/src/server.js"
+  },
+  "keywords": [
+    "esql",
+    "lsp",
+    "language-server",
+    "ibm",
+    "app-connect-enterprise",
+    "ace",
+    "iib",
+    "neovim",
+    "opencode"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.11"
+  }
+}

@@ -1,0 +1,542 @@
+===
+continue handler with value and like
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLSTATE '05001', LIKE '4%'
+  SET Environment.Variable.Note = 'handled';
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (declare_handler_statement
+            (kw_DECLARE)
+            (kw_CONTINUE)
+            (kw_HANDLER)
+            (kw_FOR)
+            (kw_SQLSTATE)
+            (sqlstate_value
+              (string_literal))
+            (sqlstate_value
+              (kw_LIKE)
+              (string_literal))
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (string_literal)))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+exit handler
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE EXIT HANDLER FOR SQLSTATE VALUE '22001'
+  SET Environment.Variable.Note = 'exit';
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (declare_handler_statement
+            (kw_DECLARE)
+            (kw_EXIT)
+            (kw_HANDLER)
+            (kw_FOR)
+            (kw_SQLSTATE)
+            (sqlstate_value
+              (kw_VALUE)
+              (string_literal))
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier)
+                  (identifier)
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (string_literal)))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+handler with escape
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLSTATE LIKE '4\_%' ESCAPE '\'
+  SET x = 1;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (declare_handler_statement
+            (kw_DECLARE)
+            (kw_CONTINUE)
+            (kw_HANDLER)
+            (kw_FOR)
+            (kw_SQLSTATE)
+            (sqlstate_value
+              (kw_LIKE)
+              (string_literal)
+              (kw_ESCAPE)
+              (string_literal))
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+throw forms
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  THROW USER EXCEPTION;
+  THROW USER EXCEPTION SEVERITY 50;
+  THROW USER EXCEPTION SEVERITY 50 CATALOG 'CAT' MESSAGE 'boom' VALUES (1, 'detail');
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (throw_statement
+            (kw_THROW)
+            (kw_USER)
+            (kw_EXCEPTION)))
+        (esql_statement
+          (throw_statement
+            (kw_THROW)
+            (kw_USER)
+            (kw_EXCEPTION)
+            (kw_SEVERITY)
+            (expression
+              (primary_expression
+                (number_literal)))))
+        (esql_statement
+          (throw_statement
+            (kw_THROW)
+            (kw_USER)
+            (kw_EXCEPTION)
+            (kw_SEVERITY)
+            (expression
+              (primary_expression
+                (number_literal)))
+            (kw_CATALOG)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_MESSAGE)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_VALUES)
+            (expression
+              (primary_expression
+                (number_literal)))
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+log forms
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  LOG EVENT VALUES (1);
+  LOG USER TRACE VALUES ('msg');
+  LOG USER TRACE FULL SEVERITY 40 MESSAGE 'test' VALUES ('a', 1, 2.5, 'b');
+  LOG USER TRACE EXCEPTION VALUES ('x');
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (log_statement
+            (kw_LOG)
+            (kw_EVENT)
+            (kw_VALUES)
+            (expression
+              (primary_expression
+                (number_literal)))))
+        (esql_statement
+          (log_statement
+            (kw_LOG)
+            (kw_USER)
+            (kw_TRACE)
+            (kw_VALUES)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (log_statement
+            (kw_LOG)
+            (kw_USER)
+            (kw_TRACE)
+            (kw_FULL)
+            (kw_SEVERITY)
+            (expression
+              (primary_expression
+                (number_literal)))
+            (kw_MESSAGE)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_VALUES)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (expression
+              (primary_expression
+                (number_literal)))
+            (expression
+              (primary_expression
+                (number_literal)))
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (log_statement
+            (kw_LOG)
+            (kw_USER)
+            (kw_TRACE)
+            (kw_EXCEPTION)
+            (kw_VALUES)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+resignal
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  RESIGNAL;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (resignal_statement
+            (kw_RESIGNAL)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+call forms
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  CALL MyRoutine (1, 'x');
+  CALL .MyRoutine (1);
+  CALL MyRoutine ();
+  CALL MyRoutine () INTO OutputRoot.Data.R;
+  CALL MyRoutine () IN Database.ds.schema;
+  CALL MyRoutine () IN Database.{dsn};
+  CALL MyRoutine () EXTERNAL SCHEMA ext;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (call_statement
+            (kw_CALL)
+            (qualified_name
+              (identifier))
+            (expression
+              (primary_expression
+                (number_literal)))
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (call_statement
+            (kw_CALL)
+            (qualified_name
+              (identifier))
+            (expression
+              (primary_expression
+                (number_literal)))))
+        (esql_statement
+          (call_statement
+            (kw_CALL)
+            (qualified_name
+              (identifier))))
+        (esql_statement
+          (call_statement
+            (kw_CALL)
+            (qualified_name
+              (identifier))
+            (kw_INTO)
+            (field_reference
+              (identifier)
+              (identifier)
+              (identifier))))
+        (esql_statement
+          (call_statement
+            (kw_CALL)
+            (qualified_name
+              (identifier))
+            (kw_IN)
+            (kw_DATABASE)
+            (identifier)
+            (identifier)))
+        (esql_statement
+          (call_statement
+            (kw_CALL)
+            (qualified_name
+              (identifier))
+            (kw_IN)
+            (kw_DATABASE)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier))))))
+        (esql_statement
+          (call_statement
+            (kw_CALL)
+            (qualified_name
+              (identifier))
+            (kw_EXTERNAL)
+            (kw_SCHEMA)
+            (identifier)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+eval
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  EVAL ('SELECT 1 FROM x');
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (eval_statement
+            (kw_EVAL)
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))

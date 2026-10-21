@@ -1,0 +1,3309 @@
+[
+  {
+    "type": "attach_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "kw_AS",
+          "named": true
+        },
+        {
+          "type": "kw_ATTACH",
+          "named": true
+        },
+        {
+          "type": "kw_FIRSTCHILD",
+          "named": true
+        },
+        {
+          "type": "kw_LASTCHILD",
+          "named": true
+        },
+        {
+          "type": "kw_NEXTSIBLING",
+          "named": true
+        },
+        {
+          "type": "kw_PREVIOUSSIBLING",
+          "named": true
+        },
+        {
+          "type": "kw_TO",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "block_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "esql_statement",
+          "named": true
+        },
+        {
+          "type": "kw_ATOMIC",
+          "named": true
+        },
+        {
+          "type": "kw_BEGIN",
+          "named": true
+        },
+        {
+          "type": "kw_END",
+          "named": true
+        },
+        {
+          "type": "kw_NOT",
+          "named": true
+        },
+        {
+          "type": "label_before",
+          "named": true
+        },
+        {
+          "type": "label_end",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "broker_schema_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "kw_BROKER",
+          "named": true
+        },
+        {
+          "type": "kw_PATH",
+          "named": true
+        },
+        {
+          "type": "kw_SCHEMA",
+          "named": true
+        },
+        {
+          "type": "schema_name",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "call_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_CALL",
+          "named": true
+        },
+        {
+          "type": "kw_DATABASE",
+          "named": true
+        },
+        {
+          "type": "kw_EXTERNAL",
+          "named": true
+        },
+        {
+          "type": "kw_IN",
+          "named": true
+        },
+        {
+          "type": "kw_INTO",
+          "named": true
+        },
+        {
+          "type": "kw_SCHEMA",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "case_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_CASE",
+          "named": true
+        },
+        {
+          "type": "kw_ELSE",
+          "named": true
+        },
+        {
+          "type": "kw_END",
+          "named": true
+        },
+        {
+          "type": "kw_THEN",
+          "named": true
+        },
+        {
+          "type": "kw_WHEN",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "case_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "esql_statement",
+          "named": true
+        },
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_CASE",
+          "named": true
+        },
+        {
+          "type": "kw_ELSE",
+          "named": true
+        },
+        {
+          "type": "kw_END",
+          "named": true
+        },
+        {
+          "type": "kw_THEN",
+          "named": true
+        },
+        {
+          "type": "kw_WHEN",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "cast_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "datatype",
+          "named": true
+        },
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_AS",
+          "named": true
+        },
+        {
+          "type": "kw_CAST",
+          "named": true
+        },
+        {
+          "type": "kw_CCSID",
+          "named": true
+        },
+        {
+          "type": "kw_DEFAULT",
+          "named": true
+        },
+        {
+          "type": "kw_ENCODING",
+          "named": true
+        },
+        {
+          "type": "kw_FORMAT",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "create_field_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_AS",
+          "named": true
+        },
+        {
+          "type": "kw_CCSID",
+          "named": true
+        },
+        {
+          "type": "kw_CREATE",
+          "named": true
+        },
+        {
+          "type": "kw_DOMAIN",
+          "named": true
+        },
+        {
+          "type": "kw_ENCODING",
+          "named": true
+        },
+        {
+          "type": "kw_FIELD",
+          "named": true
+        },
+        {
+          "type": "kw_FIRSTCHILD",
+          "named": true
+        },
+        {
+          "type": "kw_FORMAT",
+          "named": true
+        },
+        {
+          "type": "kw_FROM",
+          "named": true
+        },
+        {
+          "type": "kw_IDENTITY",
+          "named": true
+        },
+        {
+          "type": "kw_LAST",
+          "named": true
+        },
+        {
+          "type": "kw_LASTCHILD",
+          "named": true
+        },
+        {
+          "type": "kw_NAME",
+          "named": true
+        },
+        {
+          "type": "kw_NAMESPACE",
+          "named": true
+        },
+        {
+          "type": "kw_NEXTSIBLING",
+          "named": true
+        },
+        {
+          "type": "kw_OF",
+          "named": true
+        },
+        {
+          "type": "kw_OPTIONS",
+          "named": true
+        },
+        {
+          "type": "kw_PARSE",
+          "named": true
+        },
+        {
+          "type": "kw_PREVIOUSSIBLING",
+          "named": true
+        },
+        {
+          "type": "kw_REPEAT",
+          "named": true
+        },
+        {
+          "type": "kw_SET",
+          "named": true
+        },
+        {
+          "type": "kw_TYPE",
+          "named": true
+        },
+        {
+          "type": "kw_VALUE",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "create_module_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "create_routine_statement",
+          "named": true
+        },
+        {
+          "type": "declare_statement",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_COMPUTE",
+          "named": true
+        },
+        {
+          "type": "kw_CREATE",
+          "named": true
+        },
+        {
+          "type": "kw_DATABASE",
+          "named": true
+        },
+        {
+          "type": "kw_DATABASEEVENT",
+          "named": true
+        },
+        {
+          "type": "kw_END",
+          "named": true
+        },
+        {
+          "type": "kw_FILTER",
+          "named": true
+        },
+        {
+          "type": "kw_MODULE",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "create_routine_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "datatype",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_APPDOMAIN",
+          "named": true
+        },
+        {
+          "type": "kw_ASSEMBLY",
+          "named": true
+        },
+        {
+          "type": "kw_CLASSLOADER",
+          "named": true
+        },
+        {
+          "type": "kw_CLR",
+          "named": true
+        },
+        {
+          "type": "kw_CREATE",
+          "named": true
+        },
+        {
+          "type": "kw_CULTURE",
+          "named": true
+        },
+        {
+          "type": "kw_DATABASE",
+          "named": true
+        },
+        {
+          "type": "kw_DYNAMIC",
+          "named": true
+        },
+        {
+          "type": "kw_ESQL",
+          "named": true
+        },
+        {
+          "type": "kw_EXTERNAL",
+          "named": true
+        },
+        {
+          "type": "kw_FUNCTION",
+          "named": true
+        },
+        {
+          "type": "kw_JAVA",
+          "named": true
+        },
+        {
+          "type": "kw_LANGUAGE",
+          "named": true
+        },
+        {
+          "type": "kw_NAME",
+          "named": true
+        },
+        {
+          "type": "kw_NOT",
+          "named": true
+        },
+        {
+          "type": "kw_NULL",
+          "named": true
+        },
+        {
+          "type": "kw_NULLABLE",
+          "named": true
+        },
+        {
+          "type": "kw_PROCEDURE",
+          "named": true
+        },
+        {
+          "type": "kw_PUBLICKEYTOKEN",
+          "named": true
+        },
+        {
+          "type": "kw_RESULT",
+          "named": true
+        },
+        {
+          "type": "kw_RETURNS",
+          "named": true
+        },
+        {
+          "type": "kw_SETS",
+          "named": true
+        },
+        {
+          "type": "kw_VERSION",
+          "named": true
+        },
+        {
+          "type": "number_literal",
+          "named": true
+        },
+        {
+          "type": "quoted_identifier",
+          "named": true
+        },
+        {
+          "type": "routine_body",
+          "named": true
+        },
+        {
+          "type": "routine_parameter",
+          "named": true
+        },
+        {
+          "type": "string_literal",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "datatype",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "kw_BIT",
+          "named": true
+        },
+        {
+          "type": "kw_BLOB",
+          "named": true
+        },
+        {
+          "type": "kw_BOOLEAN",
+          "named": true
+        },
+        {
+          "type": "kw_CHAR",
+          "named": true
+        },
+        {
+          "type": "kw_CHARACTER",
+          "named": true
+        },
+        {
+          "type": "kw_DATE",
+          "named": true
+        },
+        {
+          "type": "kw_DAY",
+          "named": true
+        },
+        {
+          "type": "kw_DEC",
+          "named": true
+        },
+        {
+          "type": "kw_DECIMAL",
+          "named": true
+        },
+        {
+          "type": "kw_FLOAT",
+          "named": true
+        },
+        {
+          "type": "kw_GMTTIME",
+          "named": true
+        },
+        {
+          "type": "kw_GMTTIMESTAMP",
+          "named": true
+        },
+        {
+          "type": "kw_HOUR",
+          "named": true
+        },
+        {
+          "type": "kw_INT",
+          "named": true
+        },
+        {
+          "type": "kw_INTEGER",
+          "named": true
+        },
+        {
+          "type": "kw_INTERVAL",
+          "named": true
+        },
+        {
+          "type": "kw_MINUTE",
+          "named": true
+        },
+        {
+          "type": "kw_MONTH",
+          "named": true
+        },
+        {
+          "type": "kw_NAME",
+          "named": true
+        },
+        {
+          "type": "kw_NAMEVALUE",
+          "named": true
+        },
+        {
+          "type": "kw_NONE",
+          "named": true
+        },
+        {
+          "type": "kw_NUMERIC",
+          "named": true
+        },
+        {
+          "type": "kw_REFERENCE",
+          "named": true
+        },
+        {
+          "type": "kw_ROW",
+          "named": true
+        },
+        {
+          "type": "kw_SECOND",
+          "named": true
+        },
+        {
+          "type": "kw_TIME",
+          "named": true
+        },
+        {
+          "type": "kw_TIMESTAMP",
+          "named": true
+        },
+        {
+          "type": "kw_TO",
+          "named": true
+        },
+        {
+          "type": "kw_VARCHAR",
+          "named": true
+        },
+        {
+          "type": "kw_VARYING",
+          "named": true
+        },
+        {
+          "type": "kw_YEAR",
+          "named": true
+        },
+        {
+          "type": "number_literal",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "declare_handler_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "esql_statement",
+          "named": true
+        },
+        {
+          "type": "kw_CONTINUE",
+          "named": true
+        },
+        {
+          "type": "kw_DECLARE",
+          "named": true
+        },
+        {
+          "type": "kw_EXIT",
+          "named": true
+        },
+        {
+          "type": "kw_FOR",
+          "named": true
+        },
+        {
+          "type": "kw_HANDLER",
+          "named": true
+        },
+        {
+          "type": "kw_SQLSTATE",
+          "named": true
+        },
+        {
+          "type": "sqlstate_value",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "declare_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "datatype",
+          "named": true
+        },
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_CONSTANT",
+          "named": true
+        },
+        {
+          "type": "kw_DECLARE",
+          "named": true
+        },
+        {
+          "type": "kw_EXTERNAL",
+          "named": true
+        },
+        {
+          "type": "kw_NAME",
+          "named": true
+        },
+        {
+          "type": "kw_NAMESPACE",
+          "named": true
+        },
+        {
+          "type": "kw_SHARED",
+          "named": true
+        },
+        {
+          "type": "string_literal",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "delete_field_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "kw_DELETE",
+          "named": true
+        },
+        {
+          "type": "kw_FIELD",
+          "named": true
+        },
+        {
+          "type": "kw_FIRSTCHILD",
+          "named": true
+        },
+        {
+          "type": "kw_LASTCHILD",
+          "named": true
+        },
+        {
+          "type": "kw_NEXTSIBLING",
+          "named": true
+        },
+        {
+          "type": "kw_OF",
+          "named": true
+        },
+        {
+          "type": "kw_PREVIOUSSIBLING",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "delete_from_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_AS",
+          "named": true
+        },
+        {
+          "type": "kw_DELETE",
+          "named": true
+        },
+        {
+          "type": "kw_FROM",
+          "named": true
+        },
+        {
+          "type": "kw_WHERE",
+          "named": true
+        },
+        {
+          "type": "table_reference",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "detach_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "kw_DETACH",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "esql_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "attach_statement",
+          "named": true
+        },
+        {
+          "type": "block_statement",
+          "named": true
+        },
+        {
+          "type": "call_statement",
+          "named": true
+        },
+        {
+          "type": "case_statement",
+          "named": true
+        },
+        {
+          "type": "create_field_statement",
+          "named": true
+        },
+        {
+          "type": "declare_handler_statement",
+          "named": true
+        },
+        {
+          "type": "declare_statement",
+          "named": true
+        },
+        {
+          "type": "delete_field_statement",
+          "named": true
+        },
+        {
+          "type": "delete_from_statement",
+          "named": true
+        },
+        {
+          "type": "detach_statement",
+          "named": true
+        },
+        {
+          "type": "eval_statement",
+          "named": true
+        },
+        {
+          "type": "for_statement",
+          "named": true
+        },
+        {
+          "type": "if_statement",
+          "named": true
+        },
+        {
+          "type": "insert_statement",
+          "named": true
+        },
+        {
+          "type": "iterate_statement",
+          "named": true
+        },
+        {
+          "type": "leave_statement",
+          "named": true
+        },
+        {
+          "type": "log_statement",
+          "named": true
+        },
+        {
+          "type": "loop_statement",
+          "named": true
+        },
+        {
+          "type": "move_statement",
+          "named": true
+        },
+        {
+          "type": "passthru_statement",
+          "named": true
+        },
+        {
+          "type": "propagate_statement",
+          "named": true
+        },
+        {
+          "type": "repeat_statement",
+          "named": true
+        },
+        {
+          "type": "resignal_statement",
+          "named": true
+        },
+        {
+          "type": "return_statement",
+          "named": true
+        },
+        {
+          "type": "set_statement",
+          "named": true
+        },
+        {
+          "type": "throw_statement",
+          "named": true
+        },
+        {
+          "type": "update_statement",
+          "named": true
+        },
+        {
+          "type": "while_statement",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "eval_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_EVAL",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "exists_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_EXISTS",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_AND",
+          "named": true
+        },
+        {
+          "type": "kw_ASYMMETRIC",
+          "named": true
+        },
+        {
+          "type": "kw_BETWEEN",
+          "named": true
+        },
+        {
+          "type": "kw_ESCAPE",
+          "named": true
+        },
+        {
+          "type": "kw_FALSE",
+          "named": true
+        },
+        {
+          "type": "kw_IN",
+          "named": true
+        },
+        {
+          "type": "kw_INF",
+          "named": true
+        },
+        {
+          "type": "kw_INFINITY",
+          "named": true
+        },
+        {
+          "type": "kw_IS",
+          "named": true
+        },
+        {
+          "type": "kw_LIKE",
+          "named": true
+        },
+        {
+          "type": "kw_NAN",
+          "named": true
+        },
+        {
+          "type": "kw_NOT",
+          "named": true
+        },
+        {
+          "type": "kw_NULL",
+          "named": true
+        },
+        {
+          "type": "kw_NUM",
+          "named": true
+        },
+        {
+          "type": "kw_NUMBER",
+          "named": true
+        },
+        {
+          "type": "kw_OR",
+          "named": true
+        },
+        {
+          "type": "kw_SYMMETRIC",
+          "named": true
+        },
+        {
+          "type": "kw_TRUE",
+          "named": true
+        },
+        {
+          "type": "kw_UNKNOWN",
+          "named": true
+        },
+        {
+          "type": "primary_expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "extract_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_DAY",
+          "named": true
+        },
+        {
+          "type": "kw_DAYOFWEEK",
+          "named": true
+        },
+        {
+          "type": "kw_DAYOFYEAR",
+          "named": true
+        },
+        {
+          "type": "kw_DAYS",
+          "named": true
+        },
+        {
+          "type": "kw_EXTRACT",
+          "named": true
+        },
+        {
+          "type": "kw_FROM",
+          "named": true
+        },
+        {
+          "type": "kw_HOUR",
+          "named": true
+        },
+        {
+          "type": "kw_ISLEAPYEAR",
+          "named": true
+        },
+        {
+          "type": "kw_MINUTE",
+          "named": true
+        },
+        {
+          "type": "kw_MONTH",
+          "named": true
+        },
+        {
+          "type": "kw_MONTHS",
+          "named": true
+        },
+        {
+          "type": "kw_QUARTEROFYEAR",
+          "named": true
+        },
+        {
+          "type": "kw_QUARTERS",
+          "named": true
+        },
+        {
+          "type": "kw_SECOND",
+          "named": true
+        },
+        {
+          "type": "kw_WEEKOFMONTH",
+          "named": true
+        },
+        {
+          "type": "kw_WEEKOFYEAR",
+          "named": true
+        },
+        {
+          "type": "kw_WEEKS",
+          "named": true
+        },
+        {
+          "type": "kw_YEAR",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "field_reference",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_LAST",
+          "named": true
+        },
+        {
+          "type": "quoted_identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "for_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "esql_statement",
+          "named": true
+        },
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_AS",
+          "named": true
+        },
+        {
+          "type": "kw_DO",
+          "named": true
+        },
+        {
+          "type": "kw_END",
+          "named": true
+        },
+        {
+          "type": "kw_FOR",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "function_call",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "if_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "esql_statement",
+          "named": true
+        },
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_ELSE",
+          "named": true
+        },
+        {
+          "type": "kw_ELSEIF",
+          "named": true
+        },
+        {
+          "type": "kw_END",
+          "named": true
+        },
+        {
+          "type": "kw_IF",
+          "named": true
+        },
+        {
+          "type": "kw_THEN",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "insert_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_INSERT",
+          "named": true
+        },
+        {
+          "type": "kw_INTO",
+          "named": true
+        },
+        {
+          "type": "kw_VALUES",
+          "named": true
+        },
+        {
+          "type": "kw_WHERE",
+          "named": true
+        },
+        {
+          "type": "table_reference",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "iterate_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "kw_ITERATE",
+          "named": true
+        },
+        {
+          "type": "label_end",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "leave_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "kw_LEAVE",
+          "named": true
+        },
+        {
+          "type": "label_end",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "list_constructor",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_LIST",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "log_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_CATALOG",
+          "named": true
+        },
+        {
+          "type": "kw_EVENT",
+          "named": true
+        },
+        {
+          "type": "kw_EXCEPTION",
+          "named": true
+        },
+        {
+          "type": "kw_FULL",
+          "named": true
+        },
+        {
+          "type": "kw_LOG",
+          "named": true
+        },
+        {
+          "type": "kw_MESSAGE",
+          "named": true
+        },
+        {
+          "type": "kw_SEVERITY",
+          "named": true
+        },
+        {
+          "type": "kw_TRACE",
+          "named": true
+        },
+        {
+          "type": "kw_USER",
+          "named": true
+        },
+        {
+          "type": "kw_VALUES",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "loop_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "esql_statement",
+          "named": true
+        },
+        {
+          "type": "kw_END",
+          "named": true
+        },
+        {
+          "type": "kw_LOOP",
+          "named": true
+        },
+        {
+          "type": "label_before",
+          "named": true
+        },
+        {
+          "type": "label_end",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "move_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_FIRSTCHILD",
+          "named": true
+        },
+        {
+          "type": "kw_IDENTITY",
+          "named": true
+        },
+        {
+          "type": "kw_LAST",
+          "named": true
+        },
+        {
+          "type": "kw_LASTCHILD",
+          "named": true
+        },
+        {
+          "type": "kw_MOVE",
+          "named": true
+        },
+        {
+          "type": "kw_NAME",
+          "named": true
+        },
+        {
+          "type": "kw_NAMESPACE",
+          "named": true
+        },
+        {
+          "type": "kw_NEXTSIBLING",
+          "named": true
+        },
+        {
+          "type": "kw_PARENT",
+          "named": true
+        },
+        {
+          "type": "kw_PREVIOUSSIBLING",
+          "named": true
+        },
+        {
+          "type": "kw_REPEAT",
+          "named": true
+        },
+        {
+          "type": "kw_TO",
+          "named": true
+        },
+        {
+          "type": "kw_TYPE",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "number_literal",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "passthru_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_DATABASE",
+          "named": true
+        },
+        {
+          "type": "kw_PASSTHRU",
+          "named": true
+        },
+        {
+          "type": "kw_TO",
+          "named": true
+        },
+        {
+          "type": "kw_VALUES",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "primary_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "blob_literal",
+          "named": true
+        },
+        {
+          "type": "case_expression",
+          "named": true
+        },
+        {
+          "type": "cast_expression",
+          "named": true
+        },
+        {
+          "type": "exists_expression",
+          "named": true
+        },
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "extract_expression",
+          "named": true
+        },
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "function_call",
+          "named": true
+        },
+        {
+          "type": "kw_CURRENT_DATE",
+          "named": true
+        },
+        {
+          "type": "kw_CURRENT_GMTDATE",
+          "named": true
+        },
+        {
+          "type": "kw_CURRENT_GMTTIME",
+          "named": true
+        },
+        {
+          "type": "kw_CURRENT_GMTTIMESTAMP",
+          "named": true
+        },
+        {
+          "type": "kw_CURRENT_TIME",
+          "named": true
+        },
+        {
+          "type": "kw_CURRENT_TIMESTAMP",
+          "named": true
+        },
+        {
+          "type": "kw_FALSE",
+          "named": true
+        },
+        {
+          "type": "kw_NULL",
+          "named": true
+        },
+        {
+          "type": "kw_TRUE",
+          "named": true
+        },
+        {
+          "type": "list_constructor",
+          "named": true
+        },
+        {
+          "type": "number_literal",
+          "named": true
+        },
+        {
+          "type": "row_constructor",
+          "named": true
+        },
+        {
+          "type": "select_expression",
+          "named": true
+        },
+        {
+          "type": "singular_expression",
+          "named": true
+        },
+        {
+          "type": "string_literal",
+          "named": true
+        },
+        {
+          "type": "typed_literal",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "propagate_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_DEFAULT",
+          "named": true
+        },
+        {
+          "type": "kw_DELETE",
+          "named": true
+        },
+        {
+          "type": "kw_ENVIRONMENT",
+          "named": true
+        },
+        {
+          "type": "kw_EXCEPTION",
+          "named": true
+        },
+        {
+          "type": "kw_FINALIZE",
+          "named": true
+        },
+        {
+          "type": "kw_LABEL",
+          "named": true
+        },
+        {
+          "type": "kw_MESSAGE",
+          "named": true
+        },
+        {
+          "type": "kw_NONE",
+          "named": true
+        },
+        {
+          "type": "kw_PROPAGATE",
+          "named": true
+        },
+        {
+          "type": "kw_TERMINAL",
+          "named": true
+        },
+        {
+          "type": "kw_TO",
+          "named": true
+        },
+        {
+          "type": "kw_WHERE",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "qualified_name",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "repeat_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "esql_statement",
+          "named": true
+        },
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_END",
+          "named": true
+        },
+        {
+          "type": "kw_REPEAT",
+          "named": true
+        },
+        {
+          "type": "kw_UNTIL",
+          "named": true
+        },
+        {
+          "type": "label_before",
+          "named": true
+        },
+        {
+          "type": "label_end",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "resignal_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "kw_RESIGNAL",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "return_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_RETURN",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "routine_body",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "esql_statement",
+          "named": true
+        },
+        {
+          "type": "kw_ATOMIC",
+          "named": true
+        },
+        {
+          "type": "kw_BEGIN",
+          "named": true
+        },
+        {
+          "type": "kw_END",
+          "named": true
+        },
+        {
+          "type": "kw_NOT",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "routine_parameter",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "datatype",
+          "named": true
+        },
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_CONSTANT",
+          "named": true
+        },
+        {
+          "type": "kw_IN",
+          "named": true
+        },
+        {
+          "type": "kw_INOUT",
+          "named": true
+        },
+        {
+          "type": "kw_NAME",
+          "named": true
+        },
+        {
+          "type": "kw_NAMESPACE",
+          "named": true
+        },
+        {
+          "type": "kw_NOT",
+          "named": true
+        },
+        {
+          "type": "kw_NULL",
+          "named": true
+        },
+        {
+          "type": "kw_NULLABLE",
+          "named": true
+        },
+        {
+          "type": "kw_OUT",
+          "named": true
+        },
+        {
+          "type": "string_literal",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "row_constructor",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "kw_AS",
+          "named": true
+        },
+        {
+          "type": "kw_ROW",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "schema_name",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "select_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_AS",
+          "named": true
+        },
+        {
+          "type": "kw_COUNT",
+          "named": true
+        },
+        {
+          "type": "kw_FROM",
+          "named": true
+        },
+        {
+          "type": "kw_INSERT",
+          "named": true
+        },
+        {
+          "type": "kw_ITEM",
+          "named": true
+        },
+        {
+          "type": "kw_MAX",
+          "named": true
+        },
+        {
+          "type": "kw_MIN",
+          "named": true
+        },
+        {
+          "type": "kw_SELECT",
+          "named": true
+        },
+        {
+          "type": "kw_SUM",
+          "named": true
+        },
+        {
+          "type": "kw_WHERE",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "set_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "kw_NAME",
+          "named": true
+        },
+        {
+          "type": "kw_NAMESPACE",
+          "named": true
+        },
+        {
+          "type": "kw_SET",
+          "named": true
+        },
+        {
+          "type": "kw_TYPE",
+          "named": true
+        },
+        {
+          "type": "kw_VALUE",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "singular_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_SINGULAR",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "source_file",
+    "named": true,
+    "root": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "broker_schema_statement",
+          "named": true
+        },
+        {
+          "type": "create_module_statement",
+          "named": true
+        },
+        {
+          "type": "create_routine_statement",
+          "named": true
+        },
+        {
+          "type": "declare_statement",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "sqlstate_value",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "kw_ESCAPE",
+          "named": true
+        },
+        {
+          "type": "kw_LIKE",
+          "named": true
+        },
+        {
+          "type": "kw_VALUE",
+          "named": true
+        },
+        {
+          "type": "string_literal",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "table_reference",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_DATABASE",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "throw_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_CATALOG",
+          "named": true
+        },
+        {
+          "type": "kw_EXCEPTION",
+          "named": true
+        },
+        {
+          "type": "kw_MESSAGE",
+          "named": true
+        },
+        {
+          "type": "kw_SEVERITY",
+          "named": true
+        },
+        {
+          "type": "kw_THROW",
+          "named": true
+        },
+        {
+          "type": "kw_USER",
+          "named": true
+        },
+        {
+          "type": "kw_VALUES",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "typed_literal",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "kw_BIT",
+          "named": true
+        },
+        {
+          "type": "kw_CHAR",
+          "named": true
+        },
+        {
+          "type": "kw_CHARACTER",
+          "named": true
+        },
+        {
+          "type": "kw_DATE",
+          "named": true
+        },
+        {
+          "type": "kw_DAY",
+          "named": true
+        },
+        {
+          "type": "kw_GMTTIME",
+          "named": true
+        },
+        {
+          "type": "kw_GMTTIMESTAMP",
+          "named": true
+        },
+        {
+          "type": "kw_HOUR",
+          "named": true
+        },
+        {
+          "type": "kw_INTERVAL",
+          "named": true
+        },
+        {
+          "type": "kw_MINUTE",
+          "named": true
+        },
+        {
+          "type": "kw_MONTH",
+          "named": true
+        },
+        {
+          "type": "kw_SECOND",
+          "named": true
+        },
+        {
+          "type": "kw_TIME",
+          "named": true
+        },
+        {
+          "type": "kw_TIMESTAMP",
+          "named": true
+        },
+        {
+          "type": "kw_TO",
+          "named": true
+        },
+        {
+          "type": "kw_YEAR",
+          "named": true
+        },
+        {
+          "type": "string_literal",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "update_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_AS",
+          "named": true
+        },
+        {
+          "type": "kw_SET",
+          "named": true
+        },
+        {
+          "type": "kw_UPDATE",
+          "named": true
+        },
+        {
+          "type": "kw_WHERE",
+          "named": true
+        },
+        {
+          "type": "table_reference",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "while_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "esql_statement",
+          "named": true
+        },
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_DO",
+          "named": true
+        },
+        {
+          "type": "kw_END",
+          "named": true
+        },
+        {
+          "type": "kw_WHILE",
+          "named": true
+        },
+        {
+          "type": "label_before",
+          "named": true
+        },
+        {
+          "type": "label_end",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "(",
+    "named": false
+  },
+  {
+    "type": ")",
+    "named": false
+  },
+  {
+    "type": "*",
+    "named": false
+  },
+  {
+    "type": "+",
+    "named": false
+  },
+  {
+    "type": ",",
+    "named": false
+  },
+  {
+    "type": "-",
+    "named": false
+  },
+  {
+    "type": ".",
+    "named": false
+  },
+  {
+    "type": "/",
+    "named": false
+  },
+  {
+    "type": ":",
+    "named": false
+  },
+  {
+    "type": ";",
+    "named": false
+  },
+  {
+    "type": "<",
+    "named": false
+  },
+  {
+    "type": "<=",
+    "named": false
+  },
+  {
+    "type": "<>",
+    "named": false
+  },
+  {
+    "type": "=",
+    "named": false
+  },
+  {
+    "type": ">",
+    "named": false
+  },
+  {
+    "type": ">=",
+    "named": false
+  },
+  {
+    "type": "[",
+    "named": false
+  },
+  {
+    "type": "]",
+    "named": false
+  },
+  {
+    "type": "blob_literal",
+    "named": true
+  },
+  {
+    "type": "comment",
+    "named": true,
+    "extra": true
+  },
+  {
+    "type": "identifier",
+    "named": true
+  },
+  {
+    "type": "kw_AND",
+    "named": true
+  },
+  {
+    "type": "kw_APPDOMAIN",
+    "named": true
+  },
+  {
+    "type": "kw_AS",
+    "named": true
+  },
+  {
+    "type": "kw_ASSEMBLY",
+    "named": true
+  },
+  {
+    "type": "kw_ASYMMETRIC",
+    "named": true
+  },
+  {
+    "type": "kw_ATOMIC",
+    "named": true
+  },
+  {
+    "type": "kw_ATTACH",
+    "named": true
+  },
+  {
+    "type": "kw_BEGIN",
+    "named": true
+  },
+  {
+    "type": "kw_BETWEEN",
+    "named": true
+  },
+  {
+    "type": "kw_BIT",
+    "named": true
+  },
+  {
+    "type": "kw_BLOB",
+    "named": true
+  },
+  {
+    "type": "kw_BOOLEAN",
+    "named": true
+  },
+  {
+    "type": "kw_BROKER",
+    "named": true
+  },
+  {
+    "type": "kw_CALL",
+    "named": true
+  },
+  {
+    "type": "kw_CASE",
+    "named": true
+  },
+  {
+    "type": "kw_CAST",
+    "named": true
+  },
+  {
+    "type": "kw_CATALOG",
+    "named": true
+  },
+  {
+    "type": "kw_CCSID",
+    "named": true
+  },
+  {
+    "type": "kw_CHAR",
+    "named": true
+  },
+  {
+    "type": "kw_CHARACTER",
+    "named": true
+  },
+  {
+    "type": "kw_CLASSLOADER",
+    "named": true
+  },
+  {
+    "type": "kw_CLR",
+    "named": true
+  },
+  {
+    "type": "kw_COMPUTE",
+    "named": true
+  },
+  {
+    "type": "kw_CONSTANT",
+    "named": true
+  },
+  {
+    "type": "kw_CONTINUE",
+    "named": true
+  },
+  {
+    "type": "kw_COUNT",
+    "named": true
+  },
+  {
+    "type": "kw_CREATE",
+    "named": true
+  },
+  {
+    "type": "kw_CULTURE",
+    "named": true
+  },
+  {
+    "type": "kw_CURRENT_DATE",
+    "named": true
+  },
+  {
+    "type": "kw_CURRENT_GMTDATE",
+    "named": true
+  },
+  {
+    "type": "kw_CURRENT_GMTTIME",
+    "named": true
+  },
+  {
+    "type": "kw_CURRENT_GMTTIMESTAMP",
+    "named": true
+  },
+  {
+    "type": "kw_CURRENT_TIME",
+    "named": true
+  },
+  {
+    "type": "kw_CURRENT_TIMESTAMP",
+    "named": true
+  },
+  {
+    "type": "kw_DATABASE",
+    "named": true
+  },
+  {
+    "type": "kw_DATABASEEVENT",
+    "named": true
+  },
+  {
+    "type": "kw_DATE",
+    "named": true
+  },
+  {
+    "type": "kw_DAY",
+    "named": true
+  },
+  {
+    "type": "kw_DAYOFWEEK",
+    "named": true
+  },
+  {
+    "type": "kw_DAYOFYEAR",
+    "named": true
+  },
+  {
+    "type": "kw_DAYS",
+    "named": true
+  },
+  {
+    "type": "kw_DEC",
+    "named": true
+  },
+  {
+    "type": "kw_DECIMAL",
+    "named": true
+  },
+  {
+    "type": "kw_DECLARE",
+    "named": true
+  },
+  {
+    "type": "kw_DEFAULT",
+    "named": true
+  },
+  {
+    "type": "kw_DELETE",
+    "named": true
+  },
+  {
+    "type": "kw_DETACH",
+    "named": true
+  },
+  {
+    "type": "kw_DO",
+    "named": true
+  },
+  {
+    "type": "kw_DOMAIN",
+    "named": true
+  },
+  {
+    "type": "kw_DYNAMIC",
+    "named": true
+  },
+  {
+    "type": "kw_ELSE",
+    "named": true
+  },
+  {
+    "type": "kw_ELSEIF",
+    "named": true
+  },
+  {
+    "type": "kw_ENCODING",
+    "named": true
+  },
+  {
+    "type": "kw_END",
+    "named": true
+  },
+  {
+    "type": "kw_ENVIRONMENT",
+    "named": true
+  },
+  {
+    "type": "kw_ESCAPE",
+    "named": true
+  },
+  {
+    "type": "kw_ESQL",
+    "named": true
+  },
+  {
+    "type": "kw_EVAL",
+    "named": true
+  },
+  {
+    "type": "kw_EVENT",
+    "named": true
+  },
+  {
+    "type": "kw_EXCEPTION",
+    "named": true
+  },
+  {
+    "type": "kw_EXISTS",
+    "named": true
+  },
+  {
+    "type": "kw_EXIT",
+    "named": true
+  },
+  {
+    "type": "kw_EXTERNAL",
+    "named": true
+  },
+  {
+    "type": "kw_EXTRACT",
+    "named": true
+  },
+  {
+    "type": "kw_FALSE",
+    "named": true
+  },
+  {
+    "type": "kw_FIELD",
+    "named": true
+  },
+  {
+    "type": "kw_FILTER",
+    "named": true
+  },
+  {
+    "type": "kw_FINALIZE",
+    "named": true
+  },
+  {
+    "type": "kw_FIRSTCHILD",
+    "named": true
+  },
+  {
+    "type": "kw_FLOAT",
+    "named": true
+  },
+  {
+    "type": "kw_FOR",
+    "named": true
+  },
+  {
+    "type": "kw_FORMAT",
+    "named": true
+  },
+  {
+    "type": "kw_FROM",
+    "named": true
+  },
+  {
+    "type": "kw_FULL",
+    "named": true
+  },
+  {
+    "type": "kw_FUNCTION",
+    "named": true
+  },
+  {
+    "type": "kw_GMTTIME",
+    "named": true
+  },
+  {
+    "type": "kw_GMTTIMESTAMP",
+    "named": true
+  },
+  {
+    "type": "kw_HANDLER",
+    "named": true
+  },
+  {
+    "type": "kw_HOUR",
+    "named": true
+  },
+  {
+    "type": "kw_IDENTITY",
+    "named": true
+  },
+  {
+    "type": "kw_IF",
+    "named": true
+  },
+  {
+    "type": "kw_IN",
+    "named": true
+  },
+  {
+    "type": "kw_INF",
+    "named": true
+  },
+  {
+    "type": "kw_INFINITY",
+    "named": true
+  },
+  {
+    "type": "kw_INOUT",
+    "named": true
+  },
+  {
+    "type": "kw_INSERT",
+    "named": true
+  },
+  {
+    "type": "kw_INT",
+    "named": true
+  },
+  {
+    "type": "kw_INTEGER",
+    "named": true
+  },
+  {
+    "type": "kw_INTERVAL",
+    "named": true
+  },
+  {
+    "type": "kw_INTO",
+    "named": true
+  },
+  {
+    "type": "kw_IS",
+    "named": true
+  },
+  {
+    "type": "kw_ISLEAPYEAR",
+    "named": true
+  },
+  {
+    "type": "kw_ITEM",
+    "named": true
+  },
+  {
+    "type": "kw_ITERATE",
+    "named": true
+  },
+  {
+    "type": "kw_JAVA",
+    "named": true
+  },
+  {
+    "type": "kw_LABEL",
+    "named": true
+  },
+  {
+    "type": "kw_LANGUAGE",
+    "named": true
+  },
+  {
+    "type": "kw_LAST",
+    "named": true
+  },
+  {
+    "type": "kw_LASTCHILD",
+    "named": true
+  },
+  {
+    "type": "kw_LEAVE",
+    "named": true
+  },
+  {
+    "type": "kw_LIKE",
+    "named": true
+  },
+  {
+    "type": "kw_LIST",
+    "named": true
+  },
+  {
+    "type": "kw_LOG",
+    "named": true
+  },
+  {
+    "type": "kw_LOOP",
+    "named": true
+  },
+  {
+    "type": "kw_MAX",
+    "named": true
+  },
+  {
+    "type": "kw_MESSAGE",
+    "named": true
+  },
+  {
+    "type": "kw_MIN",
+    "named": true
+  },
+  {
+    "type": "kw_MINUTE",
+    "named": true
+  },
+  {
+    "type": "kw_MODULE",
+    "named": true
+  },
+  {
+    "type": "kw_MONTH",
+    "named": true
+  },
+  {
+    "type": "kw_MONTHS",
+    "named": true
+  },
+  {
+    "type": "kw_MOVE",
+    "named": true
+  },
+  {
+    "type": "kw_NAME",
+    "named": true
+  },
+  {
+    "type": "kw_NAMESPACE",
+    "named": true
+  },
+  {
+    "type": "kw_NAMEVALUE",
+    "named": true
+  },
+  {
+    "type": "kw_NAN",
+    "named": true
+  },
+  {
+    "type": "kw_NEXTSIBLING",
+    "named": true
+  },
+  {
+    "type": "kw_NONE",
+    "named": true
+  },
+  {
+    "type": "kw_NOT",
+    "named": true
+  },
+  {
+    "type": "kw_NULL",
+    "named": true
+  },
+  {
+    "type": "kw_NULLABLE",
+    "named": true
+  },
+  {
+    "type": "kw_NUM",
+    "named": true
+  },
+  {
+    "type": "kw_NUMBER",
+    "named": true
+  },
+  {
+    "type": "kw_NUMERIC",
+    "named": true
+  },
+  {
+    "type": "kw_OF",
+    "named": true
+  },
+  {
+    "type": "kw_OPTIONS",
+    "named": true
+  },
+  {
+    "type": "kw_OR",
+    "named": true
+  },
+  {
+    "type": "kw_OUT",
+    "named": true
+  },
+  {
+    "type": "kw_PARENT",
+    "named": true
+  },
+  {
+    "type": "kw_PARSE",
+    "named": true
+  },
+  {
+    "type": "kw_PASSTHRU",
+    "named": true
+  },
+  {
+    "type": "kw_PATH",
+    "named": true
+  },
+  {
+    "type": "kw_PREVIOUSSIBLING",
+    "named": true
+  },
+  {
+    "type": "kw_PROCEDURE",
+    "named": true
+  },
+  {
+    "type": "kw_PROPAGATE",
+    "named": true
+  },
+  {
+    "type": "kw_PUBLICKEYTOKEN",
+    "named": true
+  },
+  {
+    "type": "kw_QUARTEROFYEAR",
+    "named": true
+  },
+  {
+    "type": "kw_QUARTERS",
+    "named": true
+  },
+  {
+    "type": "kw_REFERENCE",
+    "named": true
+  },
+  {
+    "type": "kw_REPEAT",
+    "named": true
+  },
+  {
+    "type": "kw_RESIGNAL",
+    "named": true
+  },
+  {
+    "type": "kw_RESULT",
+    "named": true
+  },
+  {
+    "type": "kw_RETURN",
+    "named": true
+  },
+  {
+    "type": "kw_RETURNS",
+    "named": true
+  },
+  {
+    "type": "kw_ROW",
+    "named": true
+  },
+  {
+    "type": "kw_SCHEMA",
+    "named": true
+  },
+  {
+    "type": "kw_SECOND",
+    "named": true
+  },
+  {
+    "type": "kw_SELECT",
+    "named": true
+  },
+  {
+    "type": "kw_SET",
+    "named": true
+  },
+  {
+    "type": "kw_SETS",
+    "named": true
+  },
+  {
+    "type": "kw_SEVERITY",
+    "named": true
+  },
+  {
+    "type": "kw_SHARED",
+    "named": true
+  },
+  {
+    "type": "kw_SINGULAR",
+    "named": true
+  },
+  {
+    "type": "kw_SQLSTATE",
+    "named": true
+  },
+  {
+    "type": "kw_SUM",
+    "named": true
+  },
+  {
+    "type": "kw_SYMMETRIC",
+    "named": true
+  },
+  {
+    "type": "kw_TERMINAL",
+    "named": true
+  },
+  {
+    "type": "kw_THEN",
+    "named": true
+  },
+  {
+    "type": "kw_THROW",
+    "named": true
+  },
+  {
+    "type": "kw_TIME",
+    "named": true
+  },
+  {
+    "type": "kw_TIMESTAMP",
+    "named": true
+  },
+  {
+    "type": "kw_TO",
+    "named": true
+  },
+  {
+    "type": "kw_TRACE",
+    "named": true
+  },
+  {
+    "type": "kw_TRUE",
+    "named": true
+  },
+  {
+    "type": "kw_TYPE",
+    "named": true
+  },
+  {
+    "type": "kw_UNKNOWN",
+    "named": true
+  },
+  {
+    "type": "kw_UNTIL",
+    "named": true
+  },
+  {
+    "type": "kw_UPDATE",
+    "named": true
+  },
+  {
+    "type": "kw_USER",
+    "named": true
+  },
+  {
+    "type": "kw_VALUE",
+    "named": true
+  },
+  {
+    "type": "kw_VALUES",
+    "named": true
+  },
+  {
+    "type": "kw_VARCHAR",
+    "named": true
+  },
+  {
+    "type": "kw_VARYING",
+    "named": true
+  },
+  {
+    "type": "kw_VERSION",
+    "named": true
+  },
+  {
+    "type": "kw_WEEKOFMONTH",
+    "named": true
+  },
+  {
+    "type": "kw_WEEKOFYEAR",
+    "named": true
+  },
+  {
+    "type": "kw_WEEKS",
+    "named": true
+  },
+  {
+    "type": "kw_WHEN",
+    "named": true
+  },
+  {
+    "type": "kw_WHERE",
+    "named": true
+  },
+  {
+    "type": "kw_WHILE",
+    "named": true
+  },
+  {
+    "type": "kw_YEAR",
+    "named": true
+  },
+  {
+    "type": "label_before",
+    "named": true
+  },
+  {
+    "type": "label_end",
+    "named": true
+  },
+  {
+    "type": "line_comment",
+    "named": true,
+    "extra": true
+  },
+  {
+    "type": "quoted_identifier",
+    "named": true
+  },
+  {
+    "type": "string_literal",
+    "named": true
+  },
+  {
+    "type": "{",
+    "named": false
+  },
+  {
+    "type": "||",
+    "named": false
+  },
+  {
+    "type": "}",
+    "named": false
+  }
+]

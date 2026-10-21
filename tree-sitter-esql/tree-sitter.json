@@ -1,0 +1,18 @@
+{
+  "metadata": {
+    "version": "1.0.0"
+  },
+  "grammars": [
+    {
+      "name": "esql",
+      "scope": "source.esql",
+      "path": ".",
+      "file-types": [
+        "esql"
+      ],
+      "highlights": [
+        "queries/highlights.scm"
+      ]
+    }
+  ]
+}
