@@ -29,6 +29,7 @@ import {
 } from './data/esqlData';
 import { ESQL_SNIPPETS } from './data/snippets';
 import { scan } from './scanner';
+import { DECLARE_RE } from './diagnostics';
 
 export type CompletionContextKind =
   | 'domains'
@@ -149,12 +150,17 @@ function declaredVarItems(source: string): CompletionItem[] {
   const { lines } = scan(source);
   const seen = new Map<string, { name: string; detail: string }>();
   for (const line of lines) {
-    const m = line.match(/\bDECLARE\s+([A-Za-z_]\w*)\s+(?:CONSTANT\s+)?([A-Za-z]+)/i);
+    // Shared regex with diagnostics.ts: every name of a multi-name
+    // declaration is offered, with the declared type as detail.
+    const m = line.match(DECLARE_RE);
     if (!m) continue;
-    const upper = m[1].toUpperCase();
-    if (!seen.has(upper)) {
-      const constant = /\bCONSTANT\b/i.test(line) ? 'CONSTANT ' : '';
-      seen.set(upper, { name: m[1], detail: `${constant}${m[2].toUpperCase()}` });
+    for (const rawName of m[1].split(',')) {
+      const name = rawName.trim();
+      const upper = name.toUpperCase();
+      if (!seen.has(upper)) {
+        const constant = /\bCONSTANT\b/i.test(line) ? 'CONSTANT ' : '';
+        seen.set(upper, { name, detail: `${constant}${m[2].toUpperCase()}` });
+      }
     }
   }
   return [...seen.values()].map(({ name, detail }) => {

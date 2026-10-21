@@ -74,6 +74,17 @@ test('general context offers variables declared in the document', () => {
   assert.match(myVar!.detail ?? '', /INTEGER/);
 });
 
+test('multi-name DECLARE offers every variable', () => {
+  const src = 'DECLARE firstItem, secondItem INTEGER;\n';
+  const items = buildCompletionItems('general', '', src);
+  const first = items.find((i) => i.label === 'firstItem');
+  const second = items.find((i) => i.label === 'secondItem');
+  assert.ok(first, 'firstItem offered');
+  assert.ok(second, 'secondItem offered');
+  assert.match(first!.detail ?? '', /INTEGER/);
+  assert.match(second!.detail ?? '', /INTEGER/);
+});
+
 test('general context filters by word being typed', () => {
   assert.equal(wordBeingTyped('SET x = COA'), 'COA');
   const items = buildCompletionItems('general', 'SET x = COA', '');

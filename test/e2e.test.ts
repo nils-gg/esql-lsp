@@ -258,3 +258,47 @@ test('full LSP session over stdio: diagnostics, completion, symbols', async () =
     await client.close();
   }
 });
+
+test('workspace/didChangeConfiguration re-validates with new settings', async () => {
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e/Settings.esql';
+  const SRC = [
+    'CREATE COMPUTE MODULE SettingsModule',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    "SET myVar = 'x';",
+    'RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+
+    // Default settings: myVar is undeclared -> warning published.
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: SRC },
+    });
+    await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.some((d: any) => /Variable 'myVar'/.test(d.message))
+    );
+
+    // Runtime update: turn the undeclared-variables check off (section form).
+    client.notify('workspace/didChangeConfiguration', {
+      settings: { esql: { diagnostics: { checkUndeclaredVariables: false } } },
+    });
+    await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.every((d: any) => !/Variable 'myVar'/.test(d.message))
+    );
+  } finally {
+    await client.close();
+  }
+});

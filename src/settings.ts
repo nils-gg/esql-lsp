@@ -1,7 +1,9 @@
 /**
- * Server settings. Phase 1 configuration is passed via LSP
- * `initializationOptions` (Neovim: `settings = {...}` in `vim.lsp.start`,
- * OpenCode: `initialization` in the `lsp` config section).
+ * Server settings. Configuration is passed via LSP `initializationOptions`
+ * (Neovim: `settings = {...}` in `vim.lsp.start`, OpenCode: `initialization`
+ * in the `lsp` config section) and may be updated at runtime through
+ * `workspace/didChangeConfiguration` — the server accepts either
+ * `{ esql: {...} }` or the settings object directly.
  */
 
 export interface EsqlDiagnosticsSettings {

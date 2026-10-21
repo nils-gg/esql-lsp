@@ -5,7 +5,8 @@
  * (`lsp` section in opencode.json), and any other LSP client.
  *
  * Phase 1 capabilities:
- *   - diagnostics (6 heuristic checks, see src/diagnostics.ts)
+ *   - diagnostics — 6 check functions emitting 7 finding kinds
+ *     (see src/diagnostics.ts)
  *   - completion (keywords, ~70 built-in functions, message tree vars,
  *     types, parser domains, declared variables, 43 snippets)
  *   - hover (function / tree var / domain / type documentation)
@@ -84,6 +85,19 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 
 connection.onNotification('initialized', () => {
   // Re-validate any document already open (some clients open before initialized).
+  for (const doc of textDocuments.all()) {
+    scheduleDiagnostics(doc.uri);
+  }
+});
+
+// Runtime settings updates (push-style). Clients send either the section
+// keyed by its name ({ esql: {...} }) or the settings object itself; merge
+// over the defaults and re-validate every open document.
+connection.onDidChangeConfiguration((change) => {
+  const raw = change.settings as Record<string, unknown> | undefined;
+  const esql = raw && typeof raw.esql === 'object' ? raw.esql : raw;
+  settings = mergeSettings(esql);
+  connection.console.info('esql-lsp: settings updated (didChangeConfiguration)');
   for (const doc of textDocuments.all()) {
     scheduleDiagnostics(doc.uri);
   }

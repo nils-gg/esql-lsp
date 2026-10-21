@@ -14,6 +14,9 @@
  *   4. Missing semicolon     – statement likely lacks `;` (hint)
  *   5. Deprecated XMLNS      – use XMLNSC in ACE 12 (warning)
  *   6. OutputRoot JSON       – JSON.Data set without Properties copy (hint)
+ *
+ * Check 1 emits two finding kinds (missing END MODULE, missing Main()), so
+ * clients see seven distinct diagnostic findings in total.
  */
 
 import { Diagnostic, DiagnosticSeverity, Range } from 'vscode-languageserver';
@@ -23,7 +26,13 @@ import { EsqlDiagnosticsSettings } from './settings';
 const MODULE_RE = /\bCREATE\s+(COMPUTE|FILTER|DATABASE)\s+MODULE\s+([A-Za-z_]\w*)/i;
 const END_MODULE_RE = /\bEND\s+MODULE\b/i;
 const MAIN_RE = /\bCREATE\s+FUNCTION\s+Main\s*\(\s*\)/i;
-const DECLARE_RE = /\bDECLARE\s+([A-Za-z_]\w*)\s+(?:CONSTANT\s+)?([A-Za-z]+)/i;
+/** `DECLARE name[, name…] [CONSTANT|SHARED|EXTERNAL] type …` — group 1 is
+ * the FULL comma-separated name list (a multi-name declaration declares
+ * every name), group 2 the type word. Handler declarations
+ * (`DECLARE CONTINUE|EXIT HANDLER …`) declare no variable and are excluded.
+ * Shared with completion.ts so both agree on what is declared. */
+export const DECLARE_RE =
+  /\bDECLARE\s+(?!CONTINUE\b|EXIT\b)((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+(?:CONSTANT\s+|SHARED\s+|EXTERNAL\s+)*([A-Za-z]+)/i;
 const FN_PARAMS_RE = /\bCREATE\s+(?:FUNCTION|PROCEDURE)\s+[A-Za-z_]\w*\s*\(([^)]*)\)/i;
 const FN_PARAM_RE = /\b(?:IN|OUT|INOUT)\s+([A-Za-z_]\w*)/i;
 const SET_VAR_RE = /^\s*SET\s+([A-Za-z_]\w*)(?!\s*\.)\s*(?:=|:=)/i;
@@ -77,7 +86,11 @@ function collectDeclaredNames(lines: string[]): Set<string> {
   const names = new Set<string>();
   for (const line of lines) {
     const decl = DECLARE_RE.exec(line);
-    if (decl) names.add(decl[1].toUpperCase());
+    if (decl) {
+      for (const name of decl[1].split(',')) {
+        names.add(name.trim().toUpperCase());
+      }
+    }
 
     const fn = FN_PARAMS_RE.exec(line);
     if (fn && fn[1]) {

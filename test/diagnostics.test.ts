@@ -173,6 +173,34 @@ test('OutputRoot JSON without Properties copy is a hint', () => {
   assert.deepEqual(messages(withCopy).hints, []);
 });
 
+test('multi-name DECLARE declares every name', () => {
+  const declared = "DECLARE a, b, c CHARACTER;\nSET b = 'x';\n";
+  assert.deepEqual(messages(declared).warnings, []);
+
+  // A name NOT in the list must still be flagged.
+  const undeclared = "DECLARE a, b CHARACTER;\nSET c = 'x';\n";
+  const w = messages(undeclared).warnings;
+  assert.equal(w.length, 1);
+  assert.match(w[0], /Variable 'c'/);
+
+  // SHARED / CONSTANT modifiers between the name list and the type.
+  const shared = 'DECLARE a, b SHARED INTEGER;\nSET a = 1;\n';
+  assert.deepEqual(messages(shared).warnings, []);
+  const constant = 'DECLARE x, y CONSTANT ROW;\nSET x = 1;\n';
+  assert.deepEqual(messages(constant).warnings, []);
+});
+
+test('handler DECLARE declares no variable names', () => {
+  // `DECLARE CONTINUE HANDLER …` must not leak CONTINUE/EXIT/handler
+  // words into the declared-name set.
+  const src = [
+    "DECLARE CONTINUE HANDLER FOR SQLSTATE '05001'",
+    "SET Environment.Note = 'handled';",
+    '',
+  ].join('\n');
+  assert.deepEqual(messages(src).warnings, []);
+});
+
 test('diagnostics can be disabled via settings', () => {
   // Module structure (ungated) is satisfied: Main() present, END MODULE present.
   const src = [
