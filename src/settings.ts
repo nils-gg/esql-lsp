@@ -9,6 +9,8 @@
 export interface EsqlDiagnosticsSettings {
   /** Master switch for all diagnostics. */
   enabled: boolean;
+  /** Syntax errors from the tree-sitter parse (ERROR/MISSING nodes). */
+  checkSyntaxErrors: boolean;
   /** Warn when a variable is assigned in SET without a DECLARE. */
   checkUndeclaredVariables: boolean;
   /** Warn when Main() has neither RETURN nor PROPAGATE. */
@@ -31,6 +33,7 @@ export interface EsqlSettings {
 export const DEFAULT_SETTINGS: EsqlSettings = {
   diagnostics: {
     enabled: true,
+    checkSyntaxErrors: true,
     checkUndeclaredVariables: true,
     checkPropagation: true,
     checkMissingSemicolon: true,
@@ -60,6 +63,7 @@ export function mergeSettings(initOptions: unknown): EsqlSettings {
   return {
     diagnostics: {
       enabled: bool(d, 'enabled', true),
+      checkSyntaxErrors: bool(d, 'checkSyntaxErrors', true),
       checkUndeclaredVariables: bool(d, 'checkUndeclaredVariables', true),
       checkPropagation: bool(d, 'checkPropagation', true),
       checkMissingSemicolon: bool(d, 'checkMissingSemicolon', true),

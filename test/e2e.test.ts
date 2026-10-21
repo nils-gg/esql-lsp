@@ -14,7 +14,6 @@ const SERVER = path.join(__dirname, '..', 'src', 'server.js');
 const BAD = [
   'BROKER SCHEMA com.test;',
   'CREATE COMPUTE MODULE TestModule',
-  'BEGIN',
   'CREATE FUNCTION Main() RETURNS BOOLEAN',
   'BEGIN',
   'SET OutputRoot.Properties = InputRoot.Properties;',
@@ -28,7 +27,6 @@ const BAD = [
 const FIXED = [
   'BROKER SCHEMA com.test;',
   'CREATE COMPUTE MODULE TestModule',
-  'BEGIN',
   'CREATE FUNCTION Main() RETURNS BOOLEAN',
   'BEGIN',
   'SET OutputRoot.Properties = InputRoot.Properties;',
@@ -206,7 +204,7 @@ test('full LSP session over stdio: diagnostics, completion, symbols', async () =
     // ── completion ─────────────────────────────────────────────────────────
     const comp = await client.request('textDocument/completion', {
       textDocument: { uri },
-      position: { line: 8, character: 6 }, // after `SET Out...` prefix "O" on JSON.Data line
+      position: { line: 7, character: 6 }, // after `SET Out...` prefix "O" on JSON.Data line
     });
     const compLabels: string[] = (comp.result ?? comp).map((i: any) => i.label);
     // Position is mid-word on `SET OutputRoot.JSON.Data.msg = myVar;`
@@ -215,7 +213,7 @@ test('full LSP session over stdio: diagnostics, completion, symbols', async () =
 
     const comp2 = await client.request('textDocument/completion', {
       textDocument: { uri },
-      position: { line: 13, character: 0 }, // empty last line -> general, no prefix filter
+      position: { line: 12, character: 0 }, // empty last line -> general, no prefix filter
     });
     const labels2: string[] = (comp2.result ?? comp2).map((i: any) => i.label);
     assert.ok(labels2.includes('CAST'), 'offers built-in functions');
@@ -235,11 +233,11 @@ test('full LSP session over stdio: diagnostics, completion, symbols', async () =
     assert.ok(fnNames.includes('Main'), 'Main() nested under module');
 
     // ── hover ──────────────────────────────────────────────────────────────
-    // Line 5: `SET OutputRoot.Properties = InputRoot.Properties;`
+    // Line 4: `SET OutputRoot.Properties = InputRoot.Properties;`
     // character 30 is inside `InputRoot` (a message tree variable).
     const hover = await client.request('textDocument/hover', {
       textDocument: { uri },
-      position: { line: 5, character: 30 },
+      position: { line: 4, character: 30 },
     });
     assert.ok(hover.result, 'hover for message tree variable');
     const contents: any = hover.result.contents;
@@ -298,6 +296,58 @@ test('workspace/didChangeConfiguration re-validates with new settings', async ()
       'textDocument/publishDiagnostics',
       (p) => p.uri === uri && p.diagnostics.every((d: any) => !/Variable 'myVar'/.test(d.message))
     );
+  } finally {
+    await client.close();
+  }
+});
+
+test('grammar-backed session: syntax errors and semantic tokens', async () => {
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e/Grammar.esql';
+  const BROKEN = [
+    'BROKER SCHEMA com.test;',
+    'CREATE COMPUTE MODULE GrammarModule',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    '  SET x = (1;',
+    '  RETURN TRUE;',
+    'END',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  try {
+    const init = await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+      initializationOptions: {},
+    });
+    const legend: string[] = init.result.capabilities.semanticTokensProvider.legend.tokenTypes;
+    assert.ok(legend.includes('keyword'), 'semantic tokens advertised');
+    client.notify('initialized', {});
+
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: BROKEN },
+    });
+
+    // Grammar init is async: wait for the grammar-backed error to arrive
+    // (a heuristic-only publish would not contain it).
+    await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) =>
+        p.uri === uri &&
+        p.diagnostics.some(
+          (d: any) => d.severity === 1 && /Syntax error|Missing syntax/.test(d.message)
+        )
+    );
+
+    // The grammar is ready by now -> tokens must be non-empty.
+    const tokens = await client.request('textDocument/semanticTokens/full', {
+      textDocument: { uri },
+    });
+    const data = (tokens.result ?? tokens).data;
+    assert.ok(Array.isArray(data), 'token data is an array');
+    assert.ok(data.length > 0 && data.length % 5 === 0, 'relative quintuples');
   } finally {
     await client.close();
   }

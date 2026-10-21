@@ -214,6 +214,7 @@ test('diagnostics can be disabled via settings', () => {
   ].join('\n');
   const allOff = {
     enabled: true,
+    checkSyntaxErrors: false,
     checkUndeclaredVariables: false,
     checkPropagation: false,
     checkMissingSemicolon: false,

@@ -22,6 +22,7 @@
 import { Diagnostic, DiagnosticSeverity, Range } from 'vscode-languageserver';
 import { scan, findBeginToken, findEndToken } from './scanner';
 import { EsqlDiagnosticsSettings } from './settings';
+import type { DocAnalysis } from './parser';
 
 const MODULE_RE = /\bCREATE\s+(COMPUTE|FILTER|DATABASE)\s+MODULE\s+([A-Za-z_]\w*)/i;
 const END_MODULE_RE = /\bEND\s+MODULE\b/i;
@@ -103,14 +104,37 @@ function collectDeclaredNames(lines: string[]): Set<string> {
   return names;
 }
 
-export function analyze(source: string, settings: EsqlDiagnosticsSettings): Diagnostic[] {
+/**
+ * Run all enabled checks. When `doc` (a tree-sitter DocAnalysis) is given,
+ * grammar-backed results replace the corresponding heuristics:
+ *   - syntax errors come from ERROR/MISSING nodes (checkSyntaxErrors),
+ *   - undeclared-variable detection uses the real declared-name set and the
+ *     real bare-SET targets (multi-line aware, no regex false positives),
+ *   - the missing-semicolon hint is skipped (a real missing `;` now
+ *     produces a grammar syntax error instead).
+ * Without `doc` (grammar unavailable) everything is the Phase 1 regex path.
+ */
+export function analyze(
+  source: string,
+  settings: EsqlDiagnosticsSettings,
+  doc?: DocAnalysis
+): Diagnostic[] {
   if (!settings.enabled) return [];
   const diagnostics: Diagnostic[] = [];
   const { lines } = scan(source);
 
+  if (doc && settings.checkSyntaxErrors) {
+    for (const issue of doc.syntaxIssues) {
+      diagnostics.push(
+        Diagnostic.create(issue.range, issue.message, DiagnosticSeverity.Error)
+      );
+    }
+  }
+
   checkModuleStructure(lines, diagnostics);
   if (settings.checkUndeclaredVariables) {
-    checkDeclaredVariables(lines, diagnostics);
+    if (doc) checkDeclaredVariablesFromTree(doc, diagnostics);
+    else checkDeclaredVariables(lines, diagnostics);
   }
   if (settings.checkPropagation) {
     checkPropagateOrReturn(lines, diagnostics);
@@ -118,7 +142,9 @@ export function analyze(source: string, settings: EsqlDiagnosticsSettings): Diag
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (settings.checkDeprecatedParsers) checkDeprecatedParsers(i, line, diagnostics);
-    if (settings.checkMissingSemicolon) checkMissingSemicolon(i, line, diagnostics);
+    // With the grammar there is an authoritative error for a real missing
+    // `;` already — the hint would only add noise.
+    if (settings.checkMissingSemicolon && !doc) checkMissingSemicolon(i, line, diagnostics);
     if (settings.checkOutputRootProperties) {
       checkOutputRootProperties(i, line, lines, diagnostics);
     }
@@ -169,7 +195,7 @@ function checkModuleStructure(lines: string[], out: Diagnostic[]): void {
   }
 }
 
-/** 2. Undeclared variables assigned via SET. */
+/** 2. Undeclared variables assigned via SET (heuristic, no grammar). */
 function checkDeclaredVariables(lines: string[], out: Diagnostic[]): void {
   const declared = collectDeclaredNames(lines);
 
@@ -186,6 +212,20 @@ function checkDeclaredVariables(lines: string[], out: Diagnostic[]): void {
     out.push(Diagnostic.create(
       lineRange(i, line, col, col + name.length),
       `Variable '${name}' is used in SET but never declared with DECLARE.`,
+      DiagnosticSeverity.Warning
+    ));
+  }
+}
+
+/** 2. Undeclared variables via the parse tree (exact ranges, multi-line). */
+function checkDeclaredVariablesFromTree(doc: DocAnalysis, out: Diagnostic[]): void {
+  const declared = new Set(doc.declaredNames.map((d) => d.name.toUpperCase()));
+  for (const target of doc.setTargets) {
+    const upper = target.name.toUpperCase();
+    if (RESERVED_SET_TARGETS.has(upper) || declared.has(upper)) continue;
+    out.push(Diagnostic.create(
+      target.range,
+      `Variable '${target.name}' is used in SET but never declared with DECLARE.`,
       DiagnosticSeverity.Warning
     ));
   }

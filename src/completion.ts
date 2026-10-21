@@ -30,6 +30,7 @@ import {
 import { ESQL_SNIPPETS } from './data/snippets';
 import { scan } from './scanner';
 import { DECLARE_RE } from './diagnostics';
+import type { DeclaredName } from './parser';
 
 export type CompletionContextKind =
   | 'domains'
@@ -145,7 +146,7 @@ function snippetItems(): CompletionItem[] {
   });
 }
 
-/** Variables DECLAREd anywhere in the document. */
+/** Variables DECLAREd anywhere in the document (regex fallback path). */
 function declaredVarItems(source: string): CompletionItem[] {
   const { lines } = scan(source);
   const seen = new Map<string, { name: string; detail: string }>();
@@ -182,10 +183,26 @@ export function wordBeingTyped(linePrefix: string): string {
   return m ? m[0] : '';
 }
 
+/** Tree-based declared names/parameters -> completion items. */
+function declaredItemsFromTree(declarations: DeclaredName[]): CompletionItem[] {
+  const seen = new Set<string>();
+  const items: CompletionItem[] = [];
+  for (const d of declarations) {
+    const upper = d.name.toUpperCase();
+    if (seen.has(upper)) continue;
+    seen.add(upper);
+    const item = ci(d.name, CompletionItemKind.Variable);
+    item.detail = `Declared: ${d.detail}`;
+    items.push(item);
+  }
+  return items;
+}
+
 export function buildCompletionItems(
   context: CompletionContextKind,
   linePrefix: string,
-  source: string
+  source: string,
+  declarations?: DeclaredName[]
 ): CompletionItem[] {
   const prefix = wordBeingTyped(linePrefix);
 
@@ -233,7 +250,7 @@ export function buildCompletionItems(
         ...keywordItems(),
         ...treeVarItems(),
         ...typeItems(),
-        ...declaredVarItems(source),
+        ...(declarations ? declaredItemsFromTree(declarations) : declaredVarItems(source)),
         ...snippetItems(),
       ];
       return filterByPrefix(items, prefix);

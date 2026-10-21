@@ -9,10 +9,11 @@ and **OpenCode**.
 
 > Phase 1: static analysis, completion, hover and document symbols —
 > pattern-based on a comment/string-aware scanner.
-> A complete **tree-sitter grammar for ESQL** now lives in
-> [`tree-sitter-esql/`](tree-sitter-esql/) (see
-> [its verification notes](tree-sitter-esql/VERIFICATION.md)); wiring it
-> into the server is the next step (see [Roadmap](#roadmap)).
+> Phase 2 (landed): the **tree-sitter grammar** in
+> [`tree-sitter-esql/`](tree-sitter-esql/) is integrated into the server —
+> grammar-backed syntax errors, exact declared-variable analysis and
+> semantic-token highlighting, with automatic fallback to heuristics when
+> the native grammar cannot load (see [Roadmap](#roadmap)).
 
 ## Features
 
@@ -20,17 +21,20 @@ and **OpenCode**.
 
 | Check | Severity | Description |
 |---|---|---|
+| Syntax error / missing token | 🔴 Error | tree-sitter `ERROR`/`MISSING` nodes (when the grammar is loaded) |
 | Missing `END MODULE` | 🔴 Error | Module never closed |
 | Module without `Main()` | ⚠️ Warning | ACE cannot execute the module |
 | `Main()` without `RETURN`/`PROPAGATE` | ⚠️ Warning | Message will not reach any terminal |
-| Variable in `SET` without `DECLARE` | ⚠️ Warning | Case-insensitive; function params count as declared |
+| Variable in `SET` without `DECLARE` | ⚠️ Warning | Grammar-exact when loaded; case-insensitive regex otherwise; function params count as declared |
 | Deprecated `XMLNS` parser | ⚠️ Warning | Use `XMLNSC` in ACE 12 |
-| Missing `;` at end of statement | 💡 Hint | Heuristic on statement starters |
+| Missing `;` at end of statement | 💡 Hint | Heuristic on statement starters (skipped when the grammar is loaded — real missing `;` become syntax errors then) |
 | `OutputRoot.JSON.Data` set without Properties copy | 💡 Hint | Very common integration bug |
 
 All checks run on a masked view of the source where comments and string
 literals are blanked, so `'END MODULE'` inside a string cannot fake a module
-boundary.
+boundary. With the grammar loaded, undeclared-variable analysis and syntax
+errors come from the parse tree (exact ranges, multi-line aware); intact
+statements inside a broken region are still analysed.
 
 ### Completion
 
@@ -59,6 +63,10 @@ views and folding.
 
 - Node.js >= 18 (server runtime)
 - TypeScript toolchain only for building
+- **Optional (recommended):** a C toolchain (cc/python/make) so
+  `npm install` can build the tree-sitter native addon. Without it the
+  server still runs — with the Phase 1 heuristics only (no grammar syntax
+  errors or semantic tokens); it logs which mode is active at startup.
 
 ## Build
 
@@ -128,11 +136,13 @@ tree-sitter test     # 71 corpus tests in test/corpus/
    })
    ```
 
-> **Syntax highlighting is not wired up yet.** The tree-sitter grammar now
-> exists in this repo ([`tree-sitter-esql/`](tree-sitter-esql/)); Neovim
-> users can point nvim-treesitter at it for `source.esql` highlighting, but
-> the LSP ships no highlighting of its own. The LSP features (diagnostics,
-> completion, hover, outline) work without it.
+> **Syntax highlighting:** the LSP itself emits **semantic tokens** (driven
+> by the grammar's `queries/highlights.scm`), which Neovim ≥ 0.10 renders
+> with its built-in tree-sitter theme — no extra setup. For editor-side
+> tree-sitter highlighting instead, see
+> [`clients/neovim/treesitter/esql.lua`](clients/neovim/treesitter/esql.lua)
+> (nvim-treesitter wiring for the local grammar). The LSP features
+> (diagnostics, completion, hover, outline) work either way.
 
 ## OpenCode setup
 
@@ -165,6 +175,7 @@ to `true`:
 {
   "diagnostics": {
     "enabled": true,
+    "checkSyntaxErrors": true,
     "checkUndeclaredVariables": true,
     "checkPropagation": true,
     "checkMissingSemicolon": true,
@@ -177,34 +188,39 @@ to `true`:
 }
 ```
 
+Settings apply at startup and can be updated at runtime through the
+standard `workspace/didChangeConfiguration` notification (section form
+`{ "esql": { ... } }` or the object directly).
+
 ## Project layout
 
 ```
 bin/esql-lsp.js        # executable entrypoint (requires dist/src/server.js)
 src/server.ts          # LSP wiring (stdio JSON-RPC)
+src/parser.ts          # tree-sitter integration (grammar, tokens; degrades gracefully)
 src/scanner.ts         # comment/string-aware masking scanner
 src/diagnostics.ts     # the seven diagnostic checks
 src/completion.ts      # context-sensitive completion
 src/hover.ts           # hover documentation
 src/symbols.ts         # document symbols
-src/settings.ts        # initializationOptions handling
+src/settings.ts        # initializationOptions / didChangeConfiguration handling
 src/data/esqlData.ts   # keywords, types, tree vars, domains, functions
 src/data/snippets.ts   # 43 LSP snippets
-test/                  # node:test unit + e2e (real stdio LSP session)
-clients/neovim/        # Neovim config + filetype mapping
+test/                  # node:test unit + e2e (real stdio LSP sessions)
+clients/neovim/        # Neovim config + filetype mapping + treesitter example
 clients/opencode/      # OpenCode config example
 tree-sitter-esql/      # tree-sitter ESQL grammar (see section above)
 ```
 
 ## Roadmap
 
-- **Phase 2 — grammar integration.** The tree-sitter grammar is done
-  ([`tree-sitter-esql/`](tree-sitter-esql/): permissive superset of the IBM
-  railroads, 71-test corpus, highlights query, Node bindings). Remaining:
-  consume the parse tree in this server for accurate symbols, references and
-  grammar-backed diagnostics, and ship the nvim-treesitter highlight setup.
+- **Phase 2 — grammar integration.** Grammar ✅ (`tree-sitter-esql/`) and
+  integrated ✅: syntax-error diagnostics, exact undeclared-variable
+  analysis, tree-based declared-name completion and semantic-token
+  highlighting. Remaining for this phase: document symbols from the parse
+  tree, go-to-definition and find-references.
 - **Phase 3 — model-driven features.** MRM/XSD schema import for message-tree
-  field completion, go-to-definition, find references, formatting.
+  field completion, formatting.
 - Longer term: optional integration with the ACE ESQL compiler for
   authoritative validation.
 
