@@ -35,8 +35,10 @@ local settings = {
 
 --- Start the ESQL server for a buffer whose filetype is `esql`.
 function esql.start()
+  -- Always resolve a root: without one, clients silently refuse to start.
   local root_dir =
-    vim.fs.root(0, { ".git", "opencode.json", "project.xml" }) or vim.uv.cwd()
+    vim.fs.root(0, { ".git", "opencode.json", "project.xml" })
+    or vim.fs.dirname(vim.api.nvim_buf_get_name(0))
 
   vim.lsp.start({
     name = "esql-lsp",

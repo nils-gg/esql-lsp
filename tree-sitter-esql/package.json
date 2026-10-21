@@ -24,7 +24,6 @@
     "src",
     "queries",
     "test",
-    "examples",
     "LICENSE"
   ],
   "dependencies": {

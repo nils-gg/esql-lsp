@@ -1,5 +1,11 @@
 # esql-lsp
 
+> ⚠️ **Vibe-coded software.** This project — code, grammar, tests and docs —
+> was written almost entirely through AI-assisted coding sessions. It works
+> (it has the test suite to prove it), but no human has audited every line.
+> Use it, share it — and review it like any code you did not write yourself.
+> Details: [Vibe-coded disclosure](#vibe-coded-disclosure).
+
 A [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
 server for **ESQL** — the transformation language of IBM App Connect
 Enterprise (ACE) / Integration Bus (IIB).
@@ -108,19 +114,57 @@ tree-sitter test     # 71 corpus tests in test/corpus/
 - [`tree-sitter-esql/VERIFICATION.md`](tree-sitter-esql/VERIFICATION.md) —
   construct-by-construct evidence against the IBM ESQL reference, gaps
   found/fixed and known limitations.
+- [`tree-sitter-esql/README.md`](tree-sitter-esql/README.md) — grammar
+  status, standalone usage, regeneration workflow.
 
-## Neovim setup (>= 0.8)
+### Development
 
-1. Filetype mapping — put [`clients/neovim/ftdetect/esql.vim`](clients/neovim/ftdetect/esql.vim)
+```sh
+npm test                      # build + 50 unit/e2e tests (real stdio sessions)
+cd tree-sitter-esql
+tree-sitter generate          # grammar.js -> src/parser.c (committed output!)
+tree-sitter test              # 71 corpus tests
+```
+
+Generated grammar sources (`src/parser.c`, `src/node-types.json`, …) are
+committed so consumers never need the tree-sitter CLI — regenerate them
+with `tree-sitter generate` after editing `grammar.js`, never hand-edit.
+Conventions, ground rules and what makes a good PR:
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Neovim setup
+
+A complete, self-contained example (filetype + server + keymaps) lives in
+[`clients/neovim/init-example.lua`](clients/neovim/init-example.lua).
+The essentials:
+
+1. **Filetype mapping** — put
+   [`clients/neovim/ftdetect/esql.vim`](clients/neovim/ftdetect/esql.vim)
    into your `ftdetect` directory (or add manually):
 
    ```vim
    au BufNewFile,BufRead *.esql set filetype=esql
    ```
 
-2. Start the server — put
-   [`clients/neovim/lsp/esql.lua`](clients/neovim/lsp/esql.lua) in your
-   config and `require("lsp.esql")`, or inline the minimum:
+2. **Start the server.** On Neovim ≥ 0.11 use the modern
+   `vim.lsp.config` API:
+
+   ```lua
+   vim.lsp.config('esql', {
+     cmd = { "esql-lsp" },  -- or { "node", "/abs/path/to/esql-lsp/dist/src/server.js" }
+     filetypes = { "esql" },
+     -- IMPORTANT: fall back to the file's own directory. If no root can be
+     -- resolved, vim.lsp.enable() silently never starts the server.
+     root_dir = function(bufnr)
+       return vim.fs.root(bufnr, { ".git", "opencode.json", "project.xml" })
+         or vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr))
+     end,
+   })
+   vim.lsp.enable('esql')
+   ```
+
+   On Neovim 0.8 – 0.10 use the `vim.lsp.start` style from
+   [`clients/neovim/lsp/esql.lua`](clients/neovim/lsp/esql.lua):
 
    ```lua
    vim.api.nvim_create_autocmd("FileType", {
@@ -129,12 +173,16 @@ tree-sitter test     # 71 corpus tests in test/corpus/
        vim.lsp.start({
          name = "esql-lsp",
          cmd = { "esql-lsp" },   -- or { "node", "/abs/path/to/esql-lsp/dist/src/server.js" }
-         root_dir = vim.uv.cwd(),
+         root_dir = vim.fs.root(0, { ".git", "opencode.json", "project.xml" })
+           or vim.fs.dirname(vim.api.nvim_buf_get_name(0)),
          filetypes = { "esql" },
        })
      end,
    })
    ```
+
+   Verify with `:checkhealth vim.lsp` — an `esql` client should be listed
+   as active with your buffer attached.
 
 > **Syntax highlighting:** the LSP itself emits **semantic tokens** (driven
 > by the grammar's `queries/highlights.scm`), which Neovim ≥ 0.10 renders
@@ -164,6 +212,26 @@ project's `opencode.json` / `opencode.jsonc`:
 
 OpenCode then starts the server on first contact with a `.esql` file and
 feeds published diagnostics back to the agent as feedback while it edits.
+
+## Troubleshooting
+
+- **Nothing happens when I open a `.esql` file.** The client probably
+  never attached (or never started). Neovim: `:checkhealth vim.lsp` → the
+  server must appear under *Active Clients*. The classic silent failure is
+  an unresolvable root directory — see the `root_dir` note in
+  [Neovim setup](#neovim-setup).
+- **Which analysis mode is the server in?** At startup it logs either
+  `tree-sitter grammar loaded` (full mode) or `grammar unavailable —
+  heuristic mode only` (fallback). Heuristic mode still gives all Phase 1
+  checks but no grammar syntax errors or semantic tokens; it happens when
+  the native addon couldn't build (needs a C toolchain at `npm install`
+  time). Neovim: `:lua vim.lsp.log.set_level('info')`, then `:LspLog`.
+- **Changed the server code, nothing happened.** Clients spawn the built
+  `dist/src/server.js` — run `npm run build`, then restart the client
+  (`:LspRestart` in Neovim).
+- **Diagnostics look wrong/missing?** Before blaming your editor, confirm
+  what the server publishes: `test/e2e.test.ts` shows the exact stdio
+  handshake to replay a session by hand.
 
 ## Configuration
 
@@ -207,9 +275,12 @@ src/settings.ts        # initializationOptions / didChangeConfiguration handling
 src/data/esqlData.ts   # keywords, types, tree vars, domains, functions
 src/data/snippets.ts   # 43 LSP snippets
 test/                  # node:test unit + e2e (real stdio LSP sessions)
-clients/neovim/        # Neovim config + filetype mapping + treesitter example
+clients/neovim/        # ready-to-use configs: modern (init-example.lua),
+                       # legacy (lsp/esql.lua), filetype, treesitter example
 clients/opencode/      # OpenCode config example
-tree-sitter-esql/      # tree-sitter ESQL grammar (see section above)
+tree-sitter-esql/      # tree-sitter ESQL grammar — own package (see its README)
+ATTRIBUTION.md         # upstream projects & documentation credited
+CONTRIBUTING.md        # dev setup, ground rules, PR guide
 ```
 
 ## Roadmap
@@ -226,9 +297,36 @@ tree-sitter-esql/      # tree-sitter ESQL grammar (see section above)
 
 ## Attribution
 
-Keyword/function data, diagnostic rule ideas and snippets are derived from
-[esql-vscode](https://github.com/joaquinvulcano/esql-vscode)
-(Joaquín Vulcano, MIT). See [ATTRIBUTION.md](ATTRIBUTION.md).
+This project builds on the work of others, and we want that on the record:
+keyword/function data, diagnostic rule ideas and snippets derive from
+[esql-vscode](https://github.com/joaquinvulcano/esql-vscode) (Joaquín
+Vulcano, MIT); the grammar is built with **tree-sitter** and its template;
+the server runs on Microsoft's **vscode-languageserver**; and the grammar's
+accepted language was verified construct-by-construct against **IBM's ACE
+ESQL railroad diagrams**. Full credits: [ATTRIBUTION.md](ATTRIBUTION.md).
+
+## Vibe-coded disclosure
+
+This repository is what people now call **vibe-coded**: an AI coding agent,
+in close iterative sessions with a human, produced essentially all of it —
+the server, the tree-sitter grammar, the 120+ corpus/unit/e2e tests, and
+the documentation. Practical consequences:
+
+- **The tests are green, but the same tool wrote the code and the tests.**
+  They encode its understanding of ESQL: strong evidence, not a proof.
+- **The grammar was validated against the published IBM railroad diagrams
+  and a hand-built corpus — never against the ACE compiler itself.** Known
+  deviations are listed in `tree-sitter-esql/VERIFICATION.md`; unknown ones
+  certainly exist. Treat "no diagnostics" as *probably fine*; the ESQL
+  compiler remains the only authority.
+- Naming, structure and prose are machine-templated; expect seams.
+
+The human role was direction, scope and correctness judgment — including
+running this through real Neovim sessions and fixing what bit us (a
+silently-repaired missing `;`, a false-positive on multi-name `DECLARE`s,
+invalid test fixtures). If you audit it and find warts — that is the
+point of publishing it — open an issue or PR. AI-assisted contributions
+are welcome; disclose them and ship test evidence.
 
 ## License
 

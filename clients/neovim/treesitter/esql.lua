@@ -12,7 +12,7 @@
 local parser_config = require('nvim-treesitter.parsers').get_parser_configs()
 parser_config.esql = {
   install_info = {
-    url = '~/Documents/Code/GERSTNER/esql-lsp/tree-sitter-esql', -- adjust to your checkout
+    url = '~/projects/esql-lsp/tree-sitter-esql', -- your checkout's grammar dir
     files = { 'src/parser.c' },
     generate_requires_npm = false,
     require_beautifier = false,
