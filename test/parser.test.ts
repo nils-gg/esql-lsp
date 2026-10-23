@@ -271,6 +271,39 @@ test('recovered missing tokens (invisible insertions) are reported', async (t) =
   assert.equal(doc.syntaxIssues[0].range.start.line, 3);
 });
 
+test('a recovered token is described by the construct that needed it', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // The binding reports an inserted token by its grammar token name, and at a
+  // choice point it names whichever alternative the DFA reached first. So this
+  // real namespace declaration was reported as "expected 'kw_BIT' here", which is
+  // not merely ugly but a false statement about ESQL (ISSUES.md I-12).
+  const doc = analyzeDocument(parse("DECLARE ns NAMESPACE 'urn:x';\n")!);
+  assert.equal(doc.syntaxIssues.length, 1);
+  assert.match(doc.syntaxIssues[0].message, /expected a data type here/);
+  assert.doesNotMatch(doc.syntaxIssues[0].message, /kw_|identifier|_literal/);
+
+  // Same for the other corpus leak, `SET OutputRoot.[<+1] = InputBody;` — in
+  // context only, so the case is shaped like the file that reported it.
+  const field = analyzeDocument(
+    parse(
+      [
+        'CREATE COMPUTE MODULE M',
+        '\tCREATE FUNCTION Main() RETURNS BOOLEAN',
+        '\tBEGIN',
+        '\t\tSET OutputRoot.[<+1] = InputBody;',
+        '\t\tRETURN TRUE;',
+        '\tEND;',
+        'END MODULE;',
+        '',
+      ].join('\n')
+    )!
+  );
+  assert.ok(
+    field.syntaxIssues.some((i) => /expected a field reference here/.test(i.message)),
+    JSON.stringify(field.syntaxIssues.map((i) => i.message))
+  );
+});
+
 test('syntax errors are detected from ERROR/MISSING nodes', async (t) => {
   if (!(await skipWithoutGrammar(t))) return;
   const tree = parse('CREATE COMPUTE MODULE M\nSET x = (1;\n')!;

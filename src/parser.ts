@@ -380,6 +380,49 @@ function damagedModuleInfo(node: SyntaxNode): ModuleInfo | null {
   return null;
 }
 
+/**
+ * What the parser was waiting for, phrased the way a reader would say it.
+ *
+ * The binding reports an inserted token by its GRAMMAR token name, which for a
+ * `field_reference` would print as `expected 'field_reference' here`, and — worse
+ * — for a choice point names whichever alternative the DFA tried first, so a real
+ * `DECLARE ns NAMESPACE '…'` produced `expected 'kw_BIT' here` (ISSUES.md I-12).
+ * Punctuation is quoted as it stands; for a word-like token the construct it
+ * belongs to says far more than the token, so use the parent node's type, and
+ * keep the token name only when the construct says nothing.
+ */
+function expectedPhrase(tokenType: string, parentType?: string): string {
+  // Punctuation is already the thing a reader would say (`expected ';' here`).
+  if (!/[A-Za-z_]/.test(tokenType)) {
+    return `Missing syntax: expected '${tokenType}' here.`;
+  }
+  const construct = parentType ? CONSTRUCT_LABELS[parentType] : undefined;
+  if (construct) return `Missing syntax: expected ${construct} here.`;
+  if (tokenType.startsWith('kw_')) {
+    return `Missing syntax: expected '${tokenType.slice(3).toLowerCase()}' here.`;
+  }
+  return `Missing syntax: expected an ${tokenType.replace(/_/g, ' ')} here.`;
+}
+
+/** Labels for constructs that can be left incomplete (see `expectedPhrase`). */
+const CONSTRUCT_LABELS: Record<string, string> = {
+  datatype: 'a data type',
+  literal: 'a literal value',
+  expression: 'an expression',
+  field_reference: 'a field reference',
+  path_name: 'a path',
+  schema_name: 'a schema name',
+  function_call: 'a function call',
+  routine_parameter: 'a parameter (IN / OUT / INOUT name type)',
+  declare_item: 'a declared name and type',
+  broker_schema_statement: 'a schema name after BROKER SCHEMA',
+  create_module_statement: 'a module type and name after CREATE',
+  create_routine_statement: 'a routine name and parameter list after CREATE',
+  set_statement: 'an assignment after SET',
+  declare_statement: 'a declared name after DECLARE',
+  propagate_statement: 'a propagation target after PROPAGATE',
+};
+
 export function analyzeDocument(tree: Tree): DocAnalysis {
   const declaredNames: DeclaredName[] = [];
   const setTargets: SetTarget[] = [];
@@ -427,11 +470,12 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
     }
   };
 
-  const visit = (node: SyntaxNode, scope: WalkScope): void => {
+
+  const visit = (node: SyntaxNode, scope: WalkScope, parentType?: string): void => {
     if (node.type === 'ERROR' || node.type === 'MISSING' || node.isMissing || isInsertedNode(node)) {
       syntaxIssues.push({
         message: isInsertedNode(node)
-          ? `Missing syntax: expected '${node.type}' here.`
+          ? expectedPhrase(node.type, parentType)
           : 'Syntax error.',
         range: rangeOf(node),
       });
@@ -452,7 +496,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
         ? { visible: moduleInfo.range, moduleName: moduleInfo.name }
         : inner;
       for (const child of node.children) {
-        if (!child.hasError && !isInsertedNode(child)) visit(child, damagedScope);
+        if (!child.hasError && !isInsertedNode(child)) visit(child, damagedScope, node.type);
       }
       return;
     }
@@ -462,7 +506,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
       case 'create_module_statement':
       case 'create_routine_statement': {
         const inner = openScope(node, scope);
-        for (const child of node.children) visit(child, inner);
+        for (const child of node.children) visit(child, inner, node.type);
         return; // handled: do not descend twice
       }
       case 'declare_statement': {
@@ -562,7 +606,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
       }
     }
 
-    for (const child of node.children) visit(child, scope);
+    for (const child of node.children) visit(child, scope, node.type);
   };
 
   visit(tree.rootNode, { visible: rangeOf(tree.rootNode) });
