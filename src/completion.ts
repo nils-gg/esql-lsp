@@ -28,8 +28,7 @@ import {
   EsqlDomainDoc,
 } from './data/esqlData';
 import { ESQL_SNIPPETS } from './data/snippets';
-import { scan } from './scanner';
-import { DECLARE_RE } from './diagnostics';
+import { declarationsFromSource } from './definitions';
 import type { DeclaredName } from './parser';
 
 export type CompletionContextKind =
@@ -146,29 +145,16 @@ function snippetItems(): CompletionItem[] {
   });
 }
 
-/** Variables DECLAREd anywhere in the document (regex fallback path). */
+/**
+ * Variables DECLAREd anywhere in the document (regex fallback path).
+ *
+ * Delegates to the one shared extractor (`declarationsFromSource`), so the
+ * fallback offers exactly what the outline shows — including multi-name
+ * DECLAREs, parameters of a multi-line routine header, and quoted `EXTERNAL`
+ * names — instead of keeping its own copy of the patterns.
+ */
 function declaredVarItems(source: string): CompletionItem[] {
-  const { lines } = scan(source);
-  const seen = new Map<string, { name: string; detail: string }>();
-  for (const line of lines) {
-    // Shared regex with diagnostics.ts: every name of a multi-name
-    // declaration is offered, with the declared type as detail.
-    const m = line.match(DECLARE_RE);
-    if (!m) continue;
-    for (const rawName of m[1].split(',')) {
-      const name = rawName.trim();
-      const upper = name.toUpperCase();
-      if (!seen.has(upper)) {
-        const constant = /\bCONSTANT\b/i.test(line) ? 'CONSTANT ' : '';
-        seen.set(upper, { name, detail: `${constant}${m[2].toUpperCase()}` });
-      }
-    }
-  }
-  return [...seen.values()].map(({ name, detail }) => {
-    const item = ci(name, CompletionItemKind.Variable);
-    item.detail = `Declared: ${detail}`;
-    return item;
-  });
+  return declaredItemsFromTree(declarationsFromSource(source));
 }
 
 function filterByPrefix(items: CompletionItem[], prefix: string): CompletionItem[] {

@@ -9,7 +9,7 @@
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { SymbolKind } from 'vscode-languageserver';
+import { DocumentSymbol, Range, SymbolKind } from 'vscode-languageserver';
 import { documentSymbols, documentSymbolsFromTree } from '../src/symbols';
 import { initGrammar, parse, analyzeDocument, grammarReady } from '../src/parser';
 
@@ -232,6 +232,69 @@ test('a fake END MODULE inside a string does not truncate the module range', () 
   const syms = documentSymbols(src);
   const mod = syms.find((s) => s.kind === SymbolKind.Module)!;
   assert.equal(mod.range.end.line, 7);
+});
+
+test('every selectionRange covers exactly its own name', async () => {
+  // Tab-indented headers plus a parameter list split across lines — the shape
+  // real files use. The fallback used to report each routine name one column
+  // early (`matchText.indexOf(name)` without the match's own offset), so hover
+  // and definition asked at the outline's own position found nothing
+  // (ISSUES.md I-4). Asserted on the fallback path ALWAYS and on the tree path
+  // whenever the addon is loaded.
+  const INDENTED = [
+    'BROKER SCHEMA com.example.paymob;', //                          0
+    '', //                                                           1
+    'CREATE COMPUTE MODULE BuildIframeUrl', //                       2
+    '\tCREATE FUNCTION Main() RETURNS BOOLEAN', //                   3
+    '\tBEGIN', //                                                    4
+    '\t\tDECLARE sessionId CHARACTER;', //                           5
+    '\t\tSET sessionId = CardHash();', //                            6
+    '\t\tRETURN TRUE;', //                                           7
+    '\tEND;', //                                                     8
+    '', //                                                           9
+    '\tCREATE FUNCTION CardHash(', //                                10
+    '\t\tIN cardNumber CHARACTER,', //                               11
+    '\t\tIN cvv CHARACTER)', //                                      12
+    '\tRETURNS CHARACTER', //                                        13
+    '\tBEGIN', //                                                    14
+    '\t\tDECLARE result CHARACTER;', //                              15
+    '\t\tSET result = cardNumber || cvv;', //                        16
+    '\t\tRETURN result;', //                                         17
+    '\tEND;', //                                                     18
+    'END MODULE;', //                                                19
+    '',
+  ].join('\n');
+  const lines = INDENTED.split('\n');
+  const textOf = (r: Range) => lines[r.start.line].slice(r.start.character, r.end.character);
+  const flatten = (syms: ReturnType<typeof documentSymbols>): DocumentSymbol[] => [
+    ...syms,
+    ...syms.flatMap((s) => flatten(s.children ?? [])),
+  ];
+  const check = (syms: ReturnType<typeof documentSymbols>, path: string) => {
+    for (const s of flatten(syms)) {
+      assert.equal(textOf(s.selectionRange), s.name, `${path}: selectionRange of ${s.name}`);
+    }
+  };
+
+  check(documentSymbols(INDENTED), 'fallback');
+
+  await initGrammar();
+  if (grammarReady()) {
+    const tree = parse(INDENTED);
+    if (tree) check(documentSymbolsFromTree(analyzeDocument(tree)), 'tree');
+  }
+
+  // And the split parameter list is not invisible on the fallback path
+  // (ISSUES.md I-5): both parameters are symbols, on the lines they sit on.
+  const names = outline(documentSymbols(INDENTED)).map((l) => l.trim());
+  assert.ok(
+    names.some((n) => n.endsWith(':cardNumber [parameter CHARACTER]')),
+    `cardNumber parameter present, got ${JSON.stringify(names)}`
+  );
+  assert.ok(
+    names.some((n) => n.endsWith(':cvv [parameter CHARACTER]')),
+    `cvv parameter present, got ${JSON.stringify(names)}`
+  );
 });
 
 test('empty source yields no symbols', () => {

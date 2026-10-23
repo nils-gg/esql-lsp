@@ -16,23 +16,34 @@
  */
 
 import { DocumentSymbol, Range, SymbolKind } from 'vscode-languageserver';
-import { scan, findBeginToken, findEndToken } from './scanner';
-import { rangeContains, declarationsFromSource } from './definitions';
-import type { DocAnalysis } from './parser';
+import { scan } from './scanner';
+import {
+  rangeContains,
+  declarationsFromSource,
+  routinesFromSource,
+} from './definitions';
+import type { DocAnalysis, RoutineInfo } from './parser';
 
 const BROKER_RE = /\bBROKER\s+SCHEMA\s+([A-Za-z0-9_.]+)/i;
 const MODULE_RE = /\bCREATE\s+(COMPUTE|FILTER|DATABASE)\s+MODULE\s+([A-Za-z_]\w*)/i;
 const END_MODULE_RE = /\bEND\s+MODULE\b/i;
-const FN_RE =
-  /\bCREATE\s+(FUNCTION|PROCEDURE)\s+([A-Za-z_]\w*)\s*(\(([^)]*)\))?(\s+RETURNS\s+([A-Za-z]+))?/i;
 
 function lineRange(line: number, length: number): Range {
   return Range.create(line, 0, line, length);
 }
 
-function nameRange(line: number, name: string, matchText: string): Range {
-  const idx = matchText.indexOf(name);
-  const start = idx >= 0 ? idx : 0;
+/**
+ * Range of the captured name inside a single-line match.
+ *
+ * The offset has to be added to the match's own start column: `\bCREATE` on an
+ * indented line begins at column 1, so returning `m[0].indexOf(name)` alone put
+ * every indented routine's `selectionRange` one character left of the name —
+ * which made hover/definition/references fail when asked at the position the
+ * outline itself advertised (ISSUES.md I-4).
+ */
+function nameRange(line: number, name: string, match: RegExpExecArray): Range {
+  const idx = match[0].indexOf(name);
+  const start = idx >= 0 ? match.index + idx : match.index;
   return Range.create(line, start, line, start + name.length);
 }
 
@@ -43,33 +54,16 @@ interface BlockScope {
   symbol: DocumentSymbol;
 }
 
-/** Find the line that closes the BEGIN block opened at/after `fromLine`. */
-function findBodyEndLine(lines: string[], fromLine: number): number {
-  let depth = 0;
-  let started = false;
-  for (let j = fromLine; j < lines.length; j++) {
-    const line = lines[j];
-    if (findBeginToken(line) >= 0) {
-      started = true;
-      depth++;
-    }
-    if (findEndToken(line) >= 0) {
-      if (started) {
-        depth--;
-        if (depth === 0) return j;
-      }
-    }
-    // Stop if we hit another top-level declaration (malformed input guard).
-    if (j > fromLine && (MODULE_RE.test(line) || END_MODULE_RE.test(line))) break;
-  }
-  return fromLine;
-}
-
 export function documentSymbols(source: string): DocumentSymbol[] {
   const { lines } = scan(source);
   const symbols: DocumentSymbol[] = [];
   const modules: BlockScope[] = [];
   const functions: BlockScope[] = [];
+  // Routine headers come from the one shared extractor, keyed by header line.
+  const routineByHeaderLine = new Map<number, RoutineInfo>();
+  for (const r of routinesFromSource(source)) {
+    if (!routineByHeaderLine.has(r.range.start.line)) routineByHeaderLine.set(r.range.start.line, r);
+  }
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -82,7 +76,7 @@ export function documentSymbols(source: string): DocumentSymbol[] {
         detail: 'BROKER SCHEMA',
         kind: SymbolKind.Namespace,
         range: lineRange(i, line.length),
-        selectionRange: nameRange(i, broker[1], broker[0]),
+        selectionRange: nameRange(i, broker[1], broker),
       });
       continue;
     }
@@ -104,7 +98,7 @@ export function documentSymbols(source: string): DocumentSymbol[] {
         detail: `${mod[1].toUpperCase()} MODULE`,
         kind: SymbolKind.Module,
         range: Range.create(i, 0, end, lines[end].length),
-        selectionRange: nameRange(i, mod[2], mod[0]),
+        selectionRange: nameRange(i, mod[2], mod),
         children: [],
       };
       symbols.push(symbol);
@@ -113,23 +107,23 @@ export function documentSymbols(source: string): DocumentSymbol[] {
     }
 
     // ── FUNCTION / PROCEDURE ─────────────────────────────────────────────
-    const fn = FN_RE.exec(line);
+    // Headers come from definitions.ts (see the note above), so the outline,
+    // hover and go-to-definition cannot disagree about a routine — including
+    // one whose parameter list and RETURNS clause span several lines.
+    const fn = routineByHeaderLine.get(i);
     if (fn) {
-      const end = findBodyEndLine(lines, i);
-      const params = fn[4] ? fn[4].trim() : '';
-      const returns = fn[6] ? ` RETURNS ${fn[6].toUpperCase()}` : '';
       const symbol: DocumentSymbol = {
-        name: fn[2],
-        detail: `${fn[1].toUpperCase()}(${params})${returns}`,
+        name: fn.name,
+        detail: `${fn.kind}(${fn.params})${fn.returnType ? ` RETURNS ${fn.returnType}` : ''}`,
         kind: SymbolKind.Function,
-        range: Range.create(i, 0, end, lines[end].length),
-        selectionRange: nameRange(i, fn[2], fn[0]),
+        range: fn.declRange,
+        selectionRange: fn.range,
         children: [],
       };
       const owner = modules.find((m) => i > m.startLine && i <= m.endLine);
       if (owner) owner.symbol.children!.push(symbol);
       else symbols.push(symbol);
-      functions.push({ startLine: i, endLine: end, symbol });
+      functions.push({ startLine: i, endLine: fn.declRange.end.line, symbol });
       continue;
     }
   }
@@ -146,7 +140,8 @@ export function documentSymbols(source: string): DocumentSymbol[] {
       range: d.range,
       selectionRange: d.range,
     };
-    // Parameters sit on the header line itself, so the span starts there.
+    // Nesting is by the routine's declared span, so a parameter written on a
+    // continuation line of a split header still lands under its routine.
     const routine = functions.find((f) => line >= f.startLine && line <= f.endLine);
     if (routine) {
       routine.symbol.children!.push(symbol);

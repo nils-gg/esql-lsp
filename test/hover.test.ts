@@ -154,3 +154,30 @@ test('undocumented words yield nothing', async () => {
   assert.equal(heuristic, null);
   if (grammar) assert.equal(grammar, null);
 });
+
+test('a module and the BROKER SCHEMA document themselves', async () => {
+  // Someone hovering the module name is orienting themselves in an unfamiliar
+  // file, so the answer has to name the kind of module and what is in it —
+  // hovering used to return nothing at all for these two (ISSUES.md I-11).
+  const mod = await both(1, at(1, 'OrderProcessing'));
+  assert.match(mod.heuristic!, /\*\*COMPUTE MODULE\*\*/);
+  assert.match(mod.heuristic!, /declared at line 2/);
+  assert.match(mod.heuristic!, /Contains 2 routines: `ValidateOrder`, `Main`/);
+  if (mod.grammar) {
+    assert.match(mod.grammar!, /\*\*COMPUTE MODULE\*\*/);
+    assert.match(mod.grammar!, /Contains 2 routines/);
+  }
+
+  // A dotted schema id: `wordAt` stops at the dots, so any segment of the name
+  // has to answer.
+  for (const segment of ['com', 'example', 'flow']) {
+    const schema = await both(0, at(0, segment));
+    assert.match(schema.heuristic!, /com\.example\.flow/);
+    assert.match(schema.heuristic!, /\*\*BROKER SCHEMA\*\*/);
+    if (schema.grammar) assert.match(schema.grammar!, /com\.example\.flow/);
+  }
+
+  // A declared variable is still itself, not the schema.
+  const declared = await both(3, at(3, 'limit'));
+  assert.match(declared.heuristic!, /Declared variable/);
+});

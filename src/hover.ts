@@ -16,14 +16,22 @@
  */
 
 import { Hover, Range } from 'vscode-languageserver';
-import { scan, wordAt } from './scanner';
+import { scan } from './scanner';
 import {
   ESQL_FUNCTIONS,
   ESQL_MESSAGE_TREE_VARS,
   ESQL_DOMAINS,
   ESQL_TYPES,
 } from './data/esqlData';
-import { declarationsFromSource, routinesFromSource, rangeContains } from './definitions';
+import {
+  declarationsFromSource,
+  routinesFromSource,
+  rangeContains,
+  wordAtPosition,
+  modulesFromSource,
+  schemaFromSource,
+  matchesSchemaName,
+} from './definitions';
 import type { DocAnalysis, DeclaredName, RoutineInfo } from './parser';
 
 function markdown(value: string): Hover {
@@ -94,10 +102,9 @@ export function hoverAt(
   doc?: DocAnalysis
 ): Hover | null {
   const { lines } = scan(source);
-  const maskedLine = lines[line];
-  if (maskedLine === undefined) return null;
-
-  const w = wordAt(maskedLine, character);
+  // Shared with go-to-definition/references, so a quoted declare name hovers
+  // exactly where it is navigable (and vice versa).
+  const w = wordAtPosition(lines, source.split('\n'), line, character);
   if (!w) return null;
 
   const upper = w.word.toUpperCase();
@@ -120,6 +127,44 @@ export function hoverAt(
       declaration,
       routines,
       doc ? doc.modules.map((m) => ({ name: m.name, range: m.range })) : []
+    );
+  }
+
+  // ── module and schema names: someone hovering these is orienting themselves,
+  //    so say what kind of thing it is and what it holds ──
+  const modules = doc ? doc.modules : modulesFromSource(source);
+  const module = modules.find((m) => eq(m.name));
+  if (module) {
+    const inside = routines
+      .filter(
+        (r) =>
+          r.range.start.line >= module.range.start.line &&
+          r.range.start.line <= module.range.end.line
+      )
+      .map((r) => r.name);
+    const routinesText = inside.length
+      ? `Contains ${inside.length} routine${inside.length === 1 ? '' : 's'}: ${inside
+          .map((n) => `\`${n}\``)
+          .join(', ')}.`
+      : 'Contains no routines.';
+    return markdown(
+      `### \`${module.name}\`\n\n**${module.kind} MODULE** — declared at line ${
+        module.nameRange.start.line + 1
+      }. ${routinesText}\n\n_A message centre: the routines of one message flow._`
+    );
+  }
+
+  let schema: { name: string; range: Range } | undefined;
+  if (doc) {
+    schema = doc.schemas.find((s) => matchesSchemaName(s.name, w.word));
+  } else {
+    const declared = schemaFromSource(source);
+    if (declared && matchesSchemaName(declared.name, w.word)) schema = declared;
+  }
+  if (schema) {
+    return markdown(
+      `### \`${schema.name}\`\n\n**BROKER SCHEMA** — the application schema this file belongs to.` +
+        '\n\n_One per file; it names the deployable application the flow is part of._'
     );
   }
 

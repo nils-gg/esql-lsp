@@ -12,7 +12,12 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { Range } from 'vscode-languageserver';
 import { parse, analyzeDocument, DocAnalysis, grammarReady, initGrammar } from '../src/parser';
-import { definitionAt, referencesAt } from '../src/definitions';
+import {
+  definitionAt,
+  referencesAt,
+  declarationsFromSource,
+  routinesFromSource,
+} from '../src/definitions';
 
 const SRC = [
   'BROKER SCHEMA com.acme.payments;',                                     // 0
@@ -168,7 +173,158 @@ test('references: module name reports its declaration', async () => {
   );
 });
 
-test('references: nothing for an undeclared word', async () => {
-  await bothModes('OutputRoot', (doc) => referencesAt(SRC, 15, at(15, 'OutputRoot'), true, doc), []);
+test('references: nothing for an undeclared word', async () => {  await bothModes('OutputRoot', (doc) => referencesAt(SRC, 15, at(15, 'OutputRoot'), true, doc), []);
   await bothModes('Data', (doc) => referencesAt('SET OutputRoot.JSON.Data = 1;', 0, 21, true, doc), []);
+});
+
+// ── Split routine headers (ISSUES.md I-5) ────────────────────────────────────
+
+/** A header written the way real code writes it: list open on the header line,
+ * one parameter per line, RETURNS after the closing paren. */
+const SPLIT = [
+  'BROKER SCHEMA com.example.policy;', //                                   0
+  '', //                                                                   1
+  'CREATE COMPUTE MODULE PolicyReader', //                                  2
+  '\tCREATE FUNCTION getPolicyProperty(', //                               3
+  '\t\tIN policyName CHARACTER,', //                                       4
+  '\t\tIN propertyName CHARACTER)', //                                     5
+  '\tRETURNS CHARACTER', //                                                 6
+  '\tBEGIN', //                                                             7
+  '\t\tDECLARE result CHARACTER;', //                                      8
+  '\t\tSET result = policyName || propertyName;', //                       9
+  '\t\tRETURN result;', //                                                 10
+  '\tEND;', //                                                              11
+  '', //                                                                   12
+  '\tCREATE FUNCTION Main() RETURNS BOOLEAN', //                           13
+  '\tBEGIN', //                                                             14
+  '\t\tDECLARE host CHARACTER;', //                                        15
+  "\t\tSET host = getPolicyProperty('a', 'b');", //                        16
+  '\t\tRETURN TRUE;', //                                                   17
+  '\tEND;', //                                                              18
+  'END MODULE;', //                                                         19
+  '',
+].join('\n');
+
+const SLINES = SPLIT.split('\n');
+const sat = (line: number, word: string, from = 0) => SLINES[line].indexOf(word, from);
+
+let splitTreeChecked = false;
+let splitTree: DocAnalysis | undefined;
+
+/** Parse tree for SPLIT, or undefined in heuristic mode. */
+async function splitDoc(): Promise<DocAnalysis | undefined> {
+  if (!splitTreeChecked) {
+    splitTreeChecked = true;
+    await initGrammar();
+    splitTree = grammarReady() ? analyzeDocument(parse(SPLIT)!) : undefined;
+  }
+  return splitTree;
+}
+
+/** Asserts `expected` on the heuristic path (always) and the grammar path. */
+async function bothModesOnSplit(
+  label: string,
+  run: (doc: DocAnalysis | undefined) => Range[],
+  expected: string[]
+): Promise<void> {
+  assert.deepEqual(format(run(undefined)), expected, `${label} (heuristic)`);
+  const doc = await splitDoc();
+  if (doc) assert.deepEqual(format(run(doc)), expected, `${label} (grammar)`);
+}
+
+test('definition: a parameter of a split header resolves to its own line', async () => {
+  await bothModesOnSplit(
+    'policyName',
+    (doc) => definitionAt(SPLIT, 9, sat(9, 'policyName'), doc),
+    ['4:5-4:15']
+  );
+  await bothModesOnSplit(
+    'propertyName',
+    (doc) => definitionAt(SPLIT, 9, sat(9, 'propertyName', 20), doc),
+    ['5:5-5:17']
+  );
+});
+
+test('references: a split-header parameter stays inside its routine', async () => {
+  await bothModesOnSplit(
+    'policyName refs',
+    (doc) => referencesAt(SPLIT, 9, sat(9, 'policyName'), true, doc),
+    ['4:5-4:15', '9:15-9:25']
+  );
+  await bothModesOnSplit(
+    'propertyName refs',
+    (doc) => referencesAt(SPLIT, 9, sat(9, 'propertyName', 20), true, doc),
+    ['5:5-5:17', '9:29-9:41']
+  );
+});
+
+test('definition and references find a routine whose header is split', async () => {
+  await bothModesOnSplit(
+    'getPolicyProperty def',
+    (doc) => definitionAt(SPLIT, 16, sat(16, 'getPolicyProperty'), doc),
+    ['3:17-3:34']
+  );
+  await bothModesOnSplit(
+    'getPolicyProperty refs',
+    (doc) => referencesAt(SPLIT, 16, sat(16, 'getPolicyProperty'), true, doc),
+    ['3:17-3:34', '16:13-16:30']
+  );
+});
+
+test('the fallback reads parameters and RETURNS from the lines a header spans', () => {
+  const routine = routinesFromSource(SPLIT).find((r) => r.name === 'getPolicyProperty')!;
+  assert.equal(routine.kind, 'FUNCTION');
+  assert.equal(routine.returnType, 'CHARACTER');
+  assert.equal(routine.params, 'IN policyName CHARACTER, IN propertyName CHARACTER');
+
+  const params = declarationsFromSource(SPLIT).filter((d) => d.kind === 'parameter');
+  assert.deepEqual(
+    params.map((p) => `${p.name}@${p.range.start.line}:${p.range.start.character}`),
+    ['policyName@4:5', 'propertyName@5:5']
+  );
+});
+
+// ── Quoted declare names (ISSUES.md I-10) ────────────────────────────────────
+
+test('a quoted EXTERNAL declare declares the name, not the keyword', () => {
+  // The grammar rejects this form today (ISSUES.md I-3/H), so only the
+  // heuristic path is asserted — but it must not invent a symbol named
+  // `EXTERNAL`, which is what the old DECLARE pattern produced in four real
+  // files: a name that hovers, navigates and renames, yet is not in the file.
+  const src = [
+    'DECLARE "script-encoded-hostname" EXTERNAL CHARACTER;', //            0
+    '', //                                                                 1
+    'CREATE COMPUTE MODULE CorrelId', //                                   2
+    '\tCREATE FUNCTION Main() RETURNS BOOLEAN', //                         3
+    '\tBEGIN', //                                                          4
+    "\t\tSET OutputRoot.JSON.Data.host = \"script-encoded-hostname\";", //  5
+    '\t\tRETURN TRUE;', //                                                6
+    '\tEND;', //                                                           7
+    'END MODULE;', //                                                      8
+    '',
+  ].join('\n');
+  const decls = declarationsFromSource(src);
+  assert.deepEqual(
+    decls.map((d) => `${d.name}|${d.kind}|${d.detail}`),
+    ['script-encoded-hostname|variable|CHARACTER']
+  );
+
+  // The symbol is navigable: the cursor on the quoted name resolves to itself
+  // and find-references reports the quoted use sites.
+  const onName = definitionAt(src, 0, src.indexOf('script-encoded'), undefined);
+  assert.deepEqual(
+    onName.map((r) => src.slice(r.start.character, r.end.character)),
+    ['script-encoded-hostname']
+  );
+  const useLine = src.split('\n')[5];
+  const uses = referencesAt(src, 5, useLine.indexOf('script-encoded'), true, undefined);
+  assert.deepEqual(
+    uses.map((r) => `${r.start.line}:${r.start.character}`),
+    ['0:9', '5:35']
+  );
+
+  // A quoted declare in a comment declares nothing: the raw line is only
+  // trusted where the masked view agrees the DECLARE is live code.
+  const commented = ['-- DECLARE "fake" EXTERNAL CHARACTER;', ''].join('\n');
+  assert.deepEqual(declarationsFromSource(commented), []);
 });
