@@ -143,6 +143,12 @@ generated `vendor/` sitting in the checkout; it is git-ignored, do not commit it
 - Locally "green" = `npm test` **and** `npm run grammar:test`; add
   `ESQL_LSP_NO_GRAMMAR=1 npm test` when touching degradation and
   `npm run verify:package` when touching packaging.
+- The lockfile must satisfy **npm 10**, the version `setup-node` ships on the CI
+  matrix. npm 9 tolerates a lock whose root `packages[""]` entry omits the `file:`
+  devDependency; npm 10 refuses it and every CI job dies in `npm ci` with
+  *"Missing: tree-sitter-esql@… from lock file"*. After touching dependencies,
+  check with `npx npm@10 ci --dry-run` — plain `npm ls --package-lock-only` on npm 9
+  will not catch it.
 - CI (`.github/workflows/ci.yml`) triggers on `main` (the branch is not `master`).
   Jobs: grammar (regenerate + `git diff` guard on `tree-sitter-esql/src` + corpus),
   the root suite on Node 18/20/22 plus `smoke-stdio.js --expect-grammar` (proves the
