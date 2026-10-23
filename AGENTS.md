@@ -23,6 +23,10 @@ native addon from **that copy** — not from `tree-sitter-esql/`.
   `cd tree-sitter-esql && npx tree-sitter test -i '<name regex>'`.
   `npx tree-sitter test -u` rewrites the expected s-expression trees in the corpus
   files — use it only after a deliberate, reference-checked grammar change.
+- `cd tree-sitter-esql && npx tree-sitter parse path/to/file.esql` — the fastest way
+  to see what the grammar makes of a snippet: prints the annotated tree and exits
+  **1 if any `ERROR` node** is present, 0 when clean (works from the grammar
+  directory despite the "no parser directories" config warning).
 - `npm run smoke:stdio` — starts the built server and asserts it answers;
   `--expect-heuristic` / `--expect-grammar` pin which mode must be active.
 - `npm run verify:package` — packs, installs the tarball twice (without and with
@@ -110,7 +114,21 @@ which is how the `file:` entry disappears for registry users.
 Do not replace this with `bundleDependencies`: npm bundles the *installed* grammar
 folder, `build/*.node` included, which ships the release machine's binary to every
 other platform and silently degrades everyone to heuristic mode. Run
-`npm run verify:package` before tagging.
+`npm run verify:package` before tagging — note that it (and `npm pack`) leave the
+generated `vendor/` sitting in the checkout; it is git-ignored, do not commit it.
+
+## Commits and release
+
+- History is a one-line subject plus a body saying what was actually verified
+  (which suites, which counts) — match that, and disclose AI assistance, which
+  CONTRIBUTING makes a ground rule ("green tests written by the same tool are a
+  starting point, not proof").
+- Every commit uses one identity, `nils <nige@users.noreply.github.com>`, and this
+  machine has no *global* git identity: on a fresh clone or worktree set the
+  repo-local `user.name`/`user.email` before the first commit instead of guessing.
+- CI has no publish/deploy job. Publishing is manual `npm publish` after
+  `npm run verify:package`; the version that matters lives in the root
+  `package.json` (the grammar package versions itself independently).
 
 ## Verification
 
