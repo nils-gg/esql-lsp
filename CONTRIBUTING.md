@@ -82,9 +82,12 @@ is a supported product surface, not a broken setup.
 
 The grammar is not on the npm registry, so the published tarball has to carry it:
 
-- `prepack` runs `scripts/prepack-grammar.js`, which vendors the grammar's
-  published file list into `vendor/tree-sitter-esql/` (generated, git-ignored).
-  The compiled addon is deliberately **not** vendored.
+- `prepack` first runs `npm run build`: `npm pack` compiles nothing, and a tarball
+  packed from a clean clone would contain no `dist/`, so it would install and then
+  fail to start (`bin/esql-lsp.js` only requires `dist/src/server.js`). It then runs
+  `scripts/prepack-grammar.js`, which vendors the grammar's published file list into
+  `vendor/tree-sitter-esql/` (generated, git-ignored). The compiled addon is
+  deliberately **not** vendored.
 - `postinstall` runs `scripts/build-grammar.js`, which best-effort-compiles that
   vendored copy and never fails the install — no toolchain means heuristic mode,
   which is exactly the tested degradation path.

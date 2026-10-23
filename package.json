@@ -36,7 +36,7 @@
     "grammar:test": "npm --prefix tree-sitter-esql test",
     "smoke:stdio": "node scripts/smoke-stdio.js",
     "verify:package": "node scripts/verify-package.js",
-    "prepack": "node scripts/prepack-grammar.js",
+    "prepack": "npm run build && node scripts/prepack-grammar.js",
     "postinstall": "node scripts/build-grammar.js"
   },
   "keywords": [

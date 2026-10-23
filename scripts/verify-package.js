@@ -101,6 +101,7 @@ function main() {
   const tarball = path.join(work, packed.stdout.trim().split('\n').pop());
   const listed = run('tar', ['-tzf', tarball]).stdout.split('\n');
 
+  check('tarball carries the compiled server', listed.some((l) => /dist\/src\/server\.js$/.test(l)), 'bin/esql-lsp.js requires dist/src/server.js, so prepack must build');
   check('tarball carries the vendored grammar parser', listed.some((l) => /vendor\/tree-sitter-esql\/src\/parser\.c$/.test(l)));
   check('tarball carries the highlight queries', listed.some((l) => /vendor\/tree-sitter-esql\/queries\/highlights\.scm$/.test(l)));
   check('tarball carries no compiled addon', !listed.some((l) => l.endsWith('.node')), 'a platform-specific binary must not ship');

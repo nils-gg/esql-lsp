@@ -112,12 +112,20 @@ rule-level conflict tricks in grammar comments.
 
 ## Packaging
 
-The grammar is not on npm, so a published tarball must carry it: `prepack`
-(`scripts/prepack-grammar.js`) vendors the grammar *sources* into git-ignored
-`vendor/tree-sitter-esql/`, `postinstall` (`scripts/build-grammar.js`) best-effort
-compiles the addon and must **never** fail an install, and `locateGrammar()` in
-`parser.ts` resolves package-or-vendored. npm strips `devDependencies` at publish,
-which is how the `file:` entry disappears for registry users.
+The grammar is not on npm, so a published tarball must carry it: `prepack` runs
+`npm run build` **and** `scripts/prepack-grammar.js`, which vendors the grammar
+*sources* into git-ignored `vendor/tree-sitter-esql/`; `postinstall`
+(`scripts/build-grammar.js`) best-effort compiles the addon and must **never** fail
+an install; `locateGrammar()` in `parser.ts` resolves package-or-vendored. npm strips
+`devDependencies` at publish, which is how the `file:` entry disappears for registry
+users.
+
+That build inside `prepack` is load-bearing: `npm pack` compiles nothing, so a tarball
+packed from a clean clone contained no `dist/` at all — it installed cleanly and then
+could not start, because `bin/esql-lsp.js` only requires `dist/src/server.js`.
+`verify-package.js` now asserts that file is in the tarball, and note the general
+lesson: a packaging check run in a warm checkout can pass for the wrong reason
+(`dist/` is already there), so the clean-clone run is the one that means something.
 
 Do not replace this with `bundleDependencies`: npm bundles the *installed* grammar
 folder, `build/*.node` included, which ships the release machine's binary to every
