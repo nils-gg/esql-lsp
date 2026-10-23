@@ -156,6 +156,32 @@ Items investigated and confirmed to be **test-sample errors, not grammar bugs**
   smoke test (parse + `highlights` query through the `tree-sitter` npm
   runtime) returns 0 error nodes on G1/G2/G4 regression snippets.
 
+## Unadjudicated construct gaps (2026-10-23 LSP session)
+
+While building LSP fixtures and tests, these constructs were found to be
+**rejected by the current grammar** (each verified by parsing it and observing an
+`ERROR` node). They are listed as *open questions*, not as bugs: none has been
+compared against the IBM railroad diagram yet, and per the ground rule the
+reference — not the test suite, and not real-world code alone — decides whether
+the grammar or the fixture is wrong. Each row says what the grammar does today,
+so adjudication starts from a known state.
+
+| Construct | Today | Why it happens in the grammar |
+|---|---|---|
+| `COPY PropertyTree.InputCopy;` / `COPY … TO ref;` | rejected | no `copy_statement` production at all (not in `esql_statement`) |
+| `SELECT … INTO OutputRoot… FROM …` | rejected | `SELECT` exists **only as an expression** (`SET x = SELECT … FROM …`); there is no `select_statement`, so the `INTO` form cannot parse. Correlating with an alias inside the expression form needs `AS` (`FROM Data.Item AS I`) ✓ corpus-covered |
+| `LOG TERMINAL 'out';` | rejected | `log_statement` requires `LOG EVENT` / `LOG USER TRACE` **and** a `VALUES (…)` clause; `LOG EVENT;` without `VALUES` is rejected too |
+| `ELSE IF cond THEN` (two tokens) | rejected | `if_statement` offers `ELSEIF` or `ELSE`-then-statements; no `ELSE` + nested-`IF` alternative |
+| `BEGIN ATOMIC … END;` | rejected | `block_statement` allows only `BEGIN [NOT] ATOMIC` |
+| `DECLARE nums LIST OF INTEGER;` | rejected | the datatype production has no `LIST OF`; the `LIST{…}` literal is reachable as an expression only |
+| `CALL AddTwo(IN a, OUT b);` | rejected | `call_statement` arguments are plain expressions; mode keywords are only modelled on `CREATE PROCEDURE/FUNCTION` parameter declarations |
+| `CREATE FUNCTION F() RETURNS INTEGER DETERMINISTIC` / `NO SQL` | rejected | `create_routine_statement` models `LANGUAGE …` and `DYNAMIC RESULT SETS n` but not the DB2 routine-characteristic set (`[NOT] DETERMINISTIC`, `NO SQL`, `READS SQL DATA`, `MODIFIES SQL DATA`) |
+
+Adjudicating any of them means: read the railroad for that statement in the IBM
+ACE 12.0.x ESQL reference, extend `grammar.js` (permissive superset, never
+stricter), add a corpus test, and re-run both suites (`npm run grammar:test` and
+root `npm test`).
+
 ## Known limitations (backlog)
 
 1. **SQL-style function clause forms** — `SUBSTRING(s FROM 1 FOR 2)` and

@@ -17,9 +17,10 @@ and **OpenCode**.
 > pattern-based on a comment/string-aware scanner.
 > Phase 2 (landed): the **tree-sitter grammar** in
 > [`tree-sitter-esql/`](tree-sitter-esql/) is integrated into the server —
-> grammar-backed syntax errors, exact declared-variable analysis and
-> semantic-token highlighting, with automatic fallback to heuristics when
-> the native grammar cannot load (see [Roadmap](#roadmap)).
+> grammar-backed syntax errors, exact declared-variable analysis, semantic
+> tokens, a parse-tree outline, go-to-definition and find-references — with
+> automatic fallback to heuristics when the native grammar cannot load (see
+> [Roadmap](#roadmap)).
 
 ## Features
 
@@ -49,7 +50,8 @@ statements inside a broken region are still analysed.
 - Context-sensitive: parser domains after `InputRoot.`/`OutputRoot.`,
   `Data` after `.JSON.`, common `LocalEnvironment` fields, types after
   `DECLARE <name>` / `RETURNS`
-- Variables declared in the current document
+- Variables declared in the current document (each name of a multi-name
+  `DECLARE a, b, c` included)
 - 43 snippets (module skeletons, IF/CASE/WHILE, THROW, PASSTHRU, JSON
   responses, …) — triggered like `module-compute`, `throw`, `trycatch`
 - Filtered by the word you are typing
@@ -57,13 +59,31 @@ statements inside a broken region are still analysed.
 ### Hover
 
 Markdown documentation for built-in functions, message tree variables,
-parser domains and data types.
+parser domains and data types — and for the document's own symbols: a
+`DECLARE` (its type, `CONSTANT`, and the routine or module that owns it) and a
+user-defined `FUNCTION`/`PROCEDURE` (its full header line). A name you declared
+wins over a built-in of the same spelling, so hovering your own `LENGTH`
+documents your `DECLARE`, not `LENGTH()`.
 
 ### Document symbols
 
-`BROKER SCHEMA` namespace, modules, functions/procedures (with params, body
-range) and declared variables — nested under their module for outline
-views and folding.
+`BROKER SCHEMA` namespace, modules, functions/procedures (with params and body
+range) and declared variables — routines and module-level `DECLARE`s nested
+under their module, parameters and body `DECLARE`s under their routine. Built
+from the parse tree when it is loaded, otherwise from the same pattern
+extractor the definition and hover paths use, so both modes outline the same
+names (every name of a multi-name `DECLARE a, b, c` included).
+
+### Go to definition and find references
+
+Jump from `SET orderRef = …` or `CALL ValidateOrder(…)` to the `DECLARE` or
+`CREATE` it belongs to, and list every use of a name with or without the
+declaration itself. Scope-aware: a routine parameter is only found inside its
+own routine, a module-level `DECLARE` from every routine of the module.
+Message-tree path parts (`OutputRoot.JSON.**Data**`) and built-ins resolve to
+nothing rather than to a guess. Available in both modes; the grammar-backed path
+keeps working while the file is still broken — a module whose `END MODULE` is
+still being typed still owns its routines and declarations.
 
 ## Requirements
 
@@ -73,6 +93,12 @@ views and folding.
   `npm install` can build the tree-sitter native addon. Without it the
   server still runs — with the Phase 1 heuristics only (no grammar syntax
   errors or semantic tokens); it logs which mode is active at startup.
+
+Installing a published package needs nothing extra: the grammar travels *inside*
+the tarball (`vendor/tree-sitter-esql`, since it is not on the npm registry) and
+a best-effort `postinstall` compiles its addon. No toolchain, or
+`npm install --ignore-scripts`? The install still succeeds and the server runs in
+heuristic mode.
 
 ## Build
 
@@ -120,10 +146,15 @@ tree-sitter test     # 71 corpus tests in test/corpus/
 ### Development
 
 ```sh
-npm test                      # build + 50 unit/e2e tests (real stdio sessions)
+npm test                       # build + 83 unit/e2e tests (real stdio sessions)
+npm run grammar:test           # 71 grammar corpus tests (tree-sitter test)
+ESQL_LSP_NO_GRAMMAR=1 npm test # heuristic mode: grammar-only cases skip, the rest must pass
+npm run smoke:stdio            # start the built server and check that it answers
+npm run verify:package         # pack, install the tarball, use the installed server
+
 cd tree-sitter-esql
-tree-sitter generate          # grammar.js -> src/parser.c (committed output!)
-tree-sitter test              # 71 corpus tests
+tree-sitter generate           # grammar.js -> src/parser.c (committed output!)
+tree-sitter test               # 71 corpus tests
 ```
 
 Generated grammar sources (`src/parser.c`, `src/node-types.json`, …) are
@@ -221,11 +252,16 @@ feeds published diagnostics back to the agent as feedback while it edits.
   an unresolvable root directory — see the `root_dir` note in
   [Neovim setup](#neovim-setup).
 - **Which analysis mode is the server in?** At startup it logs either
-  `tree-sitter grammar loaded` (full mode) or `grammar unavailable —
-  heuristic mode only` (fallback). Heuristic mode still gives all Phase 1
-  checks but no grammar syntax errors or semantic tokens; it happens when
-  the native addon couldn't build (needs a C toolchain at `npm install`
-  time). Neovim: `:lua vim.lsp.log.set_level('info')`, then `:LspLog`.
+  `esql-lsp: tree-sitter grammar loaded — grammar syntax errors + semantic
+  tokens active` or `esql-lsp: tree-sitter grammar unavailable — heuristic mode
+  only`. Heuristic mode still gives every Phase 1 check plus symbols, hover,
+  definitions and references from patterns, but no grammar syntax errors or
+  semantic tokens; it happens when the native addon could not build (needs a C
+  toolchain at `npm install` time) or was skipped (`--ignore-scripts`).
+  Neovim: `:lua vim.lsp.log.set_level('info')`, then `:LspLog`.
+- **Want the heuristic mode on purpose** (to compare, or to work around a broken
+  build)? Start the server with `ESQL_LSP_NO_GRAMMAR=1`; the test suite uses the
+  same switch to prove the fallback stays good.
 - **Changed the server code, nothing happened.** Clients spawn the built
   `dist/src/server.js` — run `npm run build`, then restart the client
   (`:LspRestart` in Neovim).
@@ -270,28 +306,39 @@ src/scanner.ts         # comment/string-aware masking scanner
 src/diagnostics.ts     # the seven diagnostic checks
 src/completion.ts      # context-sensitive completion
 src/hover.ts           # hover documentation
-src/symbols.ts         # document symbols
+src/symbols.ts         # document symbols (parse tree + pattern fallback)
+src/definitions.ts     # declarations/routines/references, go-to-definition, find-references
 src/settings.ts        # initializationOptions / didChangeConfiguration handling
 src/data/esqlData.ts   # keywords, types, tree vars, domains, functions
 src/data/snippets.ts   # 43 LSP snippets
+scripts/               # prepack vendoring, addon build, packaging + stdio smoke checks
 test/                  # node:test unit + e2e (real stdio LSP sessions)
 clients/neovim/        # ready-to-use configs: modern (init-example.lua),
                        # legacy (lsp/esql.lua), filetype, treesitter example
 clients/opencode/      # OpenCode config example
 tree-sitter-esql/      # tree-sitter ESQL grammar — own package (see its README)
+vendor/                # generated at pack time: grammar copy for the published tarball
 ATTRIBUTION.md         # upstream projects & documentation credited
 CONTRIBUTING.md        # dev setup, ground rules, PR guide
 ```
 
 ## Roadmap
 
-- **Phase 2 — grammar integration.** Grammar ✅ (`tree-sitter-esql/`) and
-  integrated ✅: syntax-error diagnostics, exact undeclared-variable
-  analysis, tree-based declared-name completion and semantic-token
-  highlighting. Remaining for this phase: document symbols from the parse
-  tree, go-to-definition and find-references.
+- **Phase 2 — grammar integration.** ✅ Complete: syntax-error diagnostics,
+  exact undeclared-variable analysis, tree-based declared-name completion,
+  semantic-token highlighting, document symbols from the parse tree, and
+  go-to-definition / find-references for declared variables, parameters and
+  user routines. Every one of these keeps a pattern-based fallback and is tested
+  in both modes (`ESQL_LSP_NO_GRAMMAR=1 npm test`).
+- **Grammar coverage.** A handful of constructs from the IBM railroad diagrams
+  are still unadjudicated (documented in
+  [`tree-sitter-esql/VERIFICATION.md`](tree-sitter-esql/VERIFICATION.md)):
+  `COPY`, `LOG … VALUES`, spaced `ELSE IF`, `BEGIN ATOMIC`, `SELECT` correlation
+  without `AS`, `DECLARE … LIST`, `CALL r(IN a, OUT b)`, `DETERMINISTIC`.
+  Deciding each one needs the reference, not the test suite.
 - **Phase 3 — model-driven features.** MRM/XSD schema import for message-tree
-  field completion, formatting.
+  field completion, formatting. Beyond that: hover/completion for cross-file
+  symbols once multi-file (workspace) analysis exists.
 - Longer term: optional integration with the ACE ESQL compiler for
   authoritative validation.
 
