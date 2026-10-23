@@ -8184,7 +8184,7 @@
     },
     "comment": {
       "type": "PATTERN",
-      "value": "\\/\\*[\\s\\S]*?\\*\\/"
+      "value": "\\/\\*(?:[^*]|\\*+[^*/])*\\*+\\/"
     },
     "line_comment": {
       "type": "PATTERN",

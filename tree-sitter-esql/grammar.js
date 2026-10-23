@@ -1315,8 +1315,20 @@ export default grammar({
     // Comments
     // ------------------------------------------------------------------
 
-    // /* ... */ (the executable /*! ... !*/ form is also matched)
-    comment: $ => /\/\*[\s\S]*?\*\//,
+    // /* … */ — and it must stop at its OWN terminator.
+    //
+    // A lazy quantifier cannot express that here: tree-sitter compiles a token
+    // regex into a DFA that takes the leftmost-LONGEST match, so
+    //   /\/\*[\s\S]*?\*\//
+    // did not behave lazily at all — one comment token ran from the first /* to
+    // the LAST */ in the file, hiding every statement in between from the
+    // parser (151 lines in one real file) while producing no ERROR node to
+    // report it (ISSUES.md I-2). This is the classic C-comment shape: after the
+    // opener, repeatedly take a non-`*` or a run of `*` followed by something
+    // that is neither `*` nor `/`, then the closing run of `*` and the `/`.
+    // `*/` therefore cannot occur inside the token, and an unterminated /* is
+    // left as an error rather than silently eating the rest of the file.
+    comment: $ => /\/\*(?:[^*]|\*+[^*/])*\*+\//,
 
     // -- to end of line
     line_comment: $ => /--[^\n]*/,

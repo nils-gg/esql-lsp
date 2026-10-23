@@ -1,0 +1,156 @@
+===
+two block comments with live code between
+===
+
+CREATE COMPUTE MODULE CommentSwallow
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		/* first block */
+		DECLARE a INTEGER;
+		/* second block */
+		DECLARE b INTEGER;
+		SET b = a + 1;
+		RETURN TRUE;
+	END;
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (comment)
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (datatype
+              (kw_INTEGER))))
+        (comment)
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (datatype
+              (kw_INTEGER))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier)))
+              (primary_expression
+                (number_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+block comment with star runs
+===
+
+CREATE COMPUTE MODULE StarRuns
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		/*** bold ***/
+		DECLARE a INTEGER;
+		/* a * b / c */
+		RETURN TRUE;
+	END;
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (comment)
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (datatype
+              (kw_INTEGER))))
+        (comment)
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+line comment and block comment on adjacent lines
+===
+
+CREATE COMPUTE MODULE MixedComments
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		-- a line comment
+		/* a block comment */ -- and a line comment after it
+		RETURN TRUE;
+	END;
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (line_comment)
+        (comment)
+        (line_comment)
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
