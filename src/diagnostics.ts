@@ -22,25 +22,21 @@
 import { Diagnostic, DiagnosticSeverity, Range } from 'vscode-languageserver';
 import { scan, findBeginToken, findEndToken } from './scanner';
 import { EsqlDiagnosticsSettings } from './settings';
+import { declarationsFromSource } from './definitions';
 import type { DocAnalysis } from './parser';
 
 const MODULE_RE = /\bCREATE\s+(COMPUTE|FILTER|DATABASE)\s+MODULE\s+([A-Za-z_]\w*)/i;
 const END_MODULE_RE = /\bEND\s+MODULE\b/i;
 const MAIN_RE = /\bCREATE\s+FUNCTION\s+Main\s*\(\s*\)/i;
-/** `DECLARE name[, name…] [CONSTANT|SHARED|EXTERNAL] type …` — group 1 is
- * the FULL comma-separated name list (a multi-name declaration declares
- * every name), group 2 the type word. Handler declarations
- * (`DECLARE CONTINUE|EXIT HANDLER …`) declare no variable and are excluded.
- * Shared with completion.ts so both agree on what is declared. */
-export const DECLARE_RE =
-  /\bDECLARE\s+(?!CONTINUE\b|EXIT\b)((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+(?:CONSTANT\s+|SHARED\s+|EXTERNAL\s+)*([A-Za-z]+)/i;
-/** Routine parameter list + a single `IN|OUT|INOUT name` parameter. Shared
- * with definitions.ts so the fallback path agrees with the analyzer. */
-export const FN_PARAMS_RE = /\bCREATE\s+(?:FUNCTION|PROCEDURE)\s+[A-Za-z_]\w*\s*\(([^)]*)\)/i;
-export const FN_PARAM_RE = /\b(?:IN|OUT|INOUT)\s+([A-Za-z_]\w*)/i;
+/** Routine header, used to group per-routine hints (ISSUES.md I-7). */
+const ROUTINE_RE = /\bCREATE\s+(?:FUNCTION|PROCEDURE)\b/i;
+/** What the deprecated-parser check looks for: `XMLNS` used as a parser in a
+ * path, i.e. followed by a dot. A namespace-declaration prefix is spelled
+ * `xmlns:something` and is a NAME, not the parser (ISSUES.md I-8). */
+const XMLNS_RE = /\bXMLNS\b(?!C)(?=[ \t]*\.)/i;
 const SET_VAR_RE = /^\s*SET\s+([A-Za-z_]\w*)(?!\s*\.)\s*(?:=|:=)/i;
-const XMLNS_RE = /\bXMLNS\b(?!C)/i;
 const JSON_DATA_RE = /^\s*SET\s+OutputRoot\.JSON\.Data\b/i;
+const PROPS_MENTIONED_RE = /\bProperties\b/i;
 const PROPS_COPIED_RE = /SET\s+OutputRoot\.Properties\b/i;
 const OUTPUT_ROOT_COPIED_RE = /SET\s+OutputRoot\s*(=|;)/i;
 
@@ -49,9 +45,16 @@ const OUTPUT_ROOT_COPIED_RE = /SET\s+OutputRoot\s*(=|;)/i;
  * (used by the missing-semicolon heuristic).
  */
 const CONTINUATION_END_RE =
-  /\b(BEGIN|THEN|ELSE|ELSEIF|DO|EXCEPTION|TERMINAL|LABEL|MESSAGE|SEVERITY|CATALOG|VALUES|TO|FROM|WHERE|AS|BY|IN|LIKE|BETWEEN|WHEN|CASE)\s*$/i;
+  /\b(BEGIN|THEN|ELSE|ELSEIF|DO|EXCEPTION|TERMINAL|LABEL|MESSAGE|SEVERITY|CATALOG|VALUES|TO|FROM|WHERE|AS|BY|IN|LIKE|BETWEEN|WHEN|CASE|SELECT)\s*$/i;
 /** Trailing characters that indicate an expression continues. */
 const CONTINUATION_CHAR_RE = /[=+\-*/<>|,(\[]\s*$/;
+/**
+ * Leading characters/words that can only CONTINUE an expression: the previous
+ * line has no `;` because the statement carries on there, e.g. Healthcare's
+ * `SET ibmHCAttempt = … as CHARACTER)` / next line `|| ' OF ' || CAST(…);`.
+ */
+const CONTINUATION_START_RE =
+  /^\s*(\|\||\|\s|&&|[+*/%]|=(?!=)|-(?!-)|<>|<|>|,\s|(AND|OR|NOT|LIKE|BETWEEN|IS)\b)/i;
 /** Statement starters that must end with `;`. */
 const STATEMENT_START_RE =
   /^\s*(SET|DECLARE|PROPAGATE|THROW|CALL|DELETE|MOVE|DETACH|ATTACH|COPY|PASSTHRU)\s+/i;
@@ -84,26 +87,14 @@ function lineRange(line: number, text: string, start = 0, end = text.length): Ra
   return Range.create(line, start, line, end);
 }
 
-/** Collect every DECLAREd name and function parameter (upper-cased). */
-function collectDeclaredNames(lines: string[]): Set<string> {
-  const names = new Set<string>();
-  for (const line of lines) {
-    const decl = DECLARE_RE.exec(line);
-    if (decl) {
-      for (const name of decl[1].split(',')) {
-        names.add(name.trim().toUpperCase());
-      }
-    }
-
-    const fn = FN_PARAMS_RE.exec(line);
-    if (fn && fn[1]) {
-      for (const param of fn[1].split(',')) {
-        const p = FN_PARAM_RE.exec(param);
-        if (p) names.add(p[1].toUpperCase());
-      }
-    }
-  }
-  return names;
+/**
+ * Every DECLAREd name and routine parameter, upper-cased. This reads the same
+ * extractor the outline, hover and definition use, so the undeclared-variable
+ * check can never disagree with them about what is declared — a parameter list
+ * spanning several lines used to be invisible here while the outline showed it.
+ */
+function collectDeclaredNames(source: string): Set<string> {
+  return new Set(declarationsFromSource(source).map((d) => d.name.toUpperCase()));
 }
 
 /**
@@ -136,21 +127,16 @@ export function analyze(
   checkModuleStructure(lines, diagnostics);
   if (settings.checkUndeclaredVariables) {
     if (doc) checkDeclaredVariablesFromTree(doc, diagnostics);
-    else checkDeclaredVariables(lines, diagnostics);
+    else checkDeclaredVariables(source, lines, diagnostics);
   }
   if (settings.checkPropagation) {
     checkPropagateOrReturn(lines, diagnostics);
   }
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (settings.checkDeprecatedParsers) checkDeprecatedParsers(i, line, diagnostics);
-    // With the grammar there is an authoritative error for a real missing
-    // `;` already — the hint would only add noise.
-    if (settings.checkMissingSemicolon && !doc) checkMissingSemicolon(i, line, diagnostics);
-    if (settings.checkOutputRootProperties) {
-      checkOutputRootProperties(i, line, lines, diagnostics);
-    }
-  }
+  if (settings.checkDeprecatedParsers) checkDeprecatedParsers(lines, diagnostics);
+  // With the grammar there is an authoritative error for a real missing `;`
+  // already — the hint would only add noise.
+  if (settings.checkMissingSemicolon && !doc) checkMissingSemicolons(lines, diagnostics);
+  if (settings.checkOutputRootProperties) checkOutputRootProperties(lines, diagnostics);
 
   return diagnostics;
 }
@@ -198,8 +184,8 @@ function checkModuleStructure(lines: string[], out: Diagnostic[]): void {
 }
 
 /** 2. Undeclared variables assigned via SET (heuristic, no grammar). */
-function checkDeclaredVariables(lines: string[], out: Diagnostic[]): void {
-  const declared = collectDeclaredNames(lines);
+function checkDeclaredVariables(source: string, lines: string[], out: Diagnostic[]): void {
+  const declared = collectDeclaredNames(source);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -288,54 +274,136 @@ function checkPropagateOrReturn(lines: string[], out: Diagnostic[]): void {
   }
 }
 
-/** 5. Deprecated XMLNS parser. */
-function checkDeprecatedParsers(lineIdx: number, line: string, out: Diagnostic[]): void {
-  const m = XMLNS_RE.exec(line);
-  if (!m) return;
-  out.push(Diagnostic.create(
-    lineRange(lineIdx, line, m.index, m.index + 5),
-    "Parser 'XMLNS' is deprecated. Use 'XMLNSC' in ACE 12.",
-    DiagnosticSeverity.Warning
-  ));
-}
-
-/** 4. Statement likely missing its terminating semicolon. */
-function checkMissingSemicolon(lineIdx: number, line: string, out: Diagnostic[]): void {
-  const trimmed = line.trim();
-  if (!trimmed) return;
-  if (STATEMENT_START_RE.test(line)) {
-    if (
-      !trimmed.endsWith(';') &&
-      !trimmed.endsWith(',') &&
-      !CONTINUATION_END_RE.test(trimmed) &&
-      !CONTINUATION_CHAR_RE.test(trimmed)
-    ) {
-      out.push(Diagnostic.create(
-        lineRange(lineIdx, line, trimmed.length, line.length),
-        "Possible missing semicolon (';') at end of statement.",
-        DiagnosticSeverity.Hint
-      ));
-    }
+/** 5. Deprecated XMLNS parser, one finding per line. */
+function checkDeprecatedParsers(lines: string[], out: Diagnostic[]): void {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = XMLNS_RE.exec(line);
+    if (!m) continue;
+    out.push(Diagnostic.create(
+      lineRange(i, line, m.index, m.index + 'XMLNS'.length),
+      "Parser 'XMLNS' is deprecated. Use 'XMLNSC' in ACE 12.",
+      DiagnosticSeverity.Warning
+    ));
   }
 }
 
-/** 6. Building OutputRoot.JSON.Data without copying Properties first. */
-function checkOutputRootProperties(
-  lineIdx: number,
-  line: string,
-  lines: string[],
-  out: Diagnostic[]
-): void {
-  if (!JSON_DATA_RE.test(line)) return;
+/**
+ * 4. Statement likely missing its terminating semicolon.
+ *
+ * Whole-file, not per-line: `(` depth is tracked across lines so a continuation
+ * inside a multi-line call (`SET x = CAST(FUN(InputRoot.BLOB.BLOB) …`,
+ * `DECLARE bs BLOB ASBITSTREAM(InputRoot.MRM …`) is never mistaken for a
+ * statement that forgot its `;` (ISSUES.md I-9). The hint also covers the
+ * statement text rather than the whitespace tail of the line.
+ */
+function checkMissingSemicolons(lines: string[], out: Diagnostic[]): void {
+  let depth = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    const depthAtStart = depth;
+    depth += parenDelta(line);
 
-  const start = Math.max(0, lineIdx - 10);
-  const prev = lines.slice(start, lineIdx).join('\n');
-  if (PROPS_COPIED_RE.test(prev) || OUTPUT_ROOT_COPIED_RE.test(prev)) return;
+    // Not a statement start, or still inside an unclosed `(`/`[`: whatever the
+    // line ends with, the statement carries on.
+    if (!trimmed || !STATEMENT_START_RE.test(line)) continue;
+    if (
+      depthAtStart !== 0 ||
+      depth !== 0 ||
+      trimmed.endsWith(';') ||
+      trimmed.endsWith(',') ||
+      CONTINUATION_END_RE.test(trimmed) ||
+      CONTINUATION_CHAR_RE.test(trimmed)
+    ) {
+      continue;
+    }
 
-  out.push(Diagnostic.create(
-    lineRange(lineIdx, line),
-    "Building OutputRoot.JSON.Data but no copy of Properties detected nearby. " +
-      "Did you forget 'SET OutputRoot.Properties = InputRoot.Properties;'?",
-    DiagnosticSeverity.Hint
-  ));
+    // …and it can also carry on BELOW, with the operator written at the start of
+    // the next line (`SET a = CAST(x as CHARACTER)` / `|| ' OF ' || CAST(y …);`).
+    let next = i + 1;
+    while (next < lines.length && !lines[next].trim()) next++;
+    if (next < lines.length && CONTINUATION_START_RE.test(lines[next])) continue;
+
+    out.push(Diagnostic.create(
+      lineRange(i, line, line.length - trimmed.length, line.length),
+      "Possible missing semicolon (';') at end of statement.",
+      DiagnosticSeverity.Hint
+    ));
+  }
+}
+
+/** Net `(` / `[` openings on one masked line (strings are blanked, so safe). */
+function parenDelta(line: string): number {
+  let delta = 0;
+  for (const ch of line) {
+    if (ch === '(' || ch === '[') delta++;
+    else if (ch === ')' || ch === ']') delta--;
+  }
+  return delta;
+}
+
+/**
+ * Scopes for per-scope hints: each routine header owns the lines up to the next
+ * header or its module's `END MODULE`, and the text before the first header (or
+ * the whole file when there is none) is one file-level scope. Every line lands
+ * in exactly one scope.
+ */
+function hintScopes(lines: string[]): Array<{ start: number; end: number }> {
+  const headers: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (ROUTINE_RE.test(lines[i])) headers.push(i);
+  }
+  const scopes: Array<{ start: number; end: number }> = [];
+  const last = lines.length - 1;
+  if (last < 0) return scopes;
+  if (!headers.length || headers[0] > 0) {
+    scopes.push({ start: 0, end: (headers[0] ?? last) - 1 });
+  }
+  headers.forEach((start, k) => {
+    let end = k + 1 < headers.length ? headers[k + 1] - 1 : last;
+    for (let j = start; j <= end; j++) {
+      if (END_MODULE_RE.test(lines[j])) {
+        end = j - 1;
+        break;
+      }
+    }
+    if (start <= end) scopes.push({ start, end });
+  });
+  return scopes;
+}
+
+/**
+ * 6. Building OutputRoot.JSON.Data without copying Properties.
+ *
+ * AT MOST ONE hint per routine, at the first offending `SET`, and none at all
+ * when the scope never mentions `Properties`: a request-building node (HTTP/MQ
+ * reply) legitimately assembles a JSON body with no properties to copy, and the
+ * old per-line version produced 18 identical hints in one real file
+ * (ISSUES.md I-7).
+ */
+function checkOutputRootProperties(lines: string[], out: Diagnostic[]): void {
+  for (const scope of hintScopes(lines)) {
+    const body = lines.slice(scope.start, scope.end + 1).join('\n');
+    if (!PROPS_MENTIONED_RE.test(body)) continue;
+
+    let offender = -1;
+    for (let i = scope.start; i <= scope.end; i++) {
+      if (JSON_DATA_RE.test(lines[i])) {
+        offender = i;
+        break;
+      }
+    }
+    if (offender < 0) continue;
+
+    if (PROPS_COPIED_RE.test(body) || OUTPUT_ROOT_COPIED_RE.test(body)) continue;
+
+    const line = lines[offender];
+    out.push(Diagnostic.create(
+      lineRange(offender, line),
+      "Building OutputRoot.JSON.Data but no copy of Properties detected in this " +
+        "routine. Did you forget 'SET OutputRoot.Properties = InputRoot.Properties;'?",
+      DiagnosticSeverity.Hint
+    ));
+  }
 }

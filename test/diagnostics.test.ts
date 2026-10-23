@@ -157,20 +157,161 @@ test('multi-line THROW is not flagged as missing semicolon', () => {
   assert.equal(messages(src).hints.length, 0);
 });
 
-test('OutputRoot JSON without Properties copy is a hint', () => {
-  const src = [
-    'SET OutputRoot.JSON.Data.x = 1;',
+test('OutputRoot JSON hint: one per routine, and only when Properties is in play', () => {
+  // Real-world shape (ISSUES.md I-7): a routine that reads Properties but never
+  // copies it, then builds a JSON body field by field. The advice is right once
+  // and useless eighteen times, so it is reported at the first offending SET.
+  const noCopy = [
+    'CREATE COMPUTE MODULE M', //                              0
+    'CREATE FUNCTION Main() RETURNS BOOLEAN', //               1
+    'BEGIN', //                                                2
+    'DECLARE ccsid INTEGER InputRoot.Properties.CodedCharSetId;', // 3
+    'SET OutputRoot.JSON.Data.a = 1;', //                      4  <- hinted here
+    'SET OutputRoot.JSON.Data.b = 2;', //                      5
+    'SET OutputRoot.JSON.Data.c = 3;', //                      6
+    'RETURN TRUE;', //                                         7
+    'END;', //                                                 8
+    'END MODULE;', //                                          9
     '',
   ].join('\n');
-  const hints = messages(src).hints;
-  assert.ok(hints.some((h) => /Properties/.test(h)));
+  const hints = analyze(noCopy, D).filter(
+    (d) => d.severity === DiagnosticSeverity.Hint && /Properties/.test(d.message)
+  );
+  assert.equal(hints.length, 1);
+  assert.equal(hints[0].range.start.line, 4);
 
+  // A request-building node (HTTP/MQ reply) that never touches Properties has
+  // nothing to copy: no hint at all.
+  const requestBuilder = [
+    'CREATE COMPUTE MODULE M',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    "SET OutputLocalEnvironment.Destination.HTTP.RequestURL = 'https://x/y';",
+    'SET OutputRoot.JSON.Data.a = 1;',
+    'SET OutputRoot.JSON.Data.b = 2;',
+    'RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  assert.deepEqual(
+    analyze(requestBuilder, D).filter((d) => /no copy of Properties/.test(d.message)),
+    []
+  );
+
+  // Copying Properties (whole root or field by field) silences it.
   const withCopy = [
     'SET OutputRoot.Properties = InputRoot.Properties;',
     'SET OutputRoot.JSON.Data.x = 1;',
     '',
   ].join('\n');
-  assert.deepEqual(messages(withCopy).hints, []);
+  assert.deepEqual(
+    analyze(withCopy, D).filter((d) => /no copy of Properties/.test(d.message)),
+    []
+  );
+
+  // Grouping is per routine, not per file: two offenders, two hints.
+  const twoRoutines = [
+    'CREATE COMPUTE MODULE M',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    'DECLARE c INTEGER InputRoot.Properties.CodedCharSetId;',
+    'SET OutputRoot.JSON.Data.a = 1;',
+    'RETURN TRUE;',
+    'END;',
+    'CREATE FUNCTION Helper() RETURNS BOOLEAN',
+    'BEGIN',
+    'DECLARE d INTEGER InputRoot.Properties.Encoding;',
+    'SET OutputRoot.JSON.Data.b = 2;',
+    'RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  const perRoutine = analyze(twoRoutines, D).filter((d) =>
+    /no copy of Properties/.test(d.message)
+  );
+  assert.deepEqual(perRoutine.map((d) => d.range.start.line), [4, 10]);
+});
+
+test('a namespace-declaration prefix is not the deprecated XMLNS parser', () => {
+  // Both spellings of the standard namespace-declaration idiom, straight out of
+  // the real samples that used to warn (ISSUES.md I-8): the `xmlns` here is a
+  // prefix NAME, not the ACE v9 `XMLNS` parser.
+  const decls = [
+    'SET OutputRoot.XMLNSC.tns:SayHelloResponse.(XMLNSC.NamespaceDecl)xmlns:tns = tns;',
+    "SET OutputRoot.XMLNSC.tns:R.(XMLNSC.NamespaceDecl)xmlns = 'urn:hl7-org:v2xml';",
+    '',
+  ].join('\n');
+  assert.deepEqual(messages(decls).warnings, []);
+
+  // The real deprecation still warns, at the `XMLNS` word itself.
+  const parser = 'SET OutputRoot.XMLNS.Root.Data = 1;\n';
+  const diags = analyze(parser, D).filter(
+    (d) => d.severity === DiagnosticSeverity.Warning && /XMLNSC/.test(d.message)
+  );
+  assert.equal(diags.length, 1);
+  assert.equal(
+    parser.split('\n')[0].slice(diags[0].range.start.character, diags[0].range.end.character),
+    'XMLNS'
+  );
+});
+
+test('missing-semicolon hint ignores continuations and covers the statement', () => {
+  // Multi-line statements: the depth of open parens (and a trailing SELECT,
+  // whose clauses follow on later lines) means "the statement goes on here",
+  // not "it forgot its semicolon". These are the families that produced 13
+  // bogus hints across 6 real files.
+  const multiLine = [
+    "DECLARE messageBlob BLOB ASBITSTREAM(OutputRoot.MRM",
+    '    ENCODING InputRoot.Properties.Encoding',
+    '    CCSID InputRoot.Properties.CodedCharSetId',
+    "    SET ReceiverMessageSet TYPE ReceiverMessageType FORMAT 'IDOC');",
+    'SET Environment.DB.EMPLOYEE[] = SELECT ',
+    '    p.EMPNO, CURRENT_TIMESTAMP AS UPDATED_AT',
+    '    FROM Database.S.EMPLOYEE AS p;',
+    'SET P3.Data.BLOB.BLOB = CAST(BASE64ENCODE(InputRoot.BLOB.BLOB) ',
+    '    AS BLOB) CCSID 1208;',
+    '',
+  ].join('\n');
+  assert.deepEqual(
+    analyze(multiLine, D).filter((d) => /missing semicolon/.test(d.message)),
+    []
+  );
+
+  // A genuine one: the range spans the statement text, not the whitespace after
+  // it, so the client underlines something the reader can act on.
+  const missing = '\tSET OutputRoot.Properties = InputRoot.Properties\n';
+  const hints = analyze(missing, D).filter((d) => /missing semicolon/.test(d.message));
+  assert.equal(hints.length, 1);
+  assert.equal(
+    missing.split('\n')[0].slice(hints[0].range.start.character, hints[0].range.end.character),
+    'SET OutputRoot.Properties = InputRoot.Properties'
+  );
+
+  // The operator can also be written at the START of the next line (Healthcare
+  // TransportSender does exactly this): balanced parens, no trailing `;`, and
+  // still not a missing semicolon.
+  const below = [
+    "\t\t\tSET ibmHCAttempt = 'Attempt ' || CAST((ibmHCRetryCount +1) as CHARACTER)",
+    "\t\t\t\t|| ' OF ' || CAST(RetryLimit as CHARACTER);",
+    '',
+  ].join('\n');
+  assert.deepEqual(
+    analyze(below, D).filter((d) => /missing semicolon/.test(d.message)),
+    []
+  );
+
+  // Same shape, but the next line starts a new statement: still flagged.
+  const reallyMissing = [
+    '\t\t\tSET ibmHCAttempt = 1',
+    "\t\t\tPROPAGATE TO TERMINAL 'out';",
+    '',
+  ].join('\n');
+  assert.equal(
+    analyze(reallyMissing, D).filter((d) => /missing semicolon/.test(d.message)).length,
+    1
+  );
 });
 
 test('multi-name DECLARE declares every name', () => {
@@ -199,6 +340,21 @@ test('handler DECLARE declares no variable names', () => {
     '',
   ].join('\n');
   assert.deepEqual(messages(src).warnings, []);
+});
+
+test('the deprecated-parser and JSON hints each answer to their own setting', () => {
+  const src = [
+    'DECLARE ccsid INTEGER InputRoot.Properties.CodedCharSetId;',
+    'SET OutputRoot.XMLNS.Root.Data = 1;',
+    'SET OutputRoot.JSON.Data.a = 1;',
+    '',
+  ].join('\n');
+  const XMLNS = "Parser 'XM"; // start of the deprecation message
+  const JSOND = 'Building O'; // start of the JSON/Properties hint
+  const heads = (settings: typeof D) => analyze(src, settings).map((d) => d.message.slice(0, 10));
+  assert.deepEqual(heads(D), [XMLNS, JSOND]);
+  assert.deepEqual(heads({ ...D, checkDeprecatedParsers: false }), [JSOND]);
+  assert.deepEqual(heads({ ...D, checkOutputRootProperties: false }), [XMLNS]);
 });
 
 test('diagnostics can be disabled via settings', () => {

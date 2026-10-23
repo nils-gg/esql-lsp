@@ -432,6 +432,55 @@ test('a burst of didOpen publishes diagnostics for EVERY open document', async (
   }
 });
 
+test('OutputRoot JSON hint over stdio: one per routine, and switchable', async () => {
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e/JsonHint.esql';
+  const SRC = [
+    'CREATE COMPUTE MODULE JsonHintModule',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    'DECLARE ccsid INTEGER InputRoot.Properties.CodedCharSetId;',
+    'SET OutputRoot.JSON.Data.a = 1;',
+    'SET OutputRoot.JSON.Data.b = 2;',
+    'SET OutputRoot.JSON.Data.c = 3;',
+    'RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  const isHint = (d: any) => /no copy of Properties/.test(d.message);
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: SRC },
+    });
+
+    // Three offending SETs, one hint — at the first of them.
+    const published = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.some(isHint)
+    );
+    const hints = published.diagnostics.filter(isHint);
+    assert.equal(hints.length, 1, 'one hint per routine');
+    assert.equal(hints[0].range.start.line, 4, 'reported at the first offending SET');
+
+    client.notify('workspace/didChangeConfiguration', {
+      settings: { esql: { diagnostics: { checkOutputRootProperties: false } } },
+    });
+    await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.every((d: any) => !isHint(d))
+    );
+  } finally {
+    await client.close();
+  }
+});
 test('grammar-backed session: syntax errors and semantic tokens', async (t) => {
   if (!(await initGrammar())) {
     t.skip('tree-sitter addon unavailable — no grammar-backed diagnostics to assert');
