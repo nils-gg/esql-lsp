@@ -365,6 +365,73 @@ test('workspace/didChangeConfiguration re-validates with new settings', async ()
   }
 });
 
+test('a burst of didOpen publishes diagnostics for EVERY open document', async () => {
+  // One shared debounce timer used to mean that within each 300 ms window only
+  // the LAST scheduled URI was ever validated: restore a session, open a folder
+  // or restart the server and every other tab stayed silent — including the two
+  // bulk re-validate loops (initialized, grammar-ready), whose per-document
+  // loop cancelled itself on each iteration (ISSUES.md I-1).
+  const client = new LspClient();
+  const text = (name: string) =>
+    [
+      `CREATE COMPUTE MODULE ${name}`,
+      'CREATE FUNCTION Main() RETURNS BOOLEAN',
+      'BEGIN',
+      `SET ${name}Missing = 1;`,
+      'RETURN TRUE;',
+      'END;',
+      'END MODULE;',
+      '',
+    ].join('\n');
+  const uris = ['BurstA', 'BurstB', 'BurstC'].map((n) => `file:///tmp/esql-e2e/${n}.esql`);
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+
+    // All three in the same tick — inside one debounce window.
+    uris.forEach((uri, i) =>
+      client.notify('textDocument/didOpen', {
+        textDocument: {
+          uri,
+          languageId: 'esql',
+          version: 1,
+          text: text(['BurstA', 'BurstB', 'BurstC'][i]),
+        },
+      })
+    );
+
+    for (const [i, uri] of uris.entries()) {
+      const name = ['BurstA', 'BurstB', 'BurstC'][i];
+      await client.waitFor(
+        'textDocument/publishDiagnostics',
+        (p) =>
+          p.uri === uri &&
+          p.diagnostics.some((d: any) => new RegExp(`Variable '${name}Missing'`).test(d.message)),
+        8000
+      );
+    }
+
+    // A settings change re-validates every document, not just one.
+    client.notify('workspace/didChangeConfiguration', {
+      settings: { esql: { diagnostics: { checkUndeclaredVariables: false } } },
+    });
+    for (const uri of uris) {
+      await client.waitFor(
+        'textDocument/publishDiagnostics',
+        (p) => p.uri === uri && p.diagnostics.every((d: any) => !/never declared/.test(d.message)),
+        8000
+      );
+    }
+  } finally {
+    await client.close();
+  }
+});
+
 test('grammar-backed session: syntax errors and semantic tokens', async (t) => {
   if (!(await initGrammar())) {
     t.skip('tree-sitter addon unavailable — no grammar-backed diagnostics to assert');

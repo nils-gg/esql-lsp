@@ -68,7 +68,14 @@ const textDocuments = new TextDocuments<TextDocument>(TextDocument);
 
 let settings: EsqlSettings = DEFAULT_SETTINGS;
 
-let debounceTimer: NodeJS.Timeout | undefined;
+/**
+ * Pending validation timers, one per document. This MUST be keyed by URI: with
+ * a single shared timer, every scheduleDiagnostics() call cancelled the
+ * previous document's timer, so a burst of didOpen (restore session, open a
+ * folder, restart the server) validated only the last document opened and every
+ * other open document never received diagnostics at all. See ISSUES.md I-1.
+ */
+const debounceTimers = new Map<string, NodeJS.Timeout>();
 
 /**
  * One-entry parse cache. Every request re-reads the whole document, and the
@@ -91,21 +98,52 @@ function parsedDocument(text: string): ParsedDocument {
   return cachedParse;
 }
 
+/** Compute and publish diagnostics for one document, right now. */
+function publishDiagnosticsFor(uri: string): void {
+  const doc = textDocuments.get(uri);
+  if (!doc) return;
+  let diagnostics: Diagnostic[] = [];
+  try {
+    const text = doc.getText();
+    const { analysis } = parsedDocument(text);
+    diagnostics = analyze(text, settings.diagnostics, analysis ?? undefined);
+  } catch (err) {
+    connection.console.error(`esql-lsp: analysis failed: ${String(err)}`);
+  }
+  connection.sendDiagnostics({ uri, diagnostics });
+}
+
+/** Debounced validation for one document; only re-arms that document's timer. */
 function scheduleDiagnostics(uri: string): void {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    const doc = textDocuments.get(uri);
-    if (!doc) return;
-    let diagnostics: Diagnostic[] = [];
-    try {
-      const text = doc.getText();
-      const { analysis } = parsedDocument(text);
-      diagnostics = analyze(text, settings.diagnostics, analysis ?? undefined);
-    } catch (err) {
-      connection.console.error(`esql-lsp: analysis failed: ${String(err)}`);
-    }
-    connection.sendDiagnostics({ uri, diagnostics });
-  }, DIAGNOSTICS_DEBOUNCE_MS);
+  const pending = debounceTimers.get(uri);
+  if (pending) clearTimeout(pending);
+  debounceTimers.set(
+    uri,
+    setTimeout(() => {
+      debounceTimers.delete(uri);
+      publishDiagnosticsFor(uri);
+    }, DIAGNOSTICS_DEBOUNCE_MS)
+  );
+}
+
+function cancelScheduledDiagnostics(uri: string): void {
+  const pending = debounceTimers.get(uri);
+  if (pending) {
+    clearTimeout(pending);
+    debounceTimers.delete(uri);
+  }
+}
+
+/**
+ * Re-validate every open document. Each document gets its own timer, so a
+ * burst of documents opened together all end up published — the loops that
+ * call this (initialized, settings change, grammar-ready) are exactly where a
+ * single shared timer used to swallow all but the last one.
+ */
+function revalidateAll(): void {
+  for (const doc of textDocuments.all()) {
+    scheduleDiagnostics(doc.uri);
+  }
 }
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
@@ -141,9 +179,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 
 connection.onNotification('initialized', () => {
   // Re-validate any document already open (some clients open before initialized).
-  for (const doc of textDocuments.all()) {
-    scheduleDiagnostics(doc.uri);
-  }
+  revalidateAll();
 });
 
 // Runtime settings updates (push-style). Clients send either the section
@@ -154,14 +190,13 @@ connection.onDidChangeConfiguration((change) => {
   const esql = raw && typeof raw.esql === 'object' ? raw.esql : raw;
   settings = mergeSettings(esql);
   connection.console.info('esql-lsp: settings updated (didChangeConfiguration)');
-  for (const doc of textDocuments.all()) {
-    scheduleDiagnostics(doc.uri);
-  }
+  revalidateAll();
 });
 
 textDocuments.onDidOpen((e) => scheduleDiagnostics(e.document.uri));
 textDocuments.onDidChangeContent((e) => scheduleDiagnostics(e.document.uri));
 textDocuments.onDidClose((e) => {
+  cancelScheduledDiagnostics(e.document.uri);
   connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] });
 });
 
@@ -245,7 +280,8 @@ connection.languages.semanticTokens.on((params) => {
 });
 
 connection.onExit(() => {
-  if (debounceTimer) clearTimeout(debounceTimer);
+  for (const timer of debounceTimers.values()) clearTimeout(timer);
+  debounceTimers.clear();
 });
 
 // Load the grammar asynchronously so the server answers requests
@@ -258,9 +294,7 @@ initGrammar().then((ok) => {
       : 'esql-lsp: tree-sitter grammar unavailable — heuristic mode only'
   );
   if (ok) {
-    for (const doc of textDocuments.all()) {
-      scheduleDiagnostics(doc.uri);
-    }
+    revalidateAll();
     try {
       // No-op-safe when the client did not declare refresh support.
       connection.languages.semanticTokens.refresh();
