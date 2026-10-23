@@ -1,0 +1,94 @@
+name: CI
+
+# Both suites the project calls "green" (AGENTS.md): the root test suite and the
+# grammar corpus tests — plus the packaging check, because the tree-sitter
+# grammar is a file: dependency that has to travel inside the published tarball.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  grammar:
+    name: Grammar (regenerate + corpus)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - run: npm ci
+        working-directory: tree-sitter-esql
+      - name: Generated parser must match grammar.js
+        run: |
+          npm run generate
+          git diff --exit-code tree-sitter-esql/src || {
+            echo "::error::tree-sitter-esql/src is stale — run 'npx tree-sitter generate' in tree-sitter-esql/ and commit the result"
+            exit 1
+          }
+      - name: Corpus tests
+        run: npm test
+        working-directory: tree-sitter-esql
+
+  server:
+    name: Server (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18.x, 20.x, 22.x]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install (native addons built — grammar mode expected)
+        run: npm ci
+      - name: Test
+        run: |
+          npm test | tee test-output.txt
+          # A toolchain is available here, so grammar-backed tests must RUN:
+          # zero skips means the tree path and the fallback path were both covered.
+          grep -qE '^# skipped 0' test-output.txt || {
+            echo "::error::grammar-backed tests were skipped even though a C toolchain is available"
+            exit 1
+          }
+
+  no-toolchain:
+    name: Server without a C toolchain (heuristic mode)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      # --ignore-scripts is how a machine without a build toolchain ends up:
+      # the native addons never compile and the server must degrade, not die.
+      - name: Install without running native builds
+        run: npm ci --ignore-scripts
+      - name: Test (grammar-backed cases skip, heuristic cases must pass)
+        run: |
+          npm test | tee test-output.txt
+          grep -qE '^# skipped [1-9]' test-output.txt || {
+            echo "::error::expected the grammar-only tests to be skipped without the addon"
+            exit 1
+          }
+      - name: Server starts and answers in heuristic mode
+        run: node scripts/smoke-stdio.js --expect-heuristic
+
+  packaging:
+    name: Install from the packed tarball
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - run: npm ci
+      - name: Pack, install, and use the installed server
+        run: node scripts/verify-package.js --expect-grammar
