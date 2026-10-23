@@ -1,0 +1,10 @@
+# package.json's "files" allowlist already keeps these out of anything packed
+# from this directory; this file is a second guard for the case that matters:
+# the compiled addon in build/ is platform-specific and must never be installed
+# on another machine.
+#
+# Note that the LSP package does NOT bundle this folder (npm would copy the
+# installed directory verbatim, build/ included). It vendors the grammar sources
+# at pack time instead — see ../scripts/prepack-grammar.js.
+build/
+node_modules/
