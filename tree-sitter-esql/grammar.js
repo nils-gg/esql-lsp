@@ -27,7 +27,11 @@
  *   tree-sitter lexer does not support regex lookahead.
  */
 
-module.exports = grammar({
+// This package is "type": "module", so the grammar file must be an ES module:
+// tree-sitter-cli 0.27 loads grammar.js with import(), and `module.exports =`
+// then dies with "module is not defined in ES module scope". `tree-sitter parse`
+// and `tree-sitter test` keep working regardless, because they read src/.
+export default grammar({
   name: 'esql',
 
   // CRITICAL: declare the word token. Without it, a keyword that is a

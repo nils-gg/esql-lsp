@@ -48,6 +48,14 @@ runs the grammar's `install` → `node-gyp-build`, ~5 s here). Symptom of skippi
 this: corpus tests pass against the new grammar while the server and root tests
 still parse with the stale one.
 
+`grammar.js` has to be `export default grammar({...})`, not `module.exports = ...`:
+the grammar package is `"type": "module"` and tree-sitter-cli 0.27 loads the file
+with `import()`. A CJS-style `grammar.js` makes `generate` fail with *"module is not
+defined in ES module scope"* while `tree-sitter parse`/`test` keep passing off the
+committed `src/`, so nothing local reveals it — CI's regenerate step is what catches
+it. (`tree-sitter.json` must be next to it too: its `metadata.version` is the stamp
+inside `src/parser.c`.)
+
 Never hand-edit `parser.c` / `node-types.json` / `grammar.json` — regenerate.
 
 ## Silent-degradation traps
