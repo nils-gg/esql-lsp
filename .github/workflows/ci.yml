@@ -6,7 +6,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main] # the repo's default branch is `main`, not `master`
   pull_request:
   workflow_dispatch:
 
@@ -24,9 +24,11 @@ jobs:
           node-version: 22.x
       - run: npm ci
         working-directory: tree-sitter-esql
-      - name: Generated parser must match grammar.js
+      - name: Regenerate the parser
+        run: npm run generate
+        working-directory: tree-sitter-esql
+      - name: Committed src/ must match grammar.js
         run: |
-          npm run generate
           git diff --exit-code tree-sitter-esql/src || {
             echo "::error::tree-sitter-esql/src is stale — run 'npx tree-sitter generate' in tree-sitter-esql/ and commit the result"
             exit 1
@@ -51,9 +53,17 @@ jobs:
         run: npm ci
       - name: Test
         run: |
+          # GHA's bash has no pipefail: `npm test | tee` alone reports tee's exit
+          # code, so a failing suite would still turn the job green.
+          set -o pipefail
           npm test | tee test-output.txt
-          # A toolchain is available here, so grammar-backed tests must RUN:
-          # zero skips means the tree path and the fallback path were both covered.
+      - name: The parse-tree path must really be loaded
+        run: node scripts/smoke-stdio.js --expect-grammar
+      - name: Grammar-backed tests ran instead of skipping
+        # Guarded to the version whose reporter output was measured locally
+        # (node 22 prints `# skipped 0`; node 18's default tap reporter does not).
+        if: matrix.node == '22.x'
+        run: |
           grep -qE '^# skipped 0' test-output.txt || {
             echo "::error::grammar-backed tests were skipped even though a C toolchain is available"
             exit 1
@@ -73,6 +83,7 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Test (grammar-backed cases skip, heuristic cases must pass)
         run: |
+          set -o pipefail # without it a failing suite would report tee's exit 0
           npm test | tee test-output.txt
           grep -qE '^# skipped [1-9]' test-output.txt || {
             echo "::error::expected the grammar-only tests to be skipped without the addon"

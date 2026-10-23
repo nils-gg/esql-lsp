@@ -143,9 +143,12 @@ generated `vendor/` sitting in the checkout; it is git-ignored, do not commit it
 - Locally "green" = `npm test` **and** `npm run grammar:test`; add
   `ESQL_LSP_NO_GRAMMAR=1 npm test` when touching degradation and
   `npm run verify:package` when touching packaging.
-- CI (`.github/workflows/ci.yml`) runs the grammar job (regenerate + `git diff`
-  guard on `tree-sitter-esql/src` + corpus), the root suite on Node 18/20/22
-  asserting `# skipped 0` (proves the tree path really ran), a no-toolchain job
-  (`npm ci --ignore-scripts`, asserts cases really do skip), and the
-  install-from-tarball job. Those skip assertions are the point of the jobs — fix
-  the change, not the assertion.
+- CI (`.github/workflows/ci.yml`) triggers on `main` (the branch is not `master`).
+  Jobs: grammar (regenerate + `git diff` guard on `tree-sitter-esql/src` + corpus),
+  the root suite on Node 18/20/22 plus `smoke-stdio.js --expect-grammar` (proves the
+  tree path really loaded), a no-toolchain job (`npm ci --ignore-scripts`, asserts
+  cases really do skip), and the install-from-tarball job. The `# skipped` greps only
+  run on Node 22 — that is the reporter format that prints `# skipped N`; Node 18's
+  default tap reporter does not. Those skip assertions are the point of the jobs —
+  fix the change, not the assertion. Any step that pipes `npm test` into `tee` needs
+  `set -o pipefail`, or the step reports `tee`'s exit 0 and a red suite goes green.
