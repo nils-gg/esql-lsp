@@ -2,15 +2,17 @@
  * tree-sitter integration (Phase 2).
  *
  * Lazily loads the `tree-sitter` runtime and the `tree-sitter-esql` grammar
- * and exposes parse-tree derived facts to the analyzer: declared names,
- * bare-SET targets, syntax errors and semantic tokens (from the grammar's
- * queries/highlights.scm).
+ * and exposes parse-tree derived facts to the analyzer: modules, routines,
+ * BROKER SCHEMA ids, declared names with their visibility scope, variable and
+ * routine references, bare-SET targets, syntax errors and semantic tokens
+ * (from the grammar's queries/highlights.scm).
  *
  * Graceful degradation is a hard requirement: if the native binding cannot
  * load (missing build toolchain, unsupported platform, npm install without
  * scripts), `grammarReady()` stays false and every caller falls back to the
  * Phase 1 regex heuristics. The server must never crash because of this
- * module.
+ * module. Setting `ESQL_LSP_NO_GRAMMAR=1` forces that fallback even when the
+ * addon works — used by the heuristic-mode e2e test.
  */
 
 import { Range } from 'vscode-languageserver';
@@ -32,11 +34,24 @@ export interface Tree {
   rootNode: SyntaxNode;
 }
 
+/** What kind of name a declaration introduces. */
+export type DeclKind = 'variable' | 'parameter';
+
 export interface DeclaredName {
   name: string;
   /** Human-readable type for completion details, e.g. 'INTEGER'. */
   detail: string;
+  /** Range of the declared name itself (definition target). */
   range: Range;
+  kind: DeclKind;
+  /** `DECLARE … CONSTANT` / `… CONSTANT` parameter. */
+  constant: boolean;
+  /**
+   * Range in which this declaration is visible: the enclosing routine body
+   * for parameters and body-level DECLAREs, the enclosing module for
+   * module-level DECLAREs, the whole file otherwise.
+   */
+  scope: Range;
 }
 
 export interface SetTarget {
@@ -49,10 +64,61 @@ export interface SyntaxIssue {
   range: Range;
 }
 
+/** `CREATE (COMPUTE|FILTER|DATABASE|DATABASEEVENT) MODULE name … END MODULE`. */
+export interface ModuleInfo {
+  name: string;
+  /** 'COMPUTE' | 'FILTER' | 'DATABASE' | 'DATABASEEVENT'. */
+  kind: string;
+  /** The whole `CREATE … END MODULE` statement. */
+  range: Range;
+  /** Just the module name (definition target / symbol selection range). */
+  nameRange: Range;
+}
+
+/** `CREATE FUNCTION|PROCEDURE name (params) [RETURNS type] …`. */
+export interface RoutineInfo {
+  name: string;
+  kind: 'FUNCTION' | 'PROCEDURE';
+  /** Parameter list as written, comma-separated ('' when parameterless). */
+  params: string;
+  /** Uppercased return type, undefined for procedures / no RETURNS clause. */
+  returnType?: string;
+  /** Just the routine name (definition target / symbol selection range). */
+  range: Range;
+  /** The whole `CREATE … (END);` statement. */
+  declRange: Range;
+  /** `BEGIN … END` body; undefined for `EXTERNAL NAME` routines. */
+  bodyRange?: Range;
+  /** Enclosing module name, when the routine lives inside a module. */
+  moduleName?: string;
+}
+
+/** `BROKER SCHEMA .mft.MySchema …`. */
+export interface SchemaInfo {
+  /** Schema id without its leading dot, e.g. 'mft.MySchema'. */
+  name: string;
+  range: Range;
+}
+
+/** One use of a variable or of a routine in the document. */
+export interface Reference {
+  /** Simple (last) name of the referenced symbol, case as written. */
+  name: string;
+  range: Range;
+  /** A variable/parameter use, or a call of a user-defined routine. */
+  kind: 'variable' | 'routine';
+  /** Full dotted name for a schema-qualified `CALL a.b.c` target. */
+  qualified?: string;
+}
+
 export interface DocAnalysis {
   declaredNames: DeclaredName[];
   setTargets: SetTarget[];
   syntaxIssues: SyntaxIssue[];
+  modules: ModuleInfo[];
+  routines: RoutineInfo[];
+  schemas: SchemaInfo[];
+  references: Reference[];
 }
 
 let runtimeParser: any = null;
@@ -76,7 +142,62 @@ export function initGrammar(): Promise<boolean> {
   return initPromise;
 }
 
+/** Where the grammar module can be found. */
+interface GrammarLocation {
+  /** Dynamic-import specifier: a bare package name or an absolute file URL. */
+  specifier: string;
+  /** Directory that holds `queries/highlights.scm`. */
+  dir: string;
+}
+
+/**
+ * The grammar ships inside the published tarball (see scripts/prepack-grammar.js
+ * — `tree-sitter-esql` is a `file:` dependency and does not exist on npm), in
+ * addition to the plain package install used during development.
+ */
+function vendoredGrammarDir(): string {
+  // dist/src/parser.js -> <package root>/vendor/tree-sitter-esql
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const path = require('path');
+  return path.join(__dirname, '..', '..', 'vendor', 'tree-sitter-esql');
+}
+
+function locateGrammar(): GrammarLocation | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const path = require('path');
+    return {
+      specifier: 'tree-sitter-esql',
+      dir: path.dirname(require.resolve('tree-sitter-esql/package.json')),
+    };
+  } catch {
+    /* not installed as a package: fall through to the vendored copy */
+  }
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fs = require('fs');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const path = require('path');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { pathToFileURL } = require('url');
+  const dir = vendoredGrammarDir();
+  const manifest = path.join(dir, 'package.json');
+  if (!fs.existsSync(manifest)) return null;
+  try {
+    const main = JSON.parse(fs.readFileSync(manifest, 'utf8')).main ?? 'bindings/node/index.js';
+    return { specifier: pathToFileURL(path.join(dir, main)).href, dir };
+  } catch {
+    return null;
+  }
+}
+
 async function doInit(): Promise<boolean> {
+  // Testing/debugging hook: force the heuristic path even when the native
+  // addon is available (see the heuristic-mode e2e test).
+  const forced = process.env['ESQL_LSP_NO_GRAMMAR'];
+  if (forced === '1' || forced === 'true') {
+    console.error('esql-lsp: ESQL_LSP_NO_GRAMMAR is set — heuristics only');
+    return false;
+  }
   try {
     // Lazy require inside try/catch: a broken native build must degrade,
     // not kill the server at import time.
@@ -84,7 +205,11 @@ async function doInit(): Promise<boolean> {
     const mod = require('tree-sitter');
     const ParserClass = mod.default ?? mod;
 
-    const esql = await trueDynamicImport('tree-sitter-esql');
+    const located = locateGrammar();
+    if (!located) {
+      throw new Error("cannot find 'tree-sitter-esql' (nor a vendored copy of it)");
+    }
+    const esql = await trueDynamicImport(located.specifier);
     runtimeLanguage = esql.default ?? esql;
 
     runtimeParser = new ParserClass();
@@ -95,8 +220,7 @@ async function doInit(): Promise<boolean> {
     const fs = require('fs');
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const path = require('path');
-    const pkgDir = path.dirname(require.resolve('tree-sitter-esql/package.json'));
-    const scm = fs.readFileSync(path.join(pkgDir, 'queries', 'highlights.scm'), 'utf8');
+    const scm = fs.readFileSync(path.join(located.dir, 'queries', 'highlights.scm'), 'utf8');
     highlightsQuery = new ParserClass.Query(runtimeLanguage, scm);
     return true;
   } catch (err) {
@@ -132,11 +256,82 @@ function rangeOf(node: SyntaxNode): Range {
   );
 }
 
+/** Kinds accepted by `CREATE <kind> MODULE`. */
+const MODULE_KINDS = ['COMPUTE', 'DATABASE', 'DATABASEEVENT', 'FILTER'];
+
+function childOf(node: SyntaxNode, type: string): SyntaxNode | undefined {
+  return node.children.find((c) => c.type === type);
+}
+
+/** `CREATE COMPUTE MODULE X` -> 'COMPUTE' (from the kw_* child). */
+function moduleKind(node: SyntaxNode): string {
+  for (const child of node.children) {
+    if (child.type.startsWith('kw_')) {
+      const text = child.text.toUpperCase();
+      if (MODULE_KINDS.includes(text)) return text;
+    }
+  }
+  return 'COMPUTE';
+}
+
+/** Collapse a multi-line node's text into one detail string. */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function moduleInfo(node: SyntaxNode): ModuleInfo | null {
+  const nameNode = childOf(node, 'identifier');
+  if (!nameNode) return null;
+  return {
+    name: nameNode.text,
+    kind: moduleKind(node),
+    range: rangeOf(node),
+    nameRange: rangeOf(nameNode),
+  };
+}
+
+function routineInfo(node: SyntaxNode, moduleName?: string): RoutineInfo | null {
+  const nameNode = childOf(node, 'identifier');
+  if (!nameNode) return null;
+  const isFunction = node.children.some((c) => c.type === 'kw_FUNCTION');
+
+  const params = node.children
+    .filter((c) => c.type === 'routine_parameter')
+    .map((c) => oneLine(c.text))
+    .join(', ');
+
+  // RETURNS <datatype> [NULLABLE | NOT NULL] — the datatype right after the
+  // keyword (the only datatype in that position; parameter datatypes live
+  // inside routine_parameter children, not here).
+  const returnsIndex = node.children.findIndex((c) => c.type === 'kw_RETURNS');
+  const returnNode =
+    returnsIndex >= 0
+      ? node.children.slice(returnsIndex + 1).find((c) => c.type === 'datatype')
+      : undefined;
+
+  const body = childOf(node, 'routine_body');
+  return {
+    name: nameNode.text,
+    kind: isFunction ? 'FUNCTION' : 'PROCEDURE',
+    params,
+    returnType: returnNode ? oneLine(returnNode.text).toUpperCase() : undefined,
+    range: rangeOf(nameNode),
+    declRange: rangeOf(node),
+    bodyRange: body ? rangeOf(body) : undefined,
+    moduleName,
+  };
+}
+
 /**
  * Extract everything the analyzers need from a parse tree in one walk:
- * declared names (DECLARE name lists + routine parameters), bare-word SET
- * targets, and syntax errors (outermost ERROR regions plus silently
- * inserted tokens — see isInsertedNode).
+ * modules, routines, BROKER SCHEMA ids, declared names (DECLARE name lists +
+ * routine parameters, each with its visibility range), bare-word SET targets,
+ * variable/routine references, and syntax errors (outermost ERROR regions
+ * plus silently inserted tokens — see isInsertedNode).
+ *
+ * Scope tracking: `create_module_statement` opens a module scope (its own
+ * range), `create_routine_statement` a routine scope (its BEGIN..END body, or
+ * the whole CREATE statement when the body is an EXTERNAL NAME clause).
  */
 
 /**
@@ -150,12 +345,89 @@ function isInsertedNode(node: SyntaxNode): boolean {
   return node.childCount === 0 && node.text === '';
 }
 
+/** Scope the walk is currently inside. */
+interface WalkScope {
+  /** Range declarations introduced here are visible in. */
+  visible: Range;
+  moduleName?: string;
+  /** Set while walking inside this routine (parameters need its header). */
+  routine?: RoutineInfo;
+}
+
+/**
+ * Error recovery can swallow a whole `CREATE <KIND> MODULE name` header into an
+ * ERROR node instead of keeping a `create_module_statement` — that is what
+ * happens for the most common broken file of all: a module whose END MODULE is
+ * still being typed. Recognise the sequence from the surviving tokens so the
+ * module keeps showing up in the outline and stays navigable.
+ */
+function damagedModuleInfo(node: SyntaxNode): ModuleInfo | null {
+  const children = node.children;
+  for (let i = 1; i + 1 < children.length; i++) {
+    if (children[i].type !== 'kw_MODULE') continue;
+    const kind = children[i - 1].text.toUpperCase();
+    // Rejects `END MODULE` (preceded by END) as well as foreign keywords.
+    if (!MODULE_KINDS.includes(kind)) continue;
+    const nameNode = children[i + 1];
+    if (nameNode.type !== 'identifier') continue;
+    return {
+      name: nameNode.text,
+      kind,
+      range: rangeOf(node),
+      nameRange: rangeOf(nameNode),
+    };
+  }
+  return null;
+}
+
 export function analyzeDocument(tree: Tree): DocAnalysis {
   const declaredNames: DeclaredName[] = [];
   const setTargets: SetTarget[] = [];
   const syntaxIssues: SyntaxIssue[] = [];
+  const modules: ModuleInfo[] = [];
+  const routines: RoutineInfo[] = [];
+  const schemas: SchemaInfo[] = [];
+  const references: Reference[] = [];
 
-  const visit = (node: SyntaxNode): void => {
+  /**
+   * Records the module / routine / BROKER SCHEMA a node introduces and returns
+   * the scope its children live in (`scope` unchanged when the node is not one
+   * of those, or when its header is too damaged to identify).
+   */
+  const openScope = (node: SyntaxNode, scope: WalkScope): WalkScope => {
+    switch (node.type) {
+      case 'broker_schema_statement': {
+        const schemaNode = childOf(node, 'schema_name');
+        if (schemaNode) {
+          schemas.push({
+            name: schemaNode.text.replace(/^\./, ''),
+            range: rangeOf(schemaNode),
+          });
+        }
+        return scope;
+      }
+      case 'create_module_statement': {
+        const info = moduleInfo(node);
+        if (!info) return scope;
+        modules.push(info);
+        return { visible: info.range, moduleName: info.name };
+      }
+      case 'create_routine_statement': {
+        const info = routineInfo(node, scope.moduleName);
+        if (!info) return scope;
+        routines.push(info);
+        return {
+          visible: info.bodyRange ?? info.declRange,
+          moduleName: info.moduleName,
+          routine: info,
+        };
+      }
+      default:
+        return scope;
+    }
+  };
+
+  const visit = (node: SyntaxNode, scope: WalkScope): void => {
     if (node.type === 'ERROR' || node.type === 'MISSING' || node.isMissing || isInsertedNode(node)) {
       syntaxIssues.push({
         message: isInsertedNode(node)
@@ -168,40 +440,78 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
       // END MODULE). Mine those for semantics, but never descend through
       // another broken node — and skip insertion markers, which would
       // re-report positions already covered by the outer error.
+      //
+      // The damaged node's OWN header usually survived (an unterminated
+      // module still has CREATE COMPUTE MODULE <name>), so still open its
+      // scope: the outline and go-to-definition must keep working while the
+      // file is incomplete.
+      const inner = openScope(node, scope);
+      const moduleInfo = inner === scope ? damagedModuleInfo(node) : null;
+      if (moduleInfo) modules.push(moduleInfo);
+      const damagedScope: WalkScope = moduleInfo
+        ? { visible: moduleInfo.range, moduleName: moduleInfo.name }
+        : inner;
       for (const child of node.children) {
-        if (!child.hasError && !isInsertedNode(child)) visit(child);
+        if (!child.hasError && !isInsertedNode(child)) visit(child, damagedScope);
       }
       return;
     }
 
     switch (node.type) {
+      case 'broker_schema_statement':
+      case 'create_module_statement':
+      case 'create_routine_statement': {
+        const inner = openScope(node, scope);
+        for (const child of node.children) visit(child, inner);
+        return; // handled: do not descend twice
+      }
       case 'declare_statement': {
         // Direct identifier children are the declared names — a multi-name
         // `DECLARE a, b TYPE` declares every one of them. Handlers are a
         // separate node type (declare_handler_statement) and never land
         // here. The REFERENCE TO target is a field_reference child, not an
         // identifier, so it is not mistaken for a declaration.
-        const typeNode = node.children.find((c) => c.type === 'datatype');
-        const constant = node.children.some((c) => c.type === 'kw_CONSTANT') ? 'CONSTANT ' : '';
-        const detail = constant + (typeNode ? typeNode.text.toUpperCase() : '');
+        const typeNode = childOf(node, 'datatype');
+        const constant = node.children.some((c) => c.type === 'kw_CONSTANT');
+        const detail = (constant ? 'CONSTANT ' : '') + (typeNode ? typeNode.text.toUpperCase() : '');
         for (const child of node.children) {
           if (child.type === 'identifier') {
-            declaredNames.push({ name: child.text, detail, range: rangeOf(child) });
+            declaredNames.push({
+              name: child.text,
+              detail,
+              range: rangeOf(child),
+              kind: 'variable',
+              constant,
+              scope: scope.visible,
+            });
           }
         }
         break; // keep descending: a recovered missing ';' lives in here
       }
       case 'routine_parameter': {
-        // One identifier child: the parameter name.
+        // One identifier child: the parameter name. Parameters are declared in
+        // the header (outside BEGIN..END) but visible throughout the routine,
+        // so their scope is the whole CREATE … END statement.
+        const typeNode = childOf(node, 'datatype');
+        const visible = scope.routine ? scope.routine.declRange : scope.visible;
         for (const child of node.children) {
           if (child.type === 'identifier') {
-            declaredNames.push({ name: child.text, detail: 'parameter', range: rangeOf(child) });
+            declaredNames.push({
+              name: child.text,
+              detail: typeNode
+                ? `parameter ${oneLine(typeNode.text).toUpperCase()}`
+                : 'parameter',
+              range: rangeOf(child),
+              kind: 'parameter',
+              constant: node.children.some((c) => c.type === 'kw_CONSTANT'),
+              scope: visible,
+            });
           }
         }
         break; // keep descending for recovered missing tokens
       }
       case 'set_statement': {
-        const target = node.children.find((c) => c.type === 'field_reference');
+        const target = childOf(node, 'field_reference');
         if (target && target.childCount === 1) {
           const only = target.children[0];
           if (only.type === 'identifier') {
@@ -211,13 +521,60 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
         }
         break; // descend (harmless: SET contains no nested statements)
       }
+      case 'field_reference': {
+        // A single-identifier field reference IS a variable use: ESQL parses
+        // a bare `x` as a field reference with no path elements. Anything
+        // with path elements (`a.b`, `a[1]`, `(XML.Element)T`) is a
+        // message-tree path, not a variable.
+        if (node.childCount === 1 && node.children[0].type === 'identifier') {
+          references.push({
+            name: node.children[0].text,
+            range: rangeOf(node.children[0]),
+            kind: 'variable',
+          });
+        }
+        break; // descend: dynamic `{expression}` path parts hold references
+      }
+      case 'function_call': {
+        const name = childOf(node, 'identifier');
+        if (name) {
+          references.push({ name: name.text, range: rangeOf(name), kind: 'routine' });
+        }
+        break; // descend into the arguments
+      }
+      case 'call_statement': {
+        // `CALL [Schema.]Routine (…)`: the last name of the qualified name is
+        // the routine; the whole dotted text is kept for qualified matching.
+        const qualified = childOf(node, 'qualified_name');
+        if (qualified) {
+          const parts = qualified.children.filter((c) => c.type === 'identifier');
+          const last = parts[parts.length - 1];
+          if (last) {
+            references.push({
+              name: last.text,
+              range: rangeOf(last),
+              kind: 'routine',
+              qualified: qualified.text.replace(/^\./, ''),
+            });
+          }
+        }
+        break; // descend into arguments and the INTO target
+      }
     }
 
-    for (const child of node.children) visit(child);
+    for (const child of node.children) visit(child, scope);
   };
 
-  visit(tree.rootNode);
-  return { declaredNames, setTargets, syntaxIssues };
+  visit(tree.rootNode, { visible: rangeOf(tree.rootNode) });
+  return {
+    declaredNames,
+    setTargets,
+    syntaxIssues,
+    modules,
+    routines,
+    schemas,
+    references,
+  };
 }
 
 /** ------------------------------------------------------------------

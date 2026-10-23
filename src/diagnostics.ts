@@ -34,8 +34,10 @@ const MAIN_RE = /\bCREATE\s+FUNCTION\s+Main\s*\(\s*\)/i;
  * Shared with completion.ts so both agree on what is declared. */
 export const DECLARE_RE =
   /\bDECLARE\s+(?!CONTINUE\b|EXIT\b)((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+(?:CONSTANT\s+|SHARED\s+|EXTERNAL\s+)*([A-Za-z]+)/i;
-const FN_PARAMS_RE = /\bCREATE\s+(?:FUNCTION|PROCEDURE)\s+[A-Za-z_]\w*\s*\(([^)]*)\)/i;
-const FN_PARAM_RE = /\b(?:IN|OUT|INOUT)\s+([A-Za-z_]\w*)/i;
+/** Routine parameter list + a single `IN|OUT|INOUT name` parameter. Shared
+ * with definitions.ts so the fallback path agrees with the analyzer. */
+export const FN_PARAMS_RE = /\bCREATE\s+(?:FUNCTION|PROCEDURE)\s+[A-Za-z_]\w*\s*\(([^)]*)\)/i;
+export const FN_PARAM_RE = /\b(?:IN|OUT|INOUT)\s+([A-Za-z_]\w*)/i;
 const SET_VAR_RE = /^\s*SET\s+([A-Za-z_]\w*)(?!\s*\.)\s*(?:=|:=)/i;
 const XMLNS_RE = /\bXMLNS\b(?!C)/i;
 const JSON_DATA_RE = /^\s*SET\s+OutputRoot\.JSON\.Data\b/i;

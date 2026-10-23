@@ -18,6 +18,9 @@
  *   - parse-tree exact undeclared-variable detection
  *   - semantic tokens for highlighting, driven by the grammar's
  *     queries/highlights.scm
+ *   - document symbols, go-to-definition and find-references from the parse
+ *     tree (variables, parameters, routines, module names), each with a
+ *     pattern-based fallback so heuristic mode keeps working
  */
 
 import {
@@ -32,6 +35,9 @@ import {
   Hover,
   DocumentSymbolParams,
   DocumentSymbol,
+  DefinitionParams,
+  ReferenceParams,
+  Location,
   Diagnostic,
   Range,
 } from 'vscode-languageserver/node';
@@ -40,7 +46,8 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { analyze } from './diagnostics';
 import { buildCompletionItems, detectCompletionContext } from './completion';
 import { hoverAt } from './hover';
-import { documentSymbols } from './symbols';
+import { documentSymbols, documentSymbolsFromTree } from './symbols';
+import { definitionAt, referencesAt, declarationsFromSource } from './definitions';
 import { mergeSettings, EsqlSettings, DEFAULT_SETTINGS } from './settings';
 import {
   initGrammar,
@@ -48,6 +55,8 @@ import {
   analyzeDocument,
   semanticTokensForTree,
   SEMANTIC_TOKEN_TYPES,
+  DocAnalysis,
+  Tree,
 } from './parser';
 
 const DIAGNOSTICS_DEBOUNCE_MS = 300;
@@ -61,6 +70,27 @@ let settings: EsqlSettings = DEFAULT_SETTINGS;
 
 let debounceTimer: NodeJS.Timeout | undefined;
 
+/**
+ * One-entry parse cache. Every request re-reads the whole document, and the
+ * features that need semantics (symbols, definitions, references, completion,
+ * hover, diagnostics) would otherwise parse the same text several times in a
+ * row; text identity is the invalidation key.
+ */
+interface ParsedDocument {
+  text: string;
+  tree: Tree | null;
+  analysis: DocAnalysis | null;
+}
+
+let cachedParse: ParsedDocument | undefined;
+
+function parsedDocument(text: string): ParsedDocument {
+  if (cachedParse && cachedParse.text === text) return cachedParse;
+  const tree = parse(text);
+  cachedParse = { text, tree, analysis: tree ? analyzeDocument(tree) : null };
+  return cachedParse;
+}
+
 function scheduleDiagnostics(uri: string): void {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
@@ -69,9 +99,8 @@ function scheduleDiagnostics(uri: string): void {
     let diagnostics: Diagnostic[] = [];
     try {
       const text = doc.getText();
-      const tree = parse(text);
-      const docAnalysis = tree ? analyzeDocument(tree) : undefined;
-      diagnostics = analyze(text, settings.diagnostics, docAnalysis);
+      const { analysis } = parsedDocument(text);
+      diagnostics = analyze(text, settings.diagnostics, analysis ?? undefined);
     } catch (err) {
       connection.console.error(`esql-lsp: analysis failed: ${String(err)}`);
     }
@@ -97,6 +126,8 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       },
       hoverProvider: true,
       documentSymbolProvider: true,
+      definitionProvider: true,
+      referencesProvider: true,
       // Advertised even before the grammar finishes loading; the handler
       // returns empty results until then, and a refresh is requested once
       // the grammar is ready (if the client supports it).
@@ -147,30 +178,68 @@ connection.onCompletion((params: CompletionParams): CompletionItem[] => {
   const linePrefix = lineText.substring(0, Math.max(0, Math.min(pos.character, lineText.length)));
 
   const context = detectCompletionContext(linePrefix);
-  // Exact declared names/parameters from the parse tree when available.
-  const tree = parse(doc.getText());
-  const declarations = tree ? analyzeDocument(tree).declaredNames : undefined;
-  return buildCompletionItems(context, linePrefix, doc.getText(), declarations);
+  // Exact declared names/parameters from the parse tree when available; the
+  // pattern fallback from definitions.ts keeps them offered without it.
+  const text = doc.getText();
+  const analysis = parsedDocument(text).analysis;
+  const declarations = analysis ? analysis.declaredNames : declarationsFromSource(text);
+  return buildCompletionItems(context, linePrefix, text, declarations);
 });
 
 connection.onHover((params: HoverParams): Hover | null => {
   const doc = textDocuments.get(params.textDocument.uri);
   if (!doc) return null;
-  return hoverAt(doc.getText(), params.position.line, params.position.character);
+  const text = doc.getText();
+  return hoverAt(
+    text,
+    params.position.line,
+    params.position.character,
+    parsedDocument(text).analysis ?? undefined
+  );
 });
 
 connection.onDocumentSymbol(
   (params: DocumentSymbolParams): DocumentSymbol[] | null => {
     const doc = textDocuments.get(params.textDocument.uri);
     if (!doc) return null;
-    return documentSymbols(doc.getText());
+    const text = doc.getText();
+    const analysis = parsedDocument(text).analysis;
+    return analysis ? documentSymbolsFromTree(analysis) : documentSymbols(text);
   }
 );
+
+connection.onDefinition((params: DefinitionParams): Location[] | null => {
+  const doc = textDocuments.get(params.textDocument.uri);
+  if (!doc) return null;
+  const text = doc.getText();
+  const ranges = definitionAt(
+    text,
+    params.position.line,
+    params.position.character,
+    parsedDocument(text).analysis ?? undefined
+  );
+  return ranges.length ? ranges.map((range) => Location.create(doc.uri, range)) : null;
+});
+
+connection.onReferences((params: ReferenceParams): Location[] | null => {
+  const doc = textDocuments.get(params.textDocument.uri);
+  if (!doc) return null;
+  const text = doc.getText();
+  const includeDeclaration = params.context?.includeDeclaration !== false;
+  const ranges = referencesAt(
+    text,
+    params.position.line,
+    params.position.character,
+    includeDeclaration,
+    parsedDocument(text).analysis ?? undefined
+  );
+  return ranges.length ? ranges.map((range) => Location.create(doc.uri, range)) : null;
+});
 
 connection.languages.semanticTokens.on((params) => {
   const doc = textDocuments.get(params.textDocument.uri);
   if (!doc) return { data: [] };
-  const tree = parse(doc.getText());
+  const { tree } = parsedDocument(doc.getText());
   if (!tree) return { data: [] };
   return { data: semanticTokensForTree(tree) ?? [] };
 });

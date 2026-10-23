@@ -124,3 +124,25 @@ export function findEndToken(line: string): number {
   }
   return m.index;
 }
+
+export interface WordMatch {
+  word: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * The ESQL identifier under `character` in a (masked) line, or null. The
+ * position just past the end of a word still counts, which is what LSP
+ * clients report when the cursor sits at the end of a name.
+ */
+export function wordAt(line: string, character: number): WordMatch | null {
+  const re = /[_a-zA-Z][_a-zA-Z0-9]*/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    if (character >= m.index && character <= m.index + m[0].length) {
+      return { word: m[0], start: m.index, end: m.index + m[0].length };
+    }
+  }
+  return null;
+}

@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
+import { initGrammar } from '../src/parser';
 
 const SERVER = path.join(__dirname, '..', 'src', 'server.js');
 
@@ -62,8 +63,13 @@ class LspClient {
     timer: NodeJS.Timeout;
   }> = [];
 
-  constructor() {
-    this.child = spawn(process.execPath, [SERVER], { stdio: 'pipe' });
+  constructor(options: { env?: NodeJS.ProcessEnv } = {}) {
+    this.child = spawn(process.execPath, [SERVER], {
+      stdio: 'pipe',
+      // ESQL_LSP_NO_GRAMMAR=1 is passed in to exercise the heuristic-only mode
+      // (the same degraded environment a machine without a C toolchain gets).
+      env: options.env ? { ...process.env, ...options.env } : process.env,
+    });
     this.child.stdout.on('data', (d: Buffer) => this.onData(d));
     this.child.stderr.on('data', () => {
       /* server logs to stderr are expected; ignore */
@@ -171,6 +177,8 @@ test('full LSP session over stdio: diagnostics, completion, symbols', async () =
     assert.ok(caps.completionProvider, 'completion capability');
     assert.ok(caps.hoverProvider, 'hover capability');
     assert.ok(caps.documentSymbolProvider, 'document symbol capability');
+    assert.ok(caps.definitionProvider, 'go-to-definition capability');
+    assert.ok(caps.referencesProvider, 'find-references capability');
     client.notify('initialized', {});
 
     // ── diagnostics: broken module ─────────────────────────────────────────
@@ -248,6 +256,62 @@ test('full LSP session over stdio: diagnostics, completion, symbols', async () =
         : contents.value;
     assert.match(text, /message tree variable/);
 
+    // ── hover on the user's own variable ───────────────────────────────────
+    // FIXED line 5 declares myVar; lines 6 and 7 use it.
+    const fixedLines = FIXED.split('\n');
+    const useCol = fixedLines[6].indexOf('myVar');
+    const hoverVar = await client.request('textDocument/hover', {
+      textDocument: { uri },
+      position: { line: 6, character: useCol + 1 },
+    });
+    assert.match(hoverVar.result.contents.value, /### `myVar`/);
+    assert.match(hoverVar.result.contents.value, /Declared variable.*CHARACTER/);
+
+    // ── go to definition + find references ─────────────────────────────────
+    const declCol = fixedLines[5].indexOf('myVar');
+    const def = await client.request('textDocument/definition', {
+      textDocument: { uri },
+      position: { line: 6, character: useCol + 1 },
+    });
+    assert.deepEqual(def.result, [
+      {
+        uri,
+        range: {
+          start: { line: 5, character: declCol },
+          end: { line: 5, character: declCol + 'myVar'.length },
+        },
+      },
+    ]);
+
+    const refs = await client.request('textDocument/references', {
+      textDocument: { uri },
+      position: { line: 6, character: useCol + 1 },
+      context: { includeDeclaration: true },
+    });
+    assert.deepEqual(
+      (refs.result ?? []).map((l: any) => l.range.start.line),
+      [5, 6, 7],
+      'the DECLARE plus both uses'
+    );
+
+    const refsNoDecl = await client.request('textDocument/references', {
+      textDocument: { uri },
+      position: { line: 6, character: useCol + 1 },
+      context: { includeDeclaration: false },
+    });
+    assert.deepEqual(
+      (refsNoDecl.result ?? []).map((l: any) => l.range.start.line),
+      [6, 7],
+      'includeDeclaration: false drops the DECLARE'
+    );
+
+    // ── go to definition for a routine, from its own header ────────────────
+    const routineDef = await client.request('textDocument/definition', {
+      textDocument: { uri },
+      position: { line: 2, character: fixedLines[2].indexOf('Main') + 1 },
+    });
+    assert.equal(routineDef.result[0].range.start.line, 2, 'Main is defined where it is created');
+
     // ── graceful shutdown ──────────────────────────────────────────────────
     const shutdown = await client.request('shutdown', null);
     assert.ok('result' in shutdown || 'error' in shutdown);
@@ -301,7 +365,11 @@ test('workspace/didChangeConfiguration re-validates with new settings', async ()
   }
 });
 
-test('grammar-backed session: syntax errors and semantic tokens', async () => {
+test('grammar-backed session: syntax errors and semantic tokens', async (t) => {
+  if (!(await initGrammar())) {
+    t.skip('tree-sitter addon unavailable — no grammar-backed diagnostics to assert');
+    return;
+  }
   const client = new LspClient();
   const uri = 'file:///tmp/esql-e2e/Grammar.esql';
   const BROKEN = [
@@ -348,6 +416,96 @@ test('grammar-backed session: syntax errors and semantic tokens', async () => {
     const data = (tokens.result ?? tokens).data;
     assert.ok(Array.isArray(data), 'token data is an array');
     assert.ok(data.length > 0 && data.length % 5 === 0, 'relative quintuples');
+  } finally {
+    await client.close();
+  }
+});
+
+/**
+ * The degraded mode a machine without a C toolchain (or an `npm install
+ * --ignore-scripts`) ends up in, forced with ESQL_LSP_NO_GRAMMAR=1: every
+ * feature must still answer, only semantic tokens are grammar-specific.
+ */
+test('heuristic mode over stdio: diagnostics, symbols, definitions, hover', async () => {
+  const client = new LspClient({ env: { ESQL_LSP_NO_GRAMMAR: '1' } });
+  const uri = 'file:///tmp/esql-e2e/Heuristic.esql';
+  try {
+    const init = await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+      initializationOptions: {},
+    });
+    const caps = init.result.capabilities;
+    assert.ok(caps.definitionProvider, 'definitions advertised without the grammar');
+    assert.ok(caps.referencesProvider, 'references advertised without the grammar');
+    client.notify('initialized', {});
+
+    // ── Phase 1 heuristics still find both problems in BAD ─────────────────
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: BAD },
+    });
+    const diags = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) =>
+        p.uri === uri &&
+        p.diagnostics.some((d: any) => /missing its closing 'END MODULE'/.test(d.message))
+    );
+    assert.ok(
+      diags.diagnostics.some((d: any) => /Variable 'myVar'/.test(d.message)),
+      'undeclared variable detected without a parse tree'
+    );
+
+    // ── semantic tokens are grammar-only: empty, never a crash ─────────────
+    const tokens = await client.request('textDocument/semanticTokens/full', {
+      textDocument: { uri },
+    });
+    assert.deepEqual((tokens.result ?? tokens).data, [], 'no semantic tokens without the grammar');
+
+    // ── outline from the pattern fallback ──────────────────────────────────
+    const syms = await client.request('textDocument/documentSymbol', { textDocument: { uri } });
+    const moduleSym = (syms.result ?? []).find((s: any) => s.name === 'TestModule');
+    assert.ok(moduleSym, 'module symbol present');
+    assert.ok(
+      (moduleSym.children ?? []).some((c: any) => c.name === 'Main'),
+      'Main() nested under module'
+    );
+
+    // ── user-symbol features on the pattern fallback ───────────────────────
+    client.notify('textDocument/didChange', {
+      textDocument: { uri, version: 2 },
+      contentChanges: [{ text: FIXED }],
+    });
+    await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.length === 0
+    );
+
+    const useCol = FIXED.split('\n')[6].indexOf('myVar');
+    const position = { line: 6, character: useCol + 1 };
+
+    const def = await client.request('textDocument/definition', {
+      textDocument: { uri },
+      position,
+    });
+    assert.equal(def.result[0].range.start.line, 5, 'DECLARE line found without a tree');
+
+    const refs = await client.request('textDocument/references', {
+      textDocument: { uri },
+      position,
+      context: { includeDeclaration: true },
+    });
+    assert.deepEqual((refs.result ?? []).map((l: any) => l.range.start.line), [5, 6, 7]);
+
+    const hover = await client.request('textDocument/hover', {
+      textDocument: { uri },
+      position,
+    });
+    assert.match(hover.result.contents.value, /### `myVar`/);
+
+    const shutdown = await client.request('shutdown', null);
+    assert.ok('result' in shutdown);
+    client.notify('exit', undefined);
   } finally {
     await client.close();
   }

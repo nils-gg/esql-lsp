@@ -1,41 +1,97 @@
 /**
  * ESQL hover documentation.
  *
- * Ported from joaquinvulcano/esql-vscode (MIT — see ATTRIBUTION.md) and
- * extended with data types and parser domains. Word lookup runs on masked
- * lines, so hovering inside a string literal or comment yields nothing.
+ * Built-in functions, message tree variables, parser domains and data types
+ * are documented from `src/data/` (ported from joaquinvulcano/esql-vscode,
+ * MIT — see ATTRIBUTION.md — and extended with types and domains).
+ *
+ * On top of that, hover explains the document's OWN symbols: user-declared
+ * variables and constants, routine parameters and user-defined
+ * functions/procedures with their signature. Those come from the parse tree
+ * when the grammar is loaded, otherwise from the same pattern fallback the
+ * definitions module uses (less precise ownership information, never empty).
+ *
+ * Word lookup runs on masked lines, so hovering inside a string literal or
+ * comment yields nothing.
  */
 
-import { Hover } from 'vscode-languageserver';
-import { scan } from './scanner';
+import { Hover, Range } from 'vscode-languageserver';
+import { scan, wordAt } from './scanner';
 import {
   ESQL_FUNCTIONS,
   ESQL_MESSAGE_TREE_VARS,
   ESQL_DOMAINS,
   ESQL_TYPES,
 } from './data/esqlData';
+import { declarationsFromSource, routinesFromSource, rangeContains } from './definitions';
+import type { DocAnalysis, DeclaredName, RoutineInfo } from './parser';
 
-interface WordMatch {
-  word: string;
-  start: number;
-  end: number;
+function markdown(value: string): Hover {
+  return { contents: { kind: 'markdown', value } };
 }
 
-function wordAt(line: string, character: number): WordMatch | null {
-  const re = /[A-Za-z_][A-Za-z0-9_]*/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(line)) !== null) {
-    if (character >= m.index && character <= m.index + m[0].length) {
-      return { word: m[0], start: m.index, end: m.index + m[0].length };
-    }
-  }
-  return null;
+/** `CREATE FUNCTION f(IN a INT) RETURNS BOOLEAN` — the hover signature. */
+export function routineSignature(r: RoutineInfo): string {
+  const returns = r.returnType ? ` RETURNS ${r.returnType}` : '';
+  return `CREATE ${r.kind} ${r.name}(${r.params})${returns}`;
+}
+
+/** Where a routine body lives, in words ('' when unknown). */
+function routineOwnerLine(r: RoutineInfo): string {
+  return r.moduleName ? `\n\n*in module \`${r.moduleName}\`*` : '\n\n*at document level*';
+}
+
+function routineHover(r: RoutineInfo): Hover {
+  return markdown(
+    `### \`${r.name}\`\n\n**ESQL ${r.kind.toLowerCase()}**${routineOwnerLine(r)}` +
+      `\n\n\`\`\`esql\n${routineSignature(r)}\n\`\`\`` +
+      (r.kind === 'FUNCTION' && !r.returnType
+        ? '\n\n_No RETURNS clause — ACE cannot use its value._'
+        : '')
+  );
+}
+
+/** Where a declaration belongs, in words ('' when the scope is unknown). */
+function declarationOwnerLine(
+  d: DeclaredName,
+  routines: RoutineInfo[],
+  modules: { name: string; range: Range }[]
+): string {
+  // Parameters sit in the routine's header (outside BEGIN..END), so the whole
+  // CREATE..END statement is the containment test that works for both.
+  const owner = routines.find(
+    (r) => rangeContains(r.declRange, d.range.start.line, d.range.start.character)
+  );
+  if (owner) return `\n\n*in \`${owner.name}()\`*`;
+  const mod = modules.find((m) =>
+    rangeContains(m.range, d.range.start.line, d.range.start.character)
+  );
+  if (mod) return `\n\n*in module \`${mod.name}\`*`;
+  return '\n\n*at document level*';
+}
+
+function declarationHover(
+  d: DeclaredName,
+  routines: RoutineInfo[],
+  modules: { name: string; range: Range }[]
+): Hover {
+  const what = d.kind === 'parameter' ? 'Routine parameter' : 'Declared variable';
+  // Parameter details are prefixed with the kind by the parser
+  // ('parameter INTEGER'); do not repeat it in the heading.
+  const type = d.detail.replace(/^parameter\s*/i, '');
+  const typePart = type ? ` — \`${type}\`` : '';
+  return markdown(
+    `### \`${d.name}\`\n\n**${what}**${typePart}` +
+      declarationOwnerLine(d, routines, modules) +
+      (d.constant ? '\n\n_Constant: cannot be reassigned._' : '')
+  );
 }
 
 export function hoverAt(
   source: string,
   line: number,
-  character: number
+  character: number,
+  doc?: DocAnalysis
 ): Hover | null {
   const { lines } = scan(source);
   const maskedLine = lines[line];
@@ -45,9 +101,30 @@ export function hoverAt(
   if (!w) return null;
 
   const upper = w.word.toUpperCase();
+  const eq = (name: string) => name.toUpperCase() === upper;
+
+  // ── this document's own symbols first: they shadow nothing a reader
+  //    cares about more than the declaration right in front of them ──
+  const routines: RoutineInfo[] = doc
+    ? doc.routines
+    : routinesFromSource(source);
+  const routine = routines.find((r) => eq(r.name));
+  if (routine) return routineHover(routine);
+
+  const declarations: DeclaredName[] = doc
+    ? doc.declaredNames
+    : declarationsFromSource(source);
+  const declaration = declarations.find((d) => eq(d.name));
+  if (declaration) {
+    return declarationHover(
+      declaration,
+      routines,
+      doc ? doc.modules.map((m) => ({ name: m.name, range: m.range })) : []
+    );
+  }
 
   // Built-in function
-  const fn = ESQL_FUNCTIONS.find((f) => f.name.toUpperCase() === upper);
+  const fn = ESQL_FUNCTIONS.find((f) => eq(f.name));
   if (fn) {
     let md = `### \`${fn.name}\`\n\nESQL built-in function\n\n\`\`\`esql\n${fn.signature}\n\`\`\`\n\n${fn.description}`;
     if (fn.returnType) {
@@ -56,44 +133,29 @@ export function hoverAt(
     if (fn.example) {
       md += `\n\n**Example:**\n\n\`\`\`esql\n${fn.example}\n\`\`\``;
     }
-    return { contents: { kind: 'markdown', value: md } };
+    return markdown(md);
   }
 
   // Message tree variable (case-insensitive, shown in canonical case)
-  const treeVar = ESQL_MESSAGE_TREE_VARS.find((v) => v.name.toUpperCase() === upper);
+  const treeVar = ESQL_MESSAGE_TREE_VARS.find((v) => eq(v.name));
   if (treeVar) {
-    return {
-      contents: {
-        kind: 'markdown',
-        value:
-          `### \`${treeVar.name}\`\n\n` +
-          `**ESQL message tree variable**\n\n${treeVar.description}`,
-      },
-    };
+    return markdown(
+      `### \`${treeVar.name}\`\n\n**ESQL message tree variable**\n\n${treeVar.description}`
+    );
   }
 
   // Parser / domain
-  const domain = ESQL_DOMAINS.find((d) => d.name.toUpperCase() === upper);
+  const domain = ESQL_DOMAINS.find((d) => eq(d.name));
   if (domain) {
-    return {
-      contents: {
-        kind: 'markdown',
-        value:
-          `### \`${domain.name}\`\n\n` +
-          `**ESQL parser / message domain** — ${domain.detail}\n\n${domain.description}`,
-      },
-    };
+    return markdown(
+      `### \`${domain.name}\`\n\n**ESQL parser / message domain** — ${domain.detail}\n\n${domain.description}`
+    );
   }
 
   // Data type
-  const type = ESQL_TYPES.find((t) => t.name.toUpperCase() === upper);
+  const type = ESQL_TYPES.find((t) => eq(t.name));
   if (type) {
-    return {
-      contents: {
-        kind: 'markdown',
-        value: `### \`${type.name}\`\n\n**ESQL data type**\n\n${type.description}`,
-      },
-    };
+    return markdown(`### \`${type.name}\`\n\n**ESQL data type**\n\n${type.description}`);
   }
 
   return null;
