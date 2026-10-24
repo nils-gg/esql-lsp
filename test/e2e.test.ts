@@ -1015,3 +1015,58 @@ test('malformed requests answer InvalidParams, positions off the end answer noth
     await client.close();
   }
 });
+
+/**
+ * ISSUES.md I-6 over a real stdio session: a file whose module is unclosed —
+ * the state of every buffer being typed. `syntax-error` only ever comes from
+ * the tree path, so waiting for it also proves the grammar took over this
+ * document; the publish that carries it must NOT have lost the semantic
+ * checks the heuristic pass had already reported.
+ */
+test('grammar mode keeps semantic checks inside a damaged file (I-6)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const src = [
+    'CREATE COMPUTE MODULE Case13',
+    '    CREATE FUNCTION Main() RETURNS BOOLEAN',
+    '    BEGIN',
+    '        DECLARE declaredVar INTEGER;',
+    '        SET declaredVar = 1;',
+    '        SET neverDeclared = declaredVar;',
+    '        SET OutputRoot = InptuRoot;',
+    '',
+  ].join('\n');
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e/DamagedI6.esql';
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: { textDocument: { publishDiagnostics: {} } },
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: src },
+    });
+
+    const diags = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.some((d: any) => d.code === 'syntax-error')
+    );
+    const codes = diags.diagnostics.map((d: any) => d.code);
+    assert.ok(
+      codes.includes('undeclared-variable'),
+      `undeclared name still reported inside the damaged region: ${JSON.stringify(diags.diagnostics.map((d: any) => [d.code, d.message]))}`
+    );
+    assert.ok(codes.includes('missing-end-module'), 'module structure check still fires too');
+    const und = diags.diagnostics.find((d: any) => d.code === 'undeclared-variable');
+    assert.equal(und.range.start.line, 5, 'exact line of the SET inside the ERROR region');
+    assert.equal(
+      und.codeDescription?.href,
+      'https://github.com/nils-gg/esql-lsp#diagnostics',
+      'codeDescription survives the real protocol (optional, but sent)'
+    );
+  } finally {
+    await client.close();
+  }
+});

@@ -1689,3 +1689,448 @@ END MODULE;
         (kw_END)))
     (kw_END)
     (kw_MODULE)))
+
+===
+POSITION keyword-clause forms (family C)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  SET p = POSITION('Village' IN 'Hursley Village');
+  SET p = POSITION('A' IN 'ABCABCABC' FROM 4 REPEAT 2);
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (position_clause_function
+                  (kw_POSITION)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_IN)
+                  (expression
+                    (primary_expression
+                      (string_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (position_clause_function
+                  (kw_POSITION)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_IN)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_FROM)
+                  (expression
+                    (primary_expression
+                      (number_literal)))
+                  (kw_REPEAT)
+                  (expression
+                    (primary_expression
+                      (number_literal))))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+TRIM keyword-clause forms (family D)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  SET p = TRIM(TRAILING 'b' FROM 'aaabBb');
+  SET p = TRIM('  a  ');
+  SET p = TRIM(LEADING FROM '  a  ');
+  SET p = TRIM('b' FROM 'bbbaaabbb');
+  SET p = TRIM(BOTH ' ' FROM Environment.Variables.S);
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (trim_clause_function
+                  (kw_TRIM)
+                  (kw_TRAILING)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_FROM)
+                  (expression
+                    (primary_expression
+                      (string_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (trim_clause_function
+                  (kw_TRIM)
+                  (expression
+                    (primary_expression
+                      (string_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (trim_clause_function
+                  (kw_TRIM)
+                  (kw_LEADING)
+                  (kw_FROM)
+                  (expression
+                    (primary_expression
+                      (string_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (trim_clause_function
+                  (kw_TRIM)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_FROM)
+                  (expression
+                    (primary_expression
+                      (string_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (trim_clause_function
+                  (kw_TRIM)
+                  (kw_BOTH)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_FROM)
+                  (expression
+                    (primary_expression
+                      (field_reference
+                        (identifier)
+                        (identifier)
+                        (identifier)))))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+OVERLAY and SUBSTRING keyword-clause forms (families E and G)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  SET p = OVERLAY('ABCDEFGHIJ' PLACING '1234' FROM 4 FOR 3);
+  SET p = SUBSTRING('Hello World!' FROM 7 FOR 4);
+  SET p = SUBSTRING('Hello World!' AFTER 'World');
+  SET p = SUBSTRING('Hello World!' BEFORE 'World' FOR 2);
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (overlay_clause_function
+                  (kw_OVERLAY)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_PLACING)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_FROM)
+                  (expression
+                    (primary_expression
+                      (number_literal)))
+                  (kw_FOR)
+                  (expression
+                    (primary_expression
+                      (number_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (substring_clause_function
+                  (kw_SUBSTRING)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_FROM)
+                  (expression
+                    (primary_expression
+                      (number_literal)))
+                  (kw_FOR)
+                  (expression
+                    (primary_expression
+                      (number_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (substring_clause_function
+                  (kw_SUBSTRING)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_AFTER)
+                  (expression
+                    (primary_expression
+                      (string_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (substring_clause_function
+                  (kw_SUBSTRING)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_BEFORE)
+                  (expression
+                    (primary_expression
+                      (string_literal)))
+                  (kw_FOR)
+                  (expression
+                    (primary_expression
+                      (number_literal))))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+ASBITSTREAM clause and positional-comma forms (family F)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  SET result = ASBITSTREAM(cursor OPTIONS options CCSID 1208);
+  SET result = ASBITSTREAM(OutputRoot.CLCF SET sm TYPE mt FORMAT 'IDOC');
+  SET result = ASBITSTREAM(OutputRoot.BLOB);
+  SET result = ASBITSTREAM(Environment.Variables.MQRFH2.Data,,1208,,,,options);
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (asbitstream_clause_function
+                  (kw_ASBITSTREAM)
+                  (field_reference
+                    (identifier))
+                  (kw_OPTIONS)
+                  (expression
+                    (primary_expression
+                      (field_reference
+                        (identifier))))
+                  (kw_CCSID)
+                  (expression
+                    (primary_expression
+                      (number_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (asbitstream_clause_function
+                  (kw_ASBITSTREAM)
+                  (field_reference
+                    (identifier)
+                    (identifier))
+                  (kw_SET)
+                  (expression
+                    (primary_expression
+                      (field_reference
+                        (identifier))))
+                  (kw_TYPE)
+                  (expression
+                    (primary_expression
+                      (field_reference
+                        (identifier))))
+                  (kw_FORMAT)
+                  (expression
+                    (primary_expression
+                      (string_literal))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (function_call
+                  (kw_ASBITSTREAM)
+                  (expression
+                    (primary_expression
+                      (field_reference
+                        (identifier)
+                        (identifier)))))))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (function_call
+                  (kw_ASBITSTREAM)
+                  (expression
+                    (primary_expression
+                      (field_reference
+                        (identifier)
+                        (identifier)
+                        (identifier)
+                        (identifier))))
+                  (expression
+                    (primary_expression
+                      (number_literal)))
+                  (expression
+                    (primary_expression
+                      (field_reference
+                        (identifier)))))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))

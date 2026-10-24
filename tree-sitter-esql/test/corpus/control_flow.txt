@@ -722,3 +722,92 @@ END MODULE;
         (kw_END)))
     (kw_END)
     (kw_MODULE)))
+
+===
+labelled BEGIN ATOMIC block (family K)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  SharedVariableMutex1 : BEGIN ATOMIC
+    SET v = 1;
+  END;
+  ROUTING : BEGIN ATOMIC
+    SET v = 2;
+  END ROUTING ;
+  BEGIN NOT ATOMIC
+    SET v = 3;
+  END;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (block_statement
+            (label_before)
+            (kw_BEGIN)
+            (kw_ATOMIC)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_END)))
+        (esql_statement
+          (block_statement
+            (label_before)
+            (kw_BEGIN)
+            (kw_ATOMIC)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_END)
+            (label_end)))
+        (esql_statement
+          (block_statement
+            (kw_BEGIN)
+            (kw_NOT)
+            (kw_ATOMIC)
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))
+            (kw_END)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))

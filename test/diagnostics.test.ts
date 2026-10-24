@@ -411,12 +411,25 @@ const CODES = [
   'output-root-properties',
 ];
 
-function assertAddressable(diags: readonly { source?: string; code?: string | number; message: string }[], mode: string) {
+function assertAddressable(
+  diags: readonly {
+    source?: string;
+    code?: string | number;
+    message: string;
+    codeDescription?: { href: string };
+  }[],
+  mode: string
+) {
   assert.ok(diags.length >= 3, `${mode}: the fixture really produces findings`);
   for (const d of diags) {
     assert.equal(d.source, 'esql', `${mode}: \`${d.message}\` names its source`);
     assert.equal(typeof d.code, 'string', `${mode}: \`${d.message}\` carries a code`);
     assert.ok(CODES.includes(d.code as string), `${mode}: unknown code ${JSON.stringify(d.code)}`);
+    assert.equal(
+      d.codeDescription?.href,
+      'https://github.com/nils-gg/esql-lsp#diagnostics',
+      `${mode}: \`${d.message}\` links its code to the README section`
+    );
   }
 }
 
@@ -434,4 +447,36 @@ test('every grammar-backed diagnostic carries a source and a code', async (t) =>
   const { parse, analyzeDocument } = await import('../src/parser');
   const tree = parse(MESSY)!;
   assertAddressable(analyze(MESSY, D, analyzeDocument(tree)), 'grammar');
+});
+
+/** ISSUES.md I-6: the module (and routine) is unclosed — mid-typing state. */
+const CASE13 = [
+  'CREATE COMPUTE MODULE Case13', //                 0
+  '    CREATE FUNCTION Main() RETURNS BOOLEAN', //   1
+  '    BEGIN', //                                    2
+  '        DECLARE declaredVar INTEGER;', //         3
+  '        SET declaredVar = 1;', //                 4
+  '        SET neverDeclared = declaredVar;', //     5
+  '        SET OutputRoot = InptuRoot;', //          6
+  '',
+].join('\n');
+
+test('heuristic mode reports the undeclared name inside a damaged region (I-6)', () => {
+  const diags = analyze(CASE13, D);
+  assert.ok(
+    diags.some((d) => d.code === 'undeclared-variable' && /neverDeclared/.test(d.message)),
+    `fallback keeps answering mid-typing: ${JSON.stringify(diags.map((d) => d.code))}`
+  );
+});
+
+test('grammar mode reports the undeclared name inside a damaged region (I-6)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const { parse, analyzeDocument } = await import('../src/parser');
+  const diags = analyze(CASE13, D, analyzeDocument(parse(CASE13)!));
+  assert.ok(diags.some((d) => d.code === 'syntax-error'), 'the damage itself is still reported');
+  assert.ok(diags.some((d) => d.code === 'missing-end-module'), 'and the module structure too');
+  const undeclared = diags.filter((d) => d.code === 'undeclared-variable');
+  assert.equal(undeclared.length, 1, JSON.stringify(diags.map((d) => [d.code, d.message])));
+  assert.match(undeclared[0].message, /neverDeclared/);
+  assert.equal(undeclared[0].range.start.line, 5, 'on the SET line, inside the damaged region');
 });

@@ -335,3 +335,212 @@ END MODULE;
         (kw_END)))
     (kw_END)
     (kw_MODULE)))
+
+===
+namespace alias declare without datatype (family A)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE prefixOne NAMESPACE 'http://www.example.com/PO1';
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (kw_NAMESPACE)
+            (string_literal)))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+name alias and external name declares without datatype (family A)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE Schema1 NAME 'Joe';
+  DECLARE ColourElementName EXTERNAL NAME 'black';
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (datatype
+              (kw_NAME))
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (kw_EXTERNAL)
+            (datatype
+              (kw_NAME))
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+quoted variable names in DECLARE (family H)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE "script-encoded-hostname" EXTERNAL CHARACTER;
+  DECLARE "a-name", other_name CHARACTER;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (quoted_identifier)
+            (kw_EXTERNAL)
+            (datatype
+              (kw_CHARACTER))))
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (quoted_identifier)
+            (identifier)
+            (datatype
+              (kw_CHARACTER))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+
+===
+NAME datatype still declares a variable next to the alias form (family A ambiguity)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE msgName NAME;
+  DECLARE otherName NAME 'init';
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (datatype
+              (kw_NAME))))
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (datatype
+              (kw_NAME))
+            (expression
+              (primary_expression
+                (string_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))

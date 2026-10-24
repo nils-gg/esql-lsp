@@ -1306,3 +1306,86 @@ END MODULE;
         (kw_END)))
     (kw_END)
     (kw_MODULE)))
+
+===
+propagate without WHERE and with several MessageSources (family B)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  PROPAGATE TO TERMINAL 'out1' MESSAGE OutputRoot DELETE NONE;
+  PROPAGATE TO TERMINAL 'out2'
+    ENVIRONMENT OutputLocalEnvironment
+    MESSAGE InputRoot
+    EXCEPTION OutputExceptionList
+    FINALIZE NONE
+    DELETE NONE;
+  PROPAGATE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (propagate_statement
+            (kw_PROPAGATE)
+            (kw_TO)
+            (kw_TERMINAL)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_MESSAGE)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier))))
+            (kw_DELETE)
+            (kw_NONE)))
+        (esql_statement
+          (propagate_statement
+            (kw_PROPAGATE)
+            (kw_TO)
+            (kw_TERMINAL)
+            (expression
+              (primary_expression
+                (string_literal)))
+            (kw_ENVIRONMENT)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier))))
+            (kw_MESSAGE)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier))))
+            (kw_EXCEPTION)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier))))
+            (kw_FINALIZE)
+            (kw_NONE)
+            (kw_DELETE)
+            (kw_NONE)))
+        (esql_statement
+          (propagate_statement
+            (kw_PROPAGATE)))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))

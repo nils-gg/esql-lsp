@@ -300,3 +300,38 @@ test('every selectionRange covers exactly its own name', async () => {
 test('empty source yields no symbols', () => {
   assert.deepEqual(documentSymbols(''), []);
 });
+
+/**
+ * ISSUES.md I-6: the buffer being typed — a module whose END MODULE (and so
+ * whose routine END;) is still missing. Grammar mode used to list only the
+ * module: the walk stopped at the ERROR region and semantic checks went quiet,
+ * while the fallback carried the whole outline. The tree walk now mines the
+ * intact subtree inside the region, and the fallback extends an unclosed
+ * routine to its module's end (mirroring the unclosed-module rule), so the
+ * two paths produce ONE outline. The fallback assertion runs in both modes.
+ */
+test('an unclosed module keeps the same outline in both paths (I-6)', async () => {
+  const src = [
+    'CREATE COMPUTE MODULE Case13', //                 0
+    '    CREATE FUNCTION Main() RETURNS BOOLEAN', //   1
+    '    BEGIN', //                                    2
+    '        DECLARE declaredVar INTEGER;', //         3
+    '        SET declaredVar = 1;', //                 4
+    '        SET neverDeclared = declaredVar;', //     5
+    '        SET OutputRoot = InptuRoot;', //          6
+    '',
+  ].join('\n');
+  const fromFallback = outline(documentSymbols(src));
+  assert.deepEqual(fromFallback, [
+    '2:Case13 [COMPUTE MODULE]',
+    '  12:Main [FUNCTION() RETURNS BOOLEAN]',
+    '    13:declaredVar [INTEGER]',
+  ], 'the fallback carries module/routine/declare in BOTH modes');
+  const fromTree = await treeOutline(src);
+  if (!fromTree) return; // only the comparison itself needs the addon
+  assert.deepEqual(
+    fromTree,
+    fromFallback,
+    'the tree mines the same outline from the ERROR region'
+  );
+});

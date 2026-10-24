@@ -512,7 +512,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
   };
 
 
-  const visit = (node: SyntaxNode, scope: WalkScope, parentType?: string): void => {
+  const visit = (node: SyntaxNode, scope: WalkScope, parentType?: string, underDamaged = false): void => {
     // Read the child list ONCE per node. `node.children` allocates a fresh array
     // of fresh node wrappers on every read, and this walk looks at several fields
     // of the same node, so reading it per field multiplied the work: a full walk
@@ -520,17 +520,25 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
     // (ISSUES.md I-20).
     const kids = node.children;
     if (node.type === 'ERROR' || node.type === 'MISSING' || node.isMissing || isInsertedNode(node)) {
-      syntaxIssues.push({
-        message: isInsertedNode(node)
-          ? expectedPhrase(node.type, parentType)
-          : 'Syntax error.',
-        range: rangeOf(node),
-      });
+      if (!underDamaged) {
+        syntaxIssues.push({
+          message: isInsertedNode(node)
+            ? expectedPhrase(node.type, parentType)
+            : 'Syntax error.',
+          range: rangeOf(node),
+        });
+      }
       // Error recovery preserves intact subtrees inside the damaged region
       // (e.g. a complete CREATE FUNCTION inside a module missing its
-      // END MODULE). Mine those for semantics, but never descend through
-      // another broken node — and skip insertion markers, which would
-      // re-report positions already covered by the outer error.
+      // END MODULE). Mine those for semantics — declarations, SET targets,
+      // nested routines — by descending into EVERY child, damaged ones
+      // included (ISSUES.md I-6: skipping `hasError` children made the outline
+      // and the undeclared-variable check go quiet exactly where the buffer is
+      // mid-typing, which is where the fallback still answers, and the two
+      // paths must agree). `underDamaged` keeps this honest on the diagnostic
+      // side: a damaged node below an already-reported one adds no second
+      // `Syntax error.` inside the outer region (the outermost-only rule
+      // parser.test.ts asserts).
       //
       // The damaged node's OWN header usually survived (an unterminated
       // module still has CREATE COMPUTE MODULE <name>), so still open its
@@ -542,9 +550,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
       const damagedScope: WalkScope = moduleInfo
         ? { visible: moduleInfo.range, moduleName: moduleInfo.name }
         : inner;
-      for (const child of kids) {
-        if (!child.hasError && !isInsertedNode(child)) visit(child, damagedScope, node.type);
-      }
+      for (const child of kids) visit(child, damagedScope, node.type, true);
       return;
     }
 
@@ -553,7 +559,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
       case 'create_module_statement':
       case 'create_routine_statement': {
         const inner = openScope(node, kids, scope);
-        for (const child of kids) visit(child, inner, node.type);
+        for (const child of kids) visit(child, inner, node.type, underDamaged);
         return; // handled: do not descend twice
       }
       case 'declare_statement': {
@@ -561,22 +567,37 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
         // `DECLARE a, b TYPE` declares every one of them. Handlers are a
         // separate node type (declare_handler_statement) and never land
         // here. The REFERENCE TO target is a field_reference child, not an
-        // identifier, so it is not mistaken for a declaration.
+        // identifier, so it is not mistaken for a declaration. Quoted names
+        // (`DECLARE "script-encoded-hostname" …`) are grammar-only: the
+        // pattern path indexes plain identifiers too, so both paths stay
+        // silent about them together.
         const typeNode = childOf(kids, 'datatype');
-        const constant = kids.some((c) => c.type === 'kw_CONSTANT');
-        const detail = (constant ? 'CONSTANT ' : '') + (typeNode ? typeNode.text.toUpperCase() : '');
-        for (const child of kids) {
-          if (child.type === 'identifier') {
-            declaredNames.push({
-              name: child.text,
-              detail,
-              range: rangeOf(child),
-              kind: 'variable',
-              constant,
-              scope: scope.visible,
-            });
+        if (typeNode) {
+          const constant = kids.some((c) => c.type === 'kw_CONSTANT');
+          const detail = (constant ? 'CONSTANT ' : '') + typeNode.text.toUpperCase();
+          for (const child of kids) {
+            if (child.type === 'identifier') {
+              declaredNames.push({
+                name: child.text,
+                detail,
+                range: rangeOf(child),
+                kind: 'variable',
+                constant,
+                scope: scope.visible,
+              });
+            }
           }
         }
+        // No datatype = the namespace ALIAS form (family A: IBM's
+        // `DECLARE prefixOne NAMESPACE 'http://www.example.com/PO1';`).
+        // Its value is an implicitly constant CHARACTER (DECLARE page,
+        // note 6) used as a path prefix — a different kind of thing from
+        // a declared variable, so the outline and completion must not
+        // offer it as one. The NAME alias (`DECLARE Schema1 NAME 'Joe';`)
+        // keeps parsing as a NAME-typed variable (the grammar's reason is
+        // in the declare_statement comment): it is indexed as before, and
+        // telling alias from variable is analyzer territory, not the
+        // parser's.
         break; // keep descending: a recovered missing ';' lives in here
       }
       case 'routine_parameter': {
@@ -627,10 +648,29 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
         break; // descend: dynamic `{expression}` path parts hold references
       }
       case 'function_call': {
-        const name = childOf(kids, 'identifier');
+        // The name is the first child: an identifier, or one of the five
+        // clause-function words when they carry a comma call
+        // (`SUBSTRING(s, 2, 1)`) — those words lex as keywords now.
+        const name = kids.find(
+          (c) => c.type === 'identifier' || c.type.startsWith('kw_')
+        );
         if (name) {
           references.push({ name: name.text, range: rangeOf(name), kind: 'routine' });
         }
+        break; // descend into the arguments
+      }
+
+      // Keyword-clause calls (TRIM/SUBSTRING/POSITION/OVERLAY/ASBITSTREAM):
+      // the called word is the node's first child, and the reference is
+      // what a comma call to the same name would have produced, so hover
+      // and completion treat the two spellings alike.
+      case 'position_clause_function':
+      case 'trim_clause_function':
+      case 'overlay_clause_function':
+      case 'substring_clause_function':
+      case 'asbitstream_clause_function': {
+        const word = kids[0];
+        references.push({ name: word.text, range: rangeOf(word), kind: 'routine' });
         break; // descend into the arguments
       }
       case 'call_statement': {
@@ -653,7 +693,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
       }
     }
 
-    for (const child of kids) visit(child, scope, node.type);
+    for (const child of kids) visit(child, scope, node.type, underDamaged);
   };
 
   visit(tree.rootNode, { visible: rangeOf(tree.rootNode) });

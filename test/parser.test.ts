@@ -252,15 +252,20 @@ test('a module whose END MODULE is missing is still identified', async (t) => {
 
 test('recovered missing tokens (invisible insertions) are reported', async (t) => {
   if (!(await skipWithoutGrammar(t))) return;
-  // Tree-sitter repairs a missing `;` between otherwise clean statements
-  // by inserting a zero-width token node — no ERROR region anywhere.
+  // Tree-sitter repairs a missing `;` by inserting a zero-width token node —
+  // but only when the next token cannot possibly continue the expression:
+  // `END` cannot, so the repair is an insertion with no ERROR region.
+  // (A previous version of this fixture used `DECLARE x INT 0` followed by
+  // `SET x = 1;` and asserted the insertion message — that passed against a
+  // STALE node_modules grammar copy, never against the real parser: with
+  // the parser the server actually loads, recovery skips `SET x` and
+  // reports plain 'Syntax error.' instead. The grammar-copy trap from
+  // AGENTS.md, applied to test greenness.)
   const src = [
     'CREATE COMPUTE MODULE M',
     'CREATE FUNCTION Main() RETURNS BOOLEAN',
     'BEGIN',
-    'DECLARE x INT 0',
-    'SET x = 1;',
-    'RETURN TRUE;',
+    'SET x = 1',
     'END;',
     'END MODULE;',
     '',
@@ -274,17 +279,25 @@ test('recovered missing tokens (invisible insertions) are reported', async (t) =
 
 test('a recovered token is described by the construct that needed it', async (t) => {
   if (!(await skipWithoutGrammar(t))) return;
-  // The binding reports an inserted token by its grammar token name, and at a
-  // choice point it names whichever alternative the DFA reached first. So this
-  // real namespace declaration was reported as "expected 'kw_BIT' here", which is
-  // not merely ugly but a false statement about ESQL (ISSUES.md I-12).
-  const doc = analyzeDocument(parse("DECLARE ns NAMESPACE 'urn:x';\n")!);
-  assert.equal(doc.syntaxIssues.length, 1);
-  assert.match(doc.syntaxIssues[0].message, /expected a data type here/);
-  assert.doesNotMatch(doc.syntaxIssues[0].message, /kw_|identifier|_literal/);
+  // The namespace-prefix DECLARE used to be the poster child for this
+  // problem: rejected and "helpfully" explained as "expected kw_BIT here",
+  // a false statement about ESQL (families A + I-12). The 12.0.x DECLARE
+  // page documents `DECLARE prefixOne NAMESPACE '…';` verbatim, so the
+  // grammar now accepts it and NOTHING may be reported — and the alias is
+  // a path prefix, not a variable, so it must not be indexed either.
+  const ns = analyzeDocument(parse("DECLARE ns NAMESPACE 'urn:x';\n")!);
+  assert.deepEqual(ns.syntaxIssues, [], 'the documented alias form parses clean');
+  assert.deepEqual(
+    ns.declaredNames.map((d) => d.name),
+    [],
+    'the namespace alias is not indexed as a declared variable (family A)'
+  );
 
-  // Same for the other corpus leak, `SET OutputRoot.[<+1] = InputBody;` — in
-  // context only, so the case is shaped like the file that reported it.
+  // The other corpus leak, `SET OutputRoot.[<+1] = InputBody;`, IS still an
+  // error: IBM's `[<n]` index counts from the end and no documented form
+  // means what the sample intended (family J verdict: NOT-ESQL, recorded
+  // in VERIFICATION.md). In context only, shaped like the file that
+  // reported it.
   const field = analyzeDocument(
     parse(
       [
@@ -503,4 +516,29 @@ test('no symbol or diagnostic range reaches past the end of its line', async () 
       );
     }
   }
+});
+
+test('declarations and SET targets are mined from inside the damaged region (I-6)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const src = [
+    'CREATE COMPUTE MODULE Case13',
+    '    CREATE FUNCTION Main() RETURNS BOOLEAN',
+    '    BEGIN',
+    '        DECLARE declaredVar INTEGER;',
+    '        SET declaredVar = 1;',
+    '        SET neverDeclared = declaredVar;',
+    '        SET OutputRoot = InptuRoot;',
+    '',
+  ].join('\n');
+  const doc = analyzeDocument(parse(src)!);
+  assert.deepEqual(doc.modules.map((m) => m.name), ['Case13']);
+  assert.deepEqual(doc.routines.map((r) => r.name), ['Main']);
+  assert.equal(doc.routines[0].moduleName, 'Case13', 'mined routine knows its mined module');
+  assert.deepEqual(doc.declaredNames.map((d) => d.name), ['declaredVar']);
+  assert.deepEqual(doc.setTargets.map((s) => s.name), ['declaredVar', 'neverDeclared', 'OutputRoot']);
+  assert.equal(
+    doc.syntaxIssues.length,
+    1,
+    'damage nested inside the reported region adds no second `Syntax error.`'
+  );
 });

@@ -43,9 +43,11 @@ boundary. With the grammar loaded, undeclared-variable analysis and syntax
 errors come from the parse tree (exact ranges, multi-line aware); intact
 statements inside a broken region are still analysed.
 
-Every diagnostic also carries `source: "esql"` and a stable `code`, so a client
-can group by owner and suppress one check without matching message text. The
-codes mirror the setting names below: `syntax-error`, `missing-end-module`,
+Every diagnostic also carries `source: "esql"`, a stable `code`, and a
+`codeDescription` link to the section below, so a client can group by owner,
+suppress one check without matching message text, or offer "explain this
+problem". The codes mirror the setting names below: `syntax-error`,
+`missing-end-module`,
 `module-no-main`, `no-propagation`, `unclosed-main`, `undeclared-variable`,
 `deprecated-parser`, `missing-semicolon`, `output-root-properties`.
 

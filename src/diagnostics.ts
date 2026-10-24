@@ -163,13 +163,24 @@ export type DiagnosticCode =
   | 'output-root-properties';
 
 /** Every diagnostic this server publishes is built here. */
+/**
+ * Where the diagnostic codes are documented, sent as LSP `codeDescription.href`
+ * on every diagnostic so a client can offer "explain this problem" without
+ * matching message text. One anchor for the whole family: the README table
+ * documents all nine codes and mirrors the setting names; per-code anchors
+ * would rot the moment the table is reworded.
+ */
+const DIAGNOSTIC_DOCS_HREF = 'https://github.com/nils-gg/esql-lsp#diagnostics';
+
 function diag(
   range: Range,
   message: string,
   severity: DiagnosticSeverity,
   code: DiagnosticCode
 ): Diagnostic {
-  return Diagnostic.create(range, message, severity, code, 'esql');
+  const d = Diagnostic.create(range, message, severity, code, 'esql');
+  d.codeDescription = { href: DIAGNOSTIC_DOCS_HREF };
+  return d;
 }
 
 /** 1. Module structure: missing END MODULE, missing Main(). */

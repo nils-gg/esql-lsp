@@ -1,5 +1,52 @@
 [
   {
+    "type": "asbitstream_clause_function",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "field_reference",
+          "named": true
+        },
+        {
+          "type": "kw_ASBITSTREAM",
+          "named": true
+        },
+        {
+          "type": "kw_CCSID",
+          "named": true
+        },
+        {
+          "type": "kw_ENCODING",
+          "named": true
+        },
+        {
+          "type": "kw_FORMAT",
+          "named": true
+        },
+        {
+          "type": "kw_OPTIONS",
+          "named": true
+        },
+        {
+          "type": "kw_SET",
+          "named": true
+        },
+        {
+          "type": "kw_TYPE",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "attach_statement",
     "named": true,
     "fields": {},
@@ -800,6 +847,10 @@
           "named": true
         },
         {
+          "type": "quoted_identifier",
+          "named": true
+        },
+        {
           "type": "string_literal",
           "named": true
         }
@@ -1331,6 +1382,26 @@
         {
           "type": "identifier",
           "named": true
+        },
+        {
+          "type": "kw_ASBITSTREAM",
+          "named": true
+        },
+        {
+          "type": "kw_OVERLAY",
+          "named": true
+        },
+        {
+          "type": "kw_POSITION",
+          "named": true
+        },
+        {
+          "type": "kw_SUBSTRING",
+          "named": true
+        },
+        {
+          "type": "kw_TRIM",
+          "named": true
         }
       ]
     }
@@ -1637,6 +1708,37 @@
     "fields": {}
   },
   {
+    "type": "overlay_clause_function",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_FOR",
+          "named": true
+        },
+        {
+          "type": "kw_FROM",
+          "named": true
+        },
+        {
+          "type": "kw_OVERLAY",
+          "named": true
+        },
+        {
+          "type": "kw_PLACING",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "passthru_statement",
     "named": true,
     "fields": {},
@@ -1672,6 +1774,37 @@
     }
   },
   {
+    "type": "position_clause_function",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_FROM",
+          "named": true
+        },
+        {
+          "type": "kw_IN",
+          "named": true
+        },
+        {
+          "type": "kw_POSITION",
+          "named": true
+        },
+        {
+          "type": "kw_REPEAT",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "primary_expression",
     "named": true,
     "fields": {},
@@ -1679,6 +1812,10 @@
       "multiple": false,
       "required": true,
       "types": [
+        {
+          "type": "asbitstream_clause_function",
+          "named": true
+        },
         {
           "type": "blob_literal",
           "named": true
@@ -1756,6 +1893,14 @@
           "named": true
         },
         {
+          "type": "overlay_clause_function",
+          "named": true
+        },
+        {
+          "type": "position_clause_function",
+          "named": true
+        },
+        {
           "type": "row_constructor",
           "named": true
         },
@@ -1769,6 +1914,14 @@
         },
         {
           "type": "string_literal",
+          "named": true
+        },
+        {
+          "type": "substring_clause_function",
+          "named": true
+        },
+        {
+          "type": "trim_clause_function",
           "named": true
         },
         {
@@ -2242,6 +2395,41 @@
     }
   },
   {
+    "type": "substring_clause_function",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_AFTER",
+          "named": true
+        },
+        {
+          "type": "kw_BEFORE",
+          "named": true
+        },
+        {
+          "type": "kw_FOR",
+          "named": true
+        },
+        {
+          "type": "kw_FROM",
+          "named": true
+        },
+        {
+          "type": "kw_SUBSTRING",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "table_reference",
     "named": true,
     "fields": {},
@@ -2302,6 +2490,41 @@
         },
         {
           "type": "kw_VALUES",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "trim_clause_function",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "kw_BOTH",
+          "named": true
+        },
+        {
+          "type": "kw_FROM",
+          "named": true
+        },
+        {
+          "type": "kw_LEADING",
+          "named": true
+        },
+        {
+          "type": "kw_TRAILING",
+          "named": true
+        },
+        {
+          "type": "kw_TRIM",
           "named": true
         }
       ]
@@ -2550,6 +2773,10 @@
     "named": true
   },
   {
+    "type": "kw_AFTER",
+    "named": true
+  },
+  {
     "type": "kw_AND",
     "named": true
   },
@@ -2559,6 +2786,10 @@
   },
   {
     "type": "kw_AS",
+    "named": true
+  },
+  {
+    "type": "kw_ASBITSTREAM",
     "named": true
   },
   {
@@ -2575,6 +2806,10 @@
   },
   {
     "type": "kw_ATTACH",
+    "named": true
+  },
+  {
+    "type": "kw_BEFORE",
     "named": true
   },
   {
@@ -2595,6 +2830,10 @@
   },
   {
     "type": "kw_BOOLEAN",
+    "named": true
+  },
+  {
+    "type": "kw_BOTH",
     "named": true
   },
   {
@@ -2946,6 +3185,10 @@
     "named": true
   },
   {
+    "type": "kw_LEADING",
+    "named": true
+  },
+  {
     "type": "kw_LEAVE",
     "named": true
   },
@@ -3062,6 +3305,10 @@
     "named": true
   },
   {
+    "type": "kw_OVERLAY",
+    "named": true
+  },
+  {
     "type": "kw_PARENT",
     "named": true
   },
@@ -3075,6 +3322,14 @@
   },
   {
     "type": "kw_PATH",
+    "named": true
+  },
+  {
+    "type": "kw_PLACING",
+    "named": true
+  },
+  {
+    "type": "kw_POSITION",
     "named": true
   },
   {
@@ -3166,6 +3421,10 @@
     "named": true
   },
   {
+    "type": "kw_SUBSTRING",
+    "named": true
+  },
+  {
     "type": "kw_SUM",
     "named": true
   },
@@ -3199,6 +3458,14 @@
   },
   {
     "type": "kw_TRACE",
+    "named": true
+  },
+  {
+    "type": "kw_TRAILING",
+    "named": true
+  },
+  {
+    "type": "kw_TRIM",
     "named": true
   },
   {

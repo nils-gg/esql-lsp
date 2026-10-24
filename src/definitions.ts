@@ -512,7 +512,28 @@ export function routinesFromSource(source: string): RoutineInfo[] {
     const kind = m[1].toUpperCase() as 'FUNCTION' | 'PROCEDURE';
     const name = m[2];
     const col = lines[i].indexOf(name, m.index + 'CREATE'.length);
-    const bodyEnd = findBodyEndLine(lines, i);
+    let bodyEnd = findBodyEndLine(lines, i);
+
+    // An unclosed body — a BEGIN with no matching END; — is the buffer being
+    // typed, and the tree-sitter recovery for exactly that buffer keeps the
+    // routine owning the rest of its module. Collapse the span to the header
+    // here and the outline nests body DECLAREs under the module in heuristic
+    // mode but under the routine in grammar mode (ISSUES.md I-6), so extend
+    // it to the module's end the same way `modulesFromSource` extends an
+    // unclosed module to EOF. A body that never began (EXTERNAL NAME clause)
+    // keeps the header-only span.
+    if (bodyEnd === i) {
+      const span = modules.find((mo) => i >= mo.start && i <= mo.end);
+      const boundary = span ? span.end : lines.length - 1;
+      let began = false;
+      for (let j = i; j <= boundary; j++) {
+        if (findBeginToken(lines[j]) >= 0) {
+          began = true;
+          break;
+        }
+      }
+      if (began) bodyEnd = boundary;
+    }
 
     // Parameters: the header line when the list closes there, otherwise every
     // line the list spans (ISSUES.md I-5).

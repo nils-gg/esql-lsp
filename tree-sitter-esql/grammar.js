@@ -86,7 +86,18 @@ export default grammar({
     kw_ATTACH: $ => token(prec(1, /ATTACH/i)),
     kw_AND: $ => token(prec(1, /AND/i)),
     kw_AS: $ => token(prec(1, /AS/i)),
+    kw_ASBITSTREAM: $ => token(prec(1, /ASBITSTREAM/i)),
     kw_ATOMIC: $ => token(prec(1, /ATOMIC/i)),
+    kw_AFTER: $ => token(prec(1, /AFTER/i)),
+    kw_BEFORE: $ => token(prec(1, /BEFORE/i)),
+    kw_BOTH: $ => token(prec(1, /BOTH/i)),
+    kw_LEADING: $ => token(prec(1, /LEADING/i)),
+    kw_OVERLAY: $ => token(prec(1, /OVERLAY/i)),
+    kw_PLACING: $ => token(prec(1, /PLACING/i)),
+    kw_POSITION: $ => token(prec(1, /POSITION/i)),
+    kw_SUBSTRING: $ => token(prec(1, /SUBSTRING/i)),
+    kw_TRIM: $ => token(prec(1, /TRIM/i)),
+    kw_TRAILING: $ => token(prec(1, /TRAILING/i)),
     kw_ASYMMETRIC: $ => token(prec(1, /ASYMMETRIC/i)),
     kw_BEGIN: $ => token(prec(1, /BEGIN/i)),
     kw_BETWEEN: $ => token(prec(1, /BETWEEN/i)),
@@ -267,8 +278,14 @@ export default grammar({
 
     // A label: identifier + ':' (before a labelled statement) or
     // identifier + ';' (trailing label / ITERATE / LEAVE target).
-    label_before: $ => token(prec(2, /[_a-zA-Z][_a-zA-Z0-9]*:/)),
-    label_end: $ => token(prec(2, /[_a-zA-Z][_a-zA-Z0-9]*;/)),
+    // Label tokens fold their trailing/leading punctuation in (the lexer
+    // has no lookahead), but IBM's own example puts a SPACE between the
+    // label and the colon/semicolon (`SharedVariableMutex1 : BEGIN …`,
+    // `END ROUTING ;`), so the gap is part of the token. Both remain
+    // prec(2): they only win in states that already expect a label, so
+    // `x;` at the end of a RETURN never lexes as one.
+    label_before: $ => token(prec(2, /[_a-zA-Z][_a-zA-Z0-9]*\s*:/)),
+    label_end: $ => token(prec(2, /[_a-zA-Z][_a-zA-Z0-9]*\s*;/)),
 
     // ------------------------------------------------------------------
     // BROKER SCHEMA .mft.MySchema [PATH .a.b, .c.d] [;]
@@ -417,21 +434,57 @@ export default grammar({
     // DECLARE
     // ------------------------------------------------------------------
 
-    // DECLARE name (, name)* [SHARED] [EXTERNAL] [CONSTANT] type
-    //   [NAMESPACE '...' | NAME '...'] [initial-expression] ;
-    declare_statement: $ => seq(
-      $.kw_DECLARE,
-      $.identifier,
-      repeat(seq(',', $.identifier)),
-      optional($.kw_SHARED),
-      optional($.kw_EXTERNAL),
-      optional($.kw_CONSTANT),
-      $.datatype,
-      // Separate railroad boxes — both may appear (spec DECLARE diagram).
-      optional(seq($.kw_NAMESPACE, $.string_literal)),
-      optional(seq($.kw_NAME, $.string_literal)),
-      optional($.expression),
-      ';',
+    // Two documented shapes (ISSUES.md I-3 families A + H):
+    //
+    // 1. Variable:  DECLARE name (, name)* [SHARED] [EXTERNAL] [CONSTANT]
+    //      type [NAMESPACE '…' | NAME '…'] [initial] ;
+    //    Names may be double-quoted when they contain characters an
+    //    identifier cannot hold ("enclosing names that do not conform to
+    //    these rules in double quotation marks" — 12.0.x ESQL variables
+    //    page); quoted names are grammar-only for now: the analyzers and
+    //    the pattern path index plain identifiers only, so both modes stay
+    //    silent about them together.
+    //
+    // 2. Namespace alias, NO datatype (12.0.x DECLARE page, note 6):
+    //      DECLARE prefix NAMESPACE 'uri' ;
+    //    The NAME alias form (`DECLARE Schema1 NAME 'Joe';`) deliberately
+    //    has NO branch here: `NAME` is also a datatype, so that statement
+    //    already parses through branch 1 as a NAME-typed variable
+    //    initialised with 'Joe' — exactly what it parsed as before this
+    //    rule existed. A dedicated NAME alias branch made DECLARE and
+    //    datatype genuinely LR-ambiguous; declaring that conflict merged
+    //    states all over DECLARE and flipped tree-sitter's recovery for a
+    //    missing `;` from "insert one" (a helpful `expected ';'` marker)
+    //    to "swallow the next statement into the initial-value
+    //    expression". Keeping only the unambiguous NAMESPACE alias leaves
+    //    the grammar smaller AND the recovery honest — variable-vs-alias
+    //    is the analyzer's distinction to make, not the parser's.
+    declare_statement: $ => choice(
+      seq(
+        $.kw_DECLARE,
+        choice($.identifier, $.quoted_identifier),
+        repeat(seq(',', choice($.identifier, $.quoted_identifier))),
+        optional($.kw_SHARED),
+        optional($.kw_EXTERNAL),
+        optional($.kw_CONSTANT),
+        $.datatype,
+        // 12.0.x's diagram shows datatype/NAMESPACE/NAME as choice
+        // branches, so `type … NAME 'alias'` together is outside it — but
+        // keeping both slots independently optional is the permissive
+        // reading this grammar carries (strictness belongs to the
+        // analyzer), and dropping it would reject real pre-diagram code.
+        optional(seq($.kw_NAMESPACE, $.string_literal)),
+        optional(seq($.kw_NAME, $.string_literal)),
+        optional($.expression),
+        ';',
+      ),
+      seq(
+        $.kw_DECLARE,
+        choice($.identifier, $.quoted_identifier),
+        $.kw_NAMESPACE,
+        $.string_literal,
+        ';',
+      ),
     ),
 
     // ------------------------------------------------------------------
@@ -469,11 +522,18 @@ export default grammar({
       $.delete_from_statement,
     ),
 
-    // [label:] BEGIN [NOT ATOMIC] statement* END [label] ;
+    // [label :] BEGIN [NOT] ATOMIC statement* END [label] ;
+    //
+    // The 12.0.x BEGIN page: "Label: BEGIN NOTATOMIC Statements END Label"
+    // with IBM's own example `SharedVariableMutex1 : BEGIN ATOMIC … END;`
+    // (shared-variable mutex in an .esql routine) — so bare ATOMIC is
+    // valid, the label may be followed by a space, and "the second Label
+    // can be present only if the first Label is present" (ISSUES.md I-3 K:
+    // the ROUTING_using_memory_cache.esql block is documented ESQL).
     block_statement: $ => seq(
       optional($.label_before),
       $.kw_BEGIN,
-      optional(seq($.kw_NOT, $.kw_ATOMIC)),
+      optional(seq(optional($.kw_NOT), $.kw_ATOMIC)),
       repeat($.esql_statement),
       $.kw_END,
       choice($.label_end, ';'),
@@ -836,8 +896,16 @@ export default grammar({
     // ------------------------------------------------------------------
 
     // PROPAGATE [TO (TERMINAL e | LABEL e)]
-    //   [WHERE (ENVIRONMENT | MESSAGE | EXCEPTION) e]
-    //   [FINALIZE (DEFAULT | NONE)] [DELETE (DEFAULT | NONE)] ;
+    //   (ENVIRONMENT|MESSAGE|EXCEPTION) e … [FINALIZE (DEFAULT|NONE)]
+    //   [DELETE (DEFAULT|NONE)] ;
+    //
+    // The 12.0.x diagram has NO WHERE on any path (ISSUES.md I-3 B — the
+    // word survives on IBM's page only as an orphaned fragment caption);
+    // the MessageSources clauses hang off the main line, up to one per
+    // tree, and the Controls (FINALIZE/DELETE) are independent. WHERE is
+    // tolerated, optional, once per clause — the pre-12 IIB form; whether
+    // a statement still compiles is the analyzer's problem, not the
+    // parser's.
     propagate_statement: $ => seq(
       $.kw_PROPAGATE,
       optional(seq(
@@ -847,8 +915,8 @@ export default grammar({
           seq($.kw_LABEL, $.expression),
         ),
       )),
-      optional(seq(
-        $.kw_WHERE,
+      repeat(seq(
+        optional($.kw_WHERE),
         choice($.kw_ENVIRONMENT, $.kw_MESSAGE, $.kw_EXCEPTION),
         $.expression,
       )),
@@ -1038,6 +1106,11 @@ export default grammar({
       $.singular_expression,
       $.field_reference,
       $.function_call,
+      $.position_clause_function,
+      $.trim_clause_function,
+      $.overlay_clause_function,
+      $.substring_clause_function,
+      $.asbitstream_clause_function,
       $.select_expression,
       $.case_expression,
       $.cast_expression,
@@ -1157,13 +1230,126 @@ export default grammar({
     ),
 
     function_call: $ => seq(
-      $.identifier,
+      // The clause-function words keep working as ordinary comma calls
+      // (`SUBSTRING(s, 2, 1)` — no longer in the 12.0.x docs, but in the
+      // wild): once those words are keywords at expression start, this
+      // name slot has to accept them too or pre-accepted forms regress.
+      choice(
+        $.identifier,
+        $.kw_POSITION,
+        $.kw_TRIM,
+        $.kw_SUBSTRING,
+        $.kw_OVERLAY,
+        $.kw_ASBITSTREAM,
+      ),
       '(',
-      optional(seq($._call_arg, repeat(seq(',', $._call_arg)))),
+      // Every slot is optional: the documented positional form of some
+      // functions (ASBITSTREAM's page: "you can use an empty expression
+      // for any clauses for which you do not supply a value") writes
+      // `f(tree,,1208,,,,options)`. A bare `,` anywhere else is a
+      // permissiveness the analyzer is free to dislike.
+      optional(seq(
+        optional($._call_arg),
+        repeat(seq(',', optional($._call_arg))),
+      )),
       ')',
     ),
 
     _call_arg: $ => choice('*', $.expression),
+
+    // ------------------------------------------------------------------
+    // Keyword-clause function calls (ISSUES.md I-3 families C/D/E/G/F).
+    // IBM documents these as railroad syntax, NOT as comma-argument
+    // functions — `function_call` cannot express them. Each word is a
+    // keyword token; the reserved-keywords page lists only
+    // BOTH/LEADING/TRAILING (and FROM/FOR/IN-class words are language
+    // words anyway), so POSITION/TRIM/SUBSTRING/OVERLAY/ASBITSTREAM are
+    // non-reserved and a variable could carry one of these names — but
+    // keyword extraction is per-state: the bare identifier still lexes
+    // everywhere EXCEPT expression start, where this grammar already
+    // behaves the same way for SELECT/CAST/etc., and no identifier use
+    // of any of these five words appears in the 103-file corpus.
+    // ------------------------------------------------------------------
+
+    // POSITION(search IN source [FROM start] [REPEAT n])  — ak05240_.html.
+    position_clause_function: $ => seq(
+      $.kw_POSITION, '(',
+      $.expression, $.kw_IN, $.expression,
+      optional(seq($.kw_FROM, $.expression)),
+      optional(seq($.kw_REPEAT, $.expression)),
+      ')',
+    ),
+
+    // TRIM's documented shapes, one branch each (ak05270_.html examples:
+    //   TRIM(TRAILING 'b' FROM 'aaabBb'), TRIM('  a  '),
+    //   TRIM(LEADING FROM '  a  '),     TRIM('b' FROM 'bbbaaabbb')):
+    // nesting them as one optional group does not work — after `LEADING`,
+    // a one-token lookahead cannot know whether a singleton follows, so
+    // `LEADING FROM` (no singleton) is undecidable. Flat branches decide
+    // on the next token. prec(1): `TRIM(x)` is also a legal one-argument
+    // `function_call`; the precedence picks the clause node as the
+    // interpretation (both parse, only the node type differs).
+    trim_clause_function: $ => prec(1, seq(
+      $.kw_TRIM, '(',
+      choice(
+        seq(choice($.kw_BOTH, $.kw_LEADING, $.kw_TRAILING),
+            $.expression, $.kw_FROM, $.expression),
+        seq(choice($.kw_BOTH, $.kw_LEADING, $.kw_TRAILING),
+            $.kw_FROM, $.expression),
+        seq(choice($.kw_BOTH, $.kw_LEADING, $.kw_TRAILING), $.expression),
+        seq($.expression, $.kw_FROM, $.expression),
+        $.expression,
+      ),
+      ')',
+    )),
+
+    // OVERLAY(source PLACING source2 FROM start [FOR length]) — ak05230_.html.
+    // Without FOR, the length is LENGTH(source2) (page prose).
+    overlay_clause_function: $ => seq(
+      $.kw_OVERLAY, '(',
+      $.expression, $.kw_PLACING, $.expression, $.kw_FROM, $.expression,
+      optional(seq($.kw_FOR, $.expression)),
+      ')',
+    ),
+
+    // SUBSTRING(source [FROM pos | BEFORE expr | AFTER expr] [FOR length])
+    // — ak05260_.html (BEFORE is documented next to AFTER; the corpus only
+    // proved FROM/AFTER). prec(1) for the same `SUBSTRING(x)` overlap the
+    // TRIM note explains.
+    substring_clause_function: $ => prec(1, seq(
+      $.kw_SUBSTRING, '(',
+      $.expression,
+      optional(choice(
+        seq($.kw_FROM, $.expression),
+        seq($.kw_BEFORE, $.expression),
+        seq($.kw_AFTER, $.expression),
+      )),
+      optional(seq($.kw_FOR, $.expression)),
+      ')',
+    )),
+
+    // ASBITSTREAM(field-reference (OPTIONS|ENCODING|CCSID|SET|TYPE|FORMAT) e …)
+    // — bit-stream conversion page: six clauses, "each clause can occur
+    // once only", on a repeat group (any order). This rule repeats freely:
+    // the diagram's "once only" belongs to the analyzer, not the parser.
+    //
+    // repeat1, not repeat: `ASBITSTREAM(tree)` with no clauses is exactly
+    // a one-argument `function_call`, and the two identical parses are an
+    // unresolvable conflict. The clause-less form therefore keeps its
+    // `function_call` parse — acceptance is unchanged either way.
+    asbitstream_clause_function: $ => seq(
+      $.kw_ASBITSTREAM, '(',
+      $.field_reference,
+      repeat1(choice(
+        seq($.kw_OPTIONS, $.expression),
+        seq($.kw_ENCODING, $.expression),
+        seq($.kw_CCSID, $.expression),
+        seq($.kw_SET, $.expression),
+        seq($.kw_TYPE, $.expression),
+        seq($.kw_FORMAT, $.expression),
+      )),
+      ')',
+    ),
 
     // SELECT item (, item)* FROM from-item (, from-item)* [WHERE e]
     //
@@ -1187,7 +1373,14 @@ export default grammar({
         '(', $._call_arg, ')',
       ),
       seq($.kw_INSERT, $.expression),
-      $.expression,
+      // `Expression AS Path` is the documented alias branch (12.0.x SELECT
+      // page: "The SelectClause consists of a number of expressions, each
+      // with an AS Path clause"). The bare `<alias>` form without AS is
+      // NOT documented anywhere — VERIFICATION.md — so it stays rejected.
+      seq(
+        $.expression,
+        optional(seq($.kw_AS, $.identifier)),
+      ),
     ),
 
     _from_item: $ => seq(

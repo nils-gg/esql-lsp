@@ -225,6 +225,15 @@
 (declare_statement (identifier) @variable)
 (routine_parameter (identifier) @parameter)
 (function_call (identifier) @function.call)
+; Keyword-clause calls: the word being called is the leading keyword
+; (and the same word inside a comma-call name slot).
+(position_clause_function (kw_POSITION) @function.call)
+(trim_clause_function (kw_TRIM) @function.call)
+(overlay_clause_function (kw_OVERLAY) @function.call)
+(substring_clause_function (kw_SUBSTRING) @function.call)
+(asbitstream_clause_function (kw_ASBITSTREAM) @function.call)
+(function_call [(kw_POSITION) (kw_TRIM) (kw_SUBSTRING) (kw_OVERLAY) (kw_ASBITSTREAM)] @function.call)
+(declare_statement (quoted_identifier) @variable)
 (field_reference (identifier) @variable)
 (schema_name (identifier) @module)
 (label_before) @label

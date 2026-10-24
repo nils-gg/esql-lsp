@@ -343,3 +343,70 @@ END MODULE;
         (kw_END)))
     (kw_END)
     (kw_MODULE)))
+
+===
+select list aliases with AS (families I and K)
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  SET PartsTable.Part[] = SELECT P.PartNumber as pn, CURRENT_TIMESTAMP AS UPDATED_AT FROM Database.WMB.Parts AS P;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier)
+              (identifier))
+            (expression
+              (primary_expression
+                (select_expression
+                  (kw_SELECT)
+                  (expression
+                    (primary_expression
+                      (field_reference
+                        (identifier)
+                        (identifier))))
+                  (kw_AS)
+                  (identifier)
+                  (expression
+                    (primary_expression
+                      (kw_CURRENT_TIMESTAMP)))
+                  (kw_AS)
+                  (identifier)
+                  (kw_FROM)
+                  (field_reference
+                    (identifier)
+                    (identifier)
+                    (identifier))
+                  (kw_AS)
+                  (identifier))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))

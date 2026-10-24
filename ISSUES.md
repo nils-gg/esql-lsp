@@ -5,11 +5,14 @@ bottom, and re-tested 2026-10-24 on the same corpus with a second probe that
 checks protocol invariants instead of opinions (range validity, symbol
 containment, references monotonicity, the semantic-token stream, ghost URIs,
 out-of-range positions, incremental round trips, latency). **Round 2 found nine
-more, I-14 … I-22, and all nine are fixed as of 2026-10-24** — the next section is
-the current state, with the before/after measurements; everything below it is
-history. Still open, from round 1: **I-3** (grammar families A–K, each waiting for
-its railroad diagram to be read), **I-6**, **I-12** and **I-13**, which need a
-decision rather than a fix.
+more, I-14 … I-22, and all nine are fixed; Round 3 (2026-10-24) closed the two
+big round-1 leftovers: I-3** — all eleven construct families adjudicated against
+the ACE 12.0.x reference, ten shipped as grammar rules, one (`OutputRoot.[<+1]`)
+adjudicated NOT-ESQL and still rejected on purpose — **and I-6**, semantic checks
+inside a damaged region. Still open from round 1: **I-12** (the multi-line
+`Syntax error.` span quality) and **I-13** (cross-file `SHARED`/`CALL`), which
+need a decision rather than a fix. The sections below the status table are
+history.
 
 Every item was reproduced twice: once on a real file, once on the minimal snippet
 printed inline, so this document stands on its own without the corpus or the
@@ -79,10 +82,10 @@ same serial probe (one document at a time — see I-1), both modes.
 |---|---|---|
 | I-1 | **fixed** | per-URI `Map<uri, Timeout>`; new e2e case opens three broken files in one burst and asserts all three publish (restoring the old single timer makes that case time out) |
 | I-2 | **fixed** | `comment: /\/\*(?:[^*]|\*+[^*/])*\*+\//` + `test/corpus/comments.txt`; corpus scan: files where a comment swallowed code 1 → **0**, hidden lines 151 → **0** |
-| I-3 | open (by design) | families A–J untouched, each awaiting its railroad diagram; their messages are readable now (I-12). The I-2 fix uncovered two more constructs — logged as family K |
+| I-3 | **fixed** (round 3) | all 11 families adjudicated against 12.0.x pages — 10 shipped as grammar rules with corpus tests, family J (`OutputRoot.[<+1]`) adjudicated NOT-ESQL and deliberately still rejected; corpus scan 27 damaged → **1** (the J file). Full verdict table in `tree-sitter-esql/VERIFICATION.md` |
 | I-4 | **fixed** | `nameRange()` adds `match.index`; heuristic symbols whose `selectionRange` did not hold their own name 168/344 → **0/344**, and after the fix all 670 (grammar) / 674 (heuristic) symbols are exact |
 | I-5 | **fixed** | `paramSegments()` / `locatedRoutineParams()` read a header across lines; `symbols.ts` now consumes `routinesFromSource()`; definition + references asserted on a split header in **both** modes |
-| I-6 | open | still needs the two paths reconciled inside a damaged region |
+| I-6 | **fixed** (round 3) | tree path descends ERROR regions (`underDamaged`) and mines names/SET targets/routines from damaged code, one `Syntax error.` per outermost region; unclosed-module outlines agree across paths (`equal: true` on Case13); unit + e2e (real stdio, grammar path proven) + fallback tests |
 | I-7 | **fixed** | one hint per routine, none when the scope never mentions `Properties`; corpus 51 hints → **0**; unit + stdio e2e + settings-toggle cases |
 | I-8 | **fixed** | `XMLNS_RE` needs a following `.` and rejects `XMLNSC`; both `NamespaceDecl` spellings are now negative tests; corpus 2 → **0** |
 | I-9 | **fixed** | whole-file `(`/`[` depth, `SELECT` as a continuation word, operator at the start of the next line; range spans the statement; corpus 13 hints → **0**, genuine misses still flagged |
@@ -91,12 +94,14 @@ same serial probe (one document at a time — see I-1), both modes.
 | I-12 | partially fixed | no more token names in messages (`expected a data type here`, `expected a field reference here`); the multi-line `Syntax error.` span quality is still open |
 | I-13 | open | needs the workspace-index decision (see the note at the end) |
 
-Corpus effect on findings, 103 files, both modes:
+Corpus effect on findings, 103 files, both modes (third column re-measured
+2026-10-24 after the round-3 grammar + I-6 work; `corpus-probe.js` again
+reported **0** protocol violations in both modes, 103/103 published):
 
 | mode | files with findings | findings | what is left |
 |---|---|---|---|
-| grammar | 41 → 29 | 111 → 63 | 56 grammar gaps (I-3 families), 4 `FailureCount` (I-13), 3 × `Main() contains neither RETURN nor PROPAGATE` |
-| heuristic | 26 → 4 | 73 → 7 | the same 4 + 3 |
+| grammar | 41 → 29 → **5** | 111 → 63 → **8** | 1 × `Syntax error.` on the NOT-ESQL `[<+1]` file (I-3/J, by design), 4 `FailureCount` (I-13), 3 × `Main() contains neither RETURN nor PROPAGATE` |
+| heuristic | 26 → 4 → **4** | 73 → 7 → **7** | the same 4 + 3 — zero syntax complaints |
 
 Those 7 were each read back and are **true positives**: `FailureCount` is I-13,
 and the three `Main()`s really do fall off the end (`TransformExceptionHandler`,
@@ -108,6 +113,8 @@ with ERROR/MISSING where it reported 26. The comment fix did not break anything 
 it made `Routing_using_memory_cache.esql`'s 151 lines visible for the first time,
 and that code uses constructs the grammar does not have (family K). A file that
 parses "clean" because its body was mistaken for a comment is not a clean file.
+(Round 3 closed this too: the family rules shipped and the same scan now reports
+**1** file — the `[<+1]` one.)
 
 ---
 ---
@@ -247,7 +254,13 @@ corpus test with two block comments and live code between them.
 
 ## I-3 · High · grammar rejects 26 of 103 real files (25%)
 
-**Open** — deliberately. Nothing below is adjudicated yet; read the diagram, then change the rule, then `npx tree-sitter generate && npm ci`. What did change is the *messages* (I-12), so each of these now says what it wanted.
+**Fixed 2026-10-24 (round 3)** — every family adjudicated against the live
+ACE 12.0.x reference; verdicts, page ids and the shipped rules are in
+`tree-sitter-esql/VERIFICATION.md` ("Construct-family adjudications"). Ten
+families were GRAMMAR-INCOMPLETE and shipped with corpus tests; family J
+(`OutputRoot.[<+1]`) is **NOT-ESQL** and stays rejected on purpose. The scan
+below is the state when this was written — the re-scan after the fixes is
+**102 clean, 1 damaged**, and that one file is the J case.
 
 Tree-sitter ERROR/MISSING scan when this was written: **77 clean, 26 damaged**.
 Through the server those damaged files produced **35 × `Syntax error.`**,
@@ -445,7 +458,17 @@ Grammar outline: `getPolicyProperty, policyName, propertyName` · heuristic:
 
 ## I-6 · Medium · grammar mode hides semantic checks inside a damaged region
 
-**Open.** Left as reported. The tree path rebuilds the module header from the ERROR region but does not descend for names, so the outline and the undeclared-variable check go quiet inside a damaged region. Fixing it means deciding whether the tree path or the pattern path is authoritative *inside* an ERROR node — `test/symbols.test.ts` already has the comparison harness to hold them together once that is settled.
+**Fixed 2026-10-24 (round 3).** The tree path is authoritative *inside* an
+ERROR node: `visit()` in `parser.ts` keeps descending every ERROR child with a
+sticky `underDamaged` flag, mining declarations, SET targets and routines from
+damaged code, while reporting exactly one `Syntax error.` at the outermost
+damaged region instead of one per nested node. `routinesFromSource()` (the
+pattern path) extends an unclosed BEGIN body to module end so the two paths
+agree on the buffer-mid-typing state — `test/symbols.test.ts` compares the two
+outlines and reports `equal: true` on the Case13 file below. Unit, symbols and
+stdio-e2e coverage in all three failure shapes (unclosed module, damaged
+routine body, declaration only inside damage); fallback-mode tests included,
+as required.
 
 The unclosed-module state — a buffer mid-typing — is where the fallback is
 supposed to carry on (`AGENTS.md`: keep the two paths in agreement). It doesn't:
@@ -1358,3 +1381,73 @@ Still open, all from round 1: **I-3** families A–K (read the diagram first, pe
 `VERIFICATION.md`), **I-6** (semantic checks inside a damaged region), **I-12**
 (multi-line `Syntax error.` spans), **I-13** (cross-file `SHARED` / `CALL` —
 a feature decision, not a bug).
+
+## Fix log (2026-10-24) — round 3: probe archive, I-6, codeDescription, I-3 families A–K
+
+**The probes are archived.** The seven measurement scripts behind every number in
+this document now live under `scripts/probe/` with a shared corpus-argument
+helper, a `README.md` (including the `--corpus` vs `--corpus=` incident that
+produced 984 phantom violations), and `probe:*` npm aliases. All seven were
+re-run against the 103-file corpus and reproduce the round-2 numbers they are
+cited for (0/339 + 0/879 out-of-scope completion offers, the damaged-file scan,
+CRLF ranges, latency, the robustness battery).
+
+**I-6 — the tree path now keeps working inside damage.** `visit()` in
+`src/parser.ts` descends every child of an `ERROR` node with a sticky
+`underDamaged` flag: declarations, SET targets and routines are mined from
+damaged code (so the undeclared-variable check and the outline stay alive in
+the buffer-mid-typing state), while exactly one `Syntax error.` is reported for
+the outermost damaged region instead of one per nested node. The pattern path
+matches: `routinesFromSource()` extends an unclosed `BEGIN` body to module end,
+mirroring the fallback rule. `test/symbols.test.ts` compares the two outlines on
+the Case13 file and reports `equal: true`; unit + symbols + diagnostics + a real
+stdio e2e case cover the three shapes, and every fallback assertion runs in
+`ESQL_LSP_NO_GRAMMAR=1` mode too.
+
+**Diagnostics now carry a `codeDescription`** (extends I-21): every diagnostic
+the server publishes links to `https://github.com/nils-gg/esql-lsp#diagnostics`,
+asserted by the shared `assertAddressable` helper in both modes and by an e2e
+case; README documents the link target.
+
+**I-3 — all eleven families adjudicated against the live ACE 12.0.x reference.**
+Verdicts, page ids and reasoning: `tree-sitter-esql/VERIFICATION.md` →
+"Construct-family adjudications". Shipped (each with corpus tests): namespace
+alias DECLARE and quoted DECLARE names (A, H — quoted names grammar-only, both
+analyzer paths still index plain identifiers); `PROPAGATE` without `WHERE` and
+with repeatable MessageSources (B — `WHERE` is an orphaned IBM page caption;
+kept tolerated-optional); the keyword-clause calls `POSITION`/`TRIM`/`OVERLAY`/
+`SUBSTRING`/`ASBITSTREAM` (C/D/E/G/F — `TRIM` needed a flat choice, `ASBITSTREAM`
+a `repeat1` so the clauseless call keeps its old node, and `_call_arg` slots are
+individually optional for IBM's documented `f(tree,,1208,,,,opts)` positional
+form); `SELECT expr AS name` (I); labelled `[NOT] ATOMIC` blocks (K). **Family J
+(`SET OutputRoot.[<+1] = …`) is NOT-ESQL** — `<n>` counts from the end — and the
+one file using it still reports a syntax error, which is correct. PROPAGATE
+`DECIDEMODE`-style clauses and the `ASJSON`/`TOMIME` family have no 12.0.x page
+and were left exactly as rejected as they were.
+
+**A green that was not green.** Round 2's insertion-marker test (`expected ';'`
+after `DECLARE x INT 0`) had been passing against a *stale*
+`node_modules/tree-sitter-esql/` copy; the real committed parser recovers that
+input by swallowing the next statement. Found only by parsing the fixture with a
+HEAD-grammar CLI checkout. The test now uses the smallest shape that genuinely
+forces an insertion (`SET x = 1` before `END;`), and the lesson — a green test
+run is only as real as the grammar copy it loaded — is recorded in the test
+comment and this log.
+
+**Analyzer/highlights follow-through:** a datatype-less `DECLARE` (namespace
+alias) is not indexed as a variable; `function_call` names may be keyword tokens
+(`SUBSTRING(s, 2, 1)`); clause-function nodes push the same routine reference a
+comma call would; `highlights.scm` captures the new call shapes. A dedicated
+`NAME`-alias grammar branch was built, measured and **removed**: it made DECLARE
+LR-ambiguous, and declaring the conflict merged states and flipped tree-sitter's
+missing-`;` recovery from insert-marker to swallow-next-statement — the alias
+already parses as NAME-typed-plus-initial, so the parser keeps no ambiguity and
+the analyzer keeps the distinction.
+
+**Verified:** `npm test` 119/119 (after `npm ci`, so the grammar copy is the
+fresh one); `ESQL_LSP_NO_GRAMMAR=1 npm test` 94 pass / 25 skip / 0 fail;
+`npm run grammar:test` 85/85; `npx tree-sitter generate` exits clean with **no**
+LR conflicts; `smoke:stdio --expect-grammar` PASS; `grammar-scan.js` over the
+corpus: 27 damaged → **1** (the J file); `corpus-probe.js` re-run: grammar-mode
+findings 63 → **8** across **5** files, heuristic 7 → 7, protocol violations **0**
+in both modes, 103/103 documents publishing.

@@ -172,7 +172,7 @@ so adjudication starts from a known state.
 | `SELECT … INTO OutputRoot… FROM …` | rejected | `SELECT` exists **only as an expression** (`SET x = SELECT … FROM …`); there is no `select_statement`, so the `INTO` form cannot parse. Correlating with an alias inside the expression form needs `AS` (`FROM Data.Item AS I`) ✓ corpus-covered |
 | `LOG TERMINAL 'out';` | rejected | `log_statement` requires `LOG EVENT` / `LOG USER TRACE` **and** a `VALUES (…)` clause; `LOG EVENT;` without `VALUES` is rejected too |
 | `ELSE IF cond THEN` (two tokens) | rejected | `if_statement` offers `ELSEIF` or `ELSE`-then-statements; no `ELSE` + nested-`IF` alternative |
-| `BEGIN ATOMIC … END;` | rejected | `block_statement` allows only `BEGIN [NOT] ATOMIC` |
+| ~~`BEGIN ATOMIC … END;`~~ | **accepted since 2026-10-24** | resolved by round 3 (family K): `ATOMIC` bare + optional labels are in the diagram; see the adjudication table below |
 | `DECLARE nums LIST OF INTEGER;` | rejected | the datatype production has no `LIST OF`; the `LIST{…}` literal is reachable as an expression only |
 | `CALL AddTwo(IN a, OUT b);` | rejected | `call_statement` arguments are plain expressions; mode keywords are only modelled on `CREATE PROCEDURE/FUNCTION` parameter declarations |
 | `CREATE FUNCTION F() RETURNS INTEGER DETERMINISTIC` / `NO SQL` | rejected | `create_routine_statement` models `LANGUAGE …` and `DYNAMIC RESULT SETS n` but not the DB2 routine-characteristic set (`[NOT] DETERMINISTIC`, `NO SQL`, `READS SQL DATA`, `MODIFIES SQL DATA`) |
@@ -182,12 +182,57 @@ ACE 12.0.x ESQL reference, extend `grammar.js` (permissive superset, never
 stricter), add a corpus test, and re-run both suites (`npm run grammar:test` and
 root `npm test`).
 
+## Construct-family adjudications (2026-10-24 round-3 LSP review, ISSUES.md I-3)
+
+Eleven families of real-world/review constructs that the grammar rejected were
+adjudicated against the live ACE 12.0.x ESQL reference (pages stamped
+12.0.12.31; the railroad diagrams as served as inline SVG, plus the textual
+Syntax lines). Every ACCEPTED verdict shipped with a corpus test; the result:
+the 103-file real-world corpus went from 26 damaged files to 1 — and that one
+file is the deliberately-still-rejected `[<+1]` case below.
+
+| Family | Construct | Verdict (per 12.0.x reference) | Shipped |
+|---|---|---|---|
+| A | `DECLARE ns NAMESPACE 'uri';` (no datatype) | GRAMMAR-INCOMPLETE — the DECLARE page's own example is this form verbatim | alias branch; not indexed as a variable (implicitly CHARACTER *constant* per page note 6 — a path prefix, not a variable) |
+| B | `PROPAGATE TO TERMINAL 'x' MESSAGE … DELETE NONE;` | GRAMMAR-INCOMPLETE — diagram: optional TO, optional MessageSources, optional Controls, **no `WHERE` anywhere** (the word is an orphaned fragment caption on IBM's page) | `WHERE` now tolerated-optional (pre-12 form, unverified attribution — kept as permissiveness, no corpus file uses it); MessageSources repeatable |
+| C | `POSITION(search IN source [FROM x] [REPEAT n])` | GRAMMAR-INCOMPLETE (ak05240_) | `position_clause_function` |
+| D | `TRIM(LEADING FROM x)` etc., four documented shapes | GRAMMAR-INCOMPLETE (ak05270_); note: the review sample's `0x0B` literal is separately UNADJUDICATED — IBM documents `X'0B'`-style literals only, and no corpus file contains a `0x` literal | `trim_clause_function` (flat choice: the nested-optional shape is LR-undecidable for `LEADING FROM`) |
+| E | `OVERLAY(s PLACING t FROM p [FOR n])` | GRAMMAR-INCOMPLETE (ak05230_) | `overlay_clause_function` |
+| F | `ASBITSTREAM(tree OPTIONS … CCSID …)` + positional comma form with empty slots | GRAMMAR-INCOMPLETE (asbitstream page: six clauses once each, free order; positional form "can use an empty expression") | `asbitstream_clause_function` (repeat1 — clauseless `ASBITSTREAM(t)` stays a `function_call`, identical parse); `_call_arg` slots now individually optional for `f(a,,b)` |
+| G | `SUBSTRING(s FROM p [FOR n] / AFTER x / BEFORE x)` | GRAMMAR-INCOMPLETE (ak05260_, incl. the BEFORE form nobody had cited) | `substring_clause_function` |
+| H | `DECLARE "script-encoded-hostname" EXTERNAL CHARACTER;` | GRAMMAR-INCOMPLETE — ESQL variables page: non-conforming names are used "enclosed … in double quotation marks" | quoted names in the DECLARE name slots (grammar-only: both analyzer paths keep indexing plain identifiers, so modes agree) |
+| I | `SELECT expr AS name` over `CURRENT_TIMESTAMP` | GRAMMAR-INCOMPLETE (SELECT page: "each with an AS Path clause"); **bare alias without `AS` is NOT documented** — stays rejected | `_select_item` AS alias |
+| J | `SET OutputRoot.[<+1] = …` (meant as "next/new element") | **NOT-ESQL** (ak04861_: `<n>` in a path index counts **from the end** of the repeating group — `[<+1]` means "the last element", not "the next one"; and a dot with no element name before `[` is not in the documented path syntax either). The only defensible ESQL reading of the tokens is a from-the-end index on an unnamed element, which is what the sample is not | nothing — verdict only; the file still reports a syntax error, correctly |
+| K | `LBL : BEGIN ATOMIC … END LBL ;` | IS ESQL (BEGIN page + IBM's `SharedVariableMutex1 : BEGIN ATOMIC` example) — bare `ATOMIC`, spaced labels | block ATOMIC choice; label tokens accept the space IBM's example writes. K's qualified-column + lowercase `as` half = family I's alias fix |
+
+No-12.0.x-source groups, left exactly as the grammar had them (UNADJUDICATED —
+real IIB-era, but nothing in the 12.0.x reference licenses them): PROPAGATE
+`DECIDEMODE`/`COPYMSGTREE`/`CASEFINALIZE`/`BYPASS`/`AS`; the ASBITSTREAM
+siblings `ASJSON`/`NPCANONICAL`/`ASXML`/`TOMIME`/… (zero occurrences in the
+12.0.x TOC).
+
+Implementation notes worth keeping:
+
+- The five clause-function words are keyword tokens, non-reserved per IBM —
+  so a *bare variable* named `position`/`trim`/… would lex as the keyword at
+  expression start. Same tradeoff this grammar already makes for
+  `select`/`cast`; keyword extraction keeps the identifier reading alive in
+  every other state, and zero identifier uses of these five words appear in
+  the 103-file corpus.
+- A dedicated `NAME` alias branch (family A's sibling form `DECLARE x NAME
+  'v'`) makes DECLARE genuinely LR-ambiguous; declaring that conflict merged
+  states across the module and flipped tree-sitter's missing-`;` recovery
+  from *insert* (helpful marker) to *swallow next statement*. The alias form
+  already parses as `NAME`-datatype-plus-initial-value, so no branch exists —
+  variable-vs-alias is the analyzer's distinction.
+- `TRIM(x)`/`SUBSTRING(x)`/`ASBITSTREAM(t)` overlap with the one-argument
+  `function_call`; prec/repeat1 assign the overlap as noted in grammar.js.
+
 ## Known limitations (backlog)
 
-1. **SQL-style function clause forms** — `SUBSTRING(s FROM 1 FOR 2)` and
-   `TRIM(BOTH x FROM y)` (and their cousins) are documented ESQL but the
-   grammar only accepts the plain call form `SUBSTRING(s, 1, 2)` /
-   `TRIM(x, y)`. Corpus tests deliberately avoid the clause forms.
+1. ~~**SQL-style function clause forms**~~ — resolved 2026-10-24: the clause
+   forms of POSITION/TRIM/OVERLAY/SUBSTRING/ASBITSTREAM now parse (see the
+   round-3 adjudications above); the plain call form stays accepted too.
 2. **No semantic validation** — parser domains, CCSIDs, terminal names and
    other string-valued clauses are not checked against known values
    (by design; permissive superset).
