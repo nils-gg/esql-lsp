@@ -5,14 +5,14 @@ bottom, and re-tested 2026-10-24 on the same corpus with a second probe that
 checks protocol invariants instead of opinions (range validity, symbol
 containment, references monotonicity, the semantic-token stream, ghost URIs,
 out-of-range positions, incremental round trips, latency). **Round 2 found nine
-more, I-14 … I-22, and all nine are fixed; Round 3 (2026-10-24) closed the two
-big round-1 leftovers: I-3** — all eleven construct families adjudicated against
+more, I-14 … I-22, and all nine are fixed; Round 3 (2026-10-24) closed the four
+remaining round-1 items: I-3** — all eleven construct families adjudicated against
 the ACE 12.0.x reference, ten shipped as grammar rules, one (`OutputRoot.[<+1]`)
-adjudicated NOT-ESQL and still rejected on purpose — **and I-6**, semantic checks
-inside a damaged region, plus **I-12**'s error-message quality. Still open from
-round 1: **I-13** (cross-file `SHARED`/`CALL`), which needs a decision rather
-than a fix. The sections below the status table are
-history.
+adjudicated NOT-ESQL and still rejected on purpose — **I-6** (semantic checks
+inside a damaged region), **I-12** (error-message quality), and **I-13** (a
+bounded workspace index: sibling `SHARED` declarations now silence the
+undeclared check, and `workspace/symbol` answers). That is all twenty-two
+findings closed; the sections below the status table are history.
 
 Every item was reproduced twice: once on a real file, once on the minimal snippet
 printed inline, so this document stands on its own without the corpus or the
@@ -92,21 +92,26 @@ same serial probe (one document at a time — see I-1), both modes.
 | I-10 | **fixed** | quoted declares read from the raw line (range = the name, quotes excluded) and `wordAtPosition()` resolves quoted names for hover/definition/references; ghost `EXTERNAL` symbols 4 → **0**. The four real quoted names now exist — in heuristic mode (674 symbols vs grammar's 670), so the outline divergence that is left in those 4 files is I-3/H, not a fallback bug |
 | I-11 | **fixed** | hover for a module (kind + contained routines), hover/definition/references for `BROKER SCHEMA` with dotted-segment matching. Measured in **both** modes: Module hover 0/117 → **117/117**, Namespace hover/definition/references 0/50 → **50/50**, and every one of the 670 (grammar) / 674 (heuristic) symbols answers definition, references and hover at its own advertised position |
 | I-12 | **fixed** (round 3) | no more token names in messages (`expected a data type here`, `expected a field reference here`); damage is now named and anchored — `Syntax error in a DECLARE statement.` on the statement's first line, precise bare message when nothing can be named (5 unit cases + the I-6 stdio case; corpus counts unchanged) |
-| I-13 | open | needs the workspace-index decision (see the note at the end) |
+| I-13 | **fixed** (round 3) | bounded workspace scan + live open-document text (`src/workspaceIndex.ts`, pattern-path so it works in both modes) feeds a SHARED-aware undeclared check and `workspace/symbol`; `corpus-probe --workspace`: the 4 `FailureCount` false positives gone in both modes, check still fires without a root (control asserted in e2e) |
 
 Corpus effect on findings, 103 files, both modes (third column re-measured
 2026-10-24 after the round-3 grammar + I-6 work; `corpus-probe.js` again
-reported **0** protocol violations in both modes, 103/103 published):
+reported **0** protocol violations in both modes, 103/103 published; the
+fourth column is the I-13 acceptance run with `--workspace`, i.e. the corpus
+directory handed to the server as its root):
 
 | mode | files with findings | findings | what is left |
 |---|---|---|---|
-| grammar | 41 → 29 → **5** | 111 → 63 → **8** | 1 × `Syntax error.` on the NOT-ESQL `[<+1]` file (I-3/J, by design), 4 `FailureCount` (I-13), 3 × `Main() contains neither RETURN nor PROPAGATE` |
-| heuristic | 26 → 4 → **4** | 73 → 7 → **7** | the same 4 + 3 — zero syntax complaints |
+| grammar | 41 → 29 → 5 → **4** | 111 → 63 → 8 → **4** | 1 × `Syntax error.` on the NOT-ESQL `[<+1]` file (I-3/J, by design), 3 × `Main() contains neither RETURN nor PROPAGATE` — the 4 `FailureCount` findings (I-13) are gone once a workspace root is given |
+| heuristic | 26 → 4 → 4 → **3** | 73 → 7 → 7 → **3** | the 3 `Main()` — zero syntax complaints, zero cross-file complaints |
 
-Those 7 were each read back and are **true positives**: `FailureCount` is I-13,
-and the three `Main()`s really do fall off the end (`TransformExceptionHandler`,
-`Sender`'s `InitNoSequenceRetry` module, `MQGetDemo_MF_RemoveMQHeaders`). The
-heuristic path no longer warns about anything valid on this corpus.
+Those findings were each read back: the three `Main()`s really do fall off the
+end (`TransformExceptionHandler`, `Sender`'s `InitNoSequenceRetry` module,
+`MQGetDemo_MF_RemoveMQHeaders`) and the `[<+1]` file really is not ESQL; the 4
+`FailureCount` flags were file-local TRUE but workspace FALSE POSITIVES, which
+is why I-13 shipped an index rather than a suppressions list. The heuristic
+path no longer warns about anything on this corpus once a workspace root is
+given (3 true findings left, grammar mode's 4th is the NOT-ESQL file).
 
 One honest regression to record: `npx tree-sitter parse` now reports **27** files
 with ERROR/MISSING where it reported 26. The comment fix did not break anything —
@@ -619,22 +624,37 @@ re-scan is unchanged (the one damaged file reports its single-line
 
 ## I-13 · Low · no cross-file resolution (design gap, needs a decision)
 
-**Open — needs a decision, not a patch.** A workspace index (declarations per file, refreshed on save, feeding `workspace/symbol` and the undeclared-variable check) is the only correct fix; suppressing every name that appears after a `CALL` would silence a real bug class to hide four findings. Either way it is a feature, so it was not folded into this round.
+**Fixed 2026-10-24 (round 3) — by the real mechanism, not suppression.**
+`src/workspaceIndex.ts` is a bounded, one-pass scan of `*.esql` under the
+client's workspace root (≤ 500 files, ≤ 256 KB each, ≤ depth 12, junk and
+dot-directories skipped), run once after `initialized`, plus the *live text*
+of every open document — which always supersedes its on-disk snapshot. It
+extracts each file with the same pattern extractors the heuristic fallback
+uses, so it works identically with and without the grammar addon. The result
+feeds two surfaces: the undeclared-variable check now treats `DECLARE … SHARED`
+names from sibling files as declared (both the tree path and the fallback
+take the same set — `test/diagnostics.test.ts` asserts they agree), and
+`workspace/symbol` answers a flat outline over the scan plus open buffers.
+`DeclaredName` gained a `shared` flag, filled by *both* extraction paths, so
+the four name-consuming features keep reading one extractor.
 
-`_from-archives/Healthcare/…/ReceiverExceptionHandler.esql` gets
-`Variable 'FailureCount' is used in SET but never declared` at **4** lines
-(67, 96, 170, 172). It is declared twice in sibling files:
-`…/healthcare/Receiver.esql:23` and `…/transport/TransportReceiver.esql:24` as
-`DECLARE FailureCount SHARED INTEGER 0;`. Same shape: `CALL CopyMessageHeaders()`
-where the procedure lives in another `.esql` of the same application.
+`ReceiverExceptionHandler.esql` — the file above — is the acceptance case,
+measured through the real server with `corpus-probe.js --workspace` (which
+sets the corpus dir as `rootUri`): with a root the **4 `FailureCount`
+findings are gone in both modes** (grammar-mode corpus findings 8 → 4 in
+4 files; heuristic 7 → 3 in 3 files — what remains are the true positives:
+3 × `Main()` and the NOT-ESQL `[<+1]` file), protocol violations still **0**,
+103/103 publishing. Without a root the check keeps firing on exactly this
+text (the e2e asserts the control session too — the mechanism silenced
+false positives, not the check).
 
-There is no workspace index — every document is an island — so any `SHARED`
-declaration (an explicitly cross-flow feature) or `CALL` into another file is
-unresolvable, and the undeclared-variable check therefore produces false
-positives on real multi-file applications. Either add a lightweight workspace
-index (`workspace/symbol` + a declaration cache keyed by file), or suppress the
-undeclared-variable warning for names declared `SHARED` elsewhere / any name used
-only after a `CALL`.
+Deliberate approximations, stated where users will read them (README):
+"workspace-wide" stands in for ACE's *application-wide* `SHARED` scope — an
+LSP has no application boundary to consult; and there is no file watcher, so
+files changed outside the editor after the initial scan stay stale until the
+server restarts. Cross-file go-to-definition/hover on a `CALL` target is the
+same index's obvious next consumer and is not yet wired — `workspace/symbol`
+already lists those routines.
 
 ---
 
@@ -1520,3 +1540,35 @@ Bonus finding before any timing was read: the **heuristic path indexes one
 tree path parses it fine. Zero occurrences across the 103-file corpus (the
 mode reports nothing but the known true positives there), so it is recorded,
 not chased: any real corpus line with two statements will reopen it.
+
+**I-13 — cross-file resolution, by an index rather than a suppressions
+list.** `src/workspaceIndex.ts`: a bounded one-pass scan (≤ 500 `.esql` files,
+≤ 256 KB each, depth ≤ 12, skipping `.git`/`node_modules`/`dist`/… and
+dot-directories, unreadable entries counted and skipped, never thrown) run
+once after `initialized` under the client's `workspaceFolders`/`rootUri`,
+plus the live text of every open document, which supersedes its on-disk
+snapshot. Files are reduced with the SAME pattern extractors as the fallback,
+so the feature is mode-agnostic by construction; `DeclaredName` gained a
+`shared` flag filled by both extraction paths (one extractor, four features,
+still in agreement). Two consumers: the undeclared-variable check merges
+sibling `SHARED` names into its declared set (`analyze()`'s new optional
+fourth parameter; absent it, file-local semantics are bit-for-bit unchanged
+for every unit test and root-less session), and `workspace/symbol` answers a
+bounded flat outline — modules, routines, BROKER SCHEMAs — over scan + live
+buffers. Stated approximations: workspace ≈ ACE's application scope (no
+boundary exists for an LSP to consult), and no file watcher (files changed
+outside the editor are invisible until restart; open buffers are always
+live). An open document edited before the scan lands may flash the finding
+until the scan's `revalidateAll()` re-publishes — the e2e waits for the
+later publish rather than pretending the flash cannot happen.
+
+**Verified (I-13):** `npm test` 132/132 (6 index cases + 1 diagnostics case
++ 1 stdio e2e, all fallback parts running in both modes);
+`ESQL_LSP_NO_GRAMMAR=1 npm test` 101 pass / 0 fail / 31 skip;
+`smoke:stdio --expect-grammar` PASS; `grammar:test` 85/85; corpus acceptance
+via `corpus-probe.js --workspace` (new flag, documented in the probe README):
+grammar findings 8 → **4** in 4 files, heuristic 7 → **3** in 3 files — all
+four `FailureCount` false positives gone in both modes, the 3 `Main()` and
+the NOT-ESQL file remaining exactly as the true positives they are, protocol
+violations still 0 and 103/103 publishing; the e2e control session (same
+text, `rootUri: null`) still reports the finding — the check kept its teeth.

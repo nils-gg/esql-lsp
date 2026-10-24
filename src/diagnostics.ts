@@ -110,7 +110,16 @@ function collectDeclaredNames(source: string): Set<string> {
 export function analyze(
   source: string,
   settings: EsqlDiagnosticsSettings,
-  doc?: DocAnalysis
+  doc?: DocAnalysis,
+  /**
+   * UPPERCASE names declared `SHARED` in other files of the workspace
+   * (ISSUES.md I-13). A shared variable is visible to every flow of the ACE
+   * application, and the LSP's workspace is the closest thing it has to an
+   * application boundary — so these satisfy the undeclared check alongside
+   * the file's own declarations. Absent (no workspace root, or a unit test
+   * that wants file-local semantics) means exactly today's behavior.
+   */
+  workspaceSharedNames?: ReadonlySet<string>
 ): Diagnostic[] {
   if (!settings.enabled) return [];
   const diagnostics: Diagnostic[] = [];
@@ -126,8 +135,8 @@ export function analyze(
 
   checkModuleStructure(lines, diagnostics);
   if (settings.checkUndeclaredVariables) {
-    if (doc) checkDeclaredVariablesFromTree(doc, diagnostics);
-    else checkDeclaredVariables(source, lines, diagnostics);
+    if (doc) checkDeclaredVariablesFromTree(doc, diagnostics, workspaceSharedNames);
+    else checkDeclaredVariables(source, lines, diagnostics, workspaceSharedNames);
   }
   if (settings.checkPropagation) {
     checkPropagateOrReturn(lines, diagnostics);
@@ -228,8 +237,14 @@ function checkModuleStructure(lines: string[], out: Diagnostic[]): void {
 }
 
 /** 2. Undeclared variables assigned via SET (heuristic, no grammar). */
-function checkDeclaredVariables(source: string, lines: string[], out: Diagnostic[]): void {
+function checkDeclaredVariables(
+  source: string,
+  lines: string[],
+  out: Diagnostic[],
+  workspaceSharedNames?: ReadonlySet<string>
+): void {
   const declared = collectDeclaredNames(source);
+  if (workspaceSharedNames) for (const n of workspaceSharedNames) declared.add(n);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -251,8 +266,13 @@ function checkDeclaredVariables(source: string, lines: string[], out: Diagnostic
 }
 
 /** 2. Undeclared variables via the parse tree (exact ranges, multi-line). */
-function checkDeclaredVariablesFromTree(doc: DocAnalysis, out: Diagnostic[]): void {
+function checkDeclaredVariablesFromTree(
+  doc: DocAnalysis,
+  out: Diagnostic[],
+  workspaceSharedNames?: ReadonlySet<string>
+): void {
   const declared = new Set(doc.declaredNames.map((d) => d.name.toUpperCase()));
+  if (workspaceSharedNames) for (const n of workspaceSharedNames) declared.add(n);
   for (const target of doc.setTargets) {
     const upper = target.name.toUpperCase();
     if (RESERVED_SET_TARGETS.has(upper) || declared.has(upper)) continue;

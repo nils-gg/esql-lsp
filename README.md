@@ -41,7 +41,9 @@ All checks run on a masked view of the source where comments and string
 literals are blanked, so `'END MODULE'` inside a string cannot fake a module
 boundary. With the grammar loaded, undeclared-variable analysis and syntax
 errors come from the parse tree (exact ranges, multi-line aware); intact
-statements inside a broken region are still analysed.
+statements inside a broken region are still analysed. Given a workspace root,
+the undeclared check also counts `DECLARE … SHARED` names from sibling files
+as declarations (see *Workspace* below); without one it stays file-local.
 
 Every diagnostic also carries `source: "esql"`, a stable `code`, and a
 `codeDescription` link to the section below, so a client can group by owner,
@@ -104,6 +106,29 @@ Message-tree path parts (`OutputRoot.JSON.**Data**`) and built-ins resolve to
 nothing rather than to a guess. Available in both modes; the grammar-backed path
 keeps working while the file is still broken — a module whose `END MODULE` is
 still being typed still owns its routines and declarations.
+
+### Workspace (cross-file)
+
+ACE applications split across `.esql` files that share state through
+`DECLARE … SHARED` variables and reach each other through `CALL`. Given a
+workspace root (`workspaceFolders`/`rootUri`), the server scans the tree for
+`.esql` files once after startup — bounded: ≤ 500 files, ≤ 256 KB each, junk
+directories skipped — and every open buffer's live text overrides its on-disk
+snapshot. Two things follow:
+
+- the **undeclared-variable check** honours `DECLARE x SHARED …` from sibling
+  files, so `FailureCount` declared in `Receiver.esql` is no longer reported
+  in `ReceiverExceptionHandler.esql` (without a workspace root the check
+  stays file-local — and it never suppresses names wholesale);
+- **`workspace/symbol`** answers a flat, query-filtered outline — modules,
+  routines, BROKER SCHEMAs — from the scan plus open buffers.
+
+Two deliberate approximations: "workspace-wide" stands in for ACE's
+*application-wide* `SHARED` scope (an LSP has no application boundary), and
+there is no file watcher — files changed outside the editor are picked up on
+the next server start. The scan uses the same extractors as heuristic mode,
+so all of this works with or without the grammar addon. Without a root,
+`workspace/symbol` still answers from the open buffers.
 
 ## Requirements
 
@@ -356,15 +381,17 @@ CONTRIBUTING.md        # dev setup, ground rules, PR guide
   go-to-definition / find-references for declared variables, parameters and
   user routines. Every one of these keeps a pattern-based fallback and is tested
   in both modes (`ESQL_LSP_NO_GRAMMAR=1 npm test`).
-- **Grammar coverage.** A handful of constructs from the IBM railroad diagrams
-  are still unadjudicated (documented in
-  [`tree-sitter-esql/VERIFICATION.md`](tree-sitter-esql/VERIFICATION.md)):
-  `COPY`, `LOG … VALUES`, spaced `ELSE IF`, `BEGIN ATOMIC`, `SELECT` correlation
-  without `AS`, `DECLARE … LIST`, `CALL r(IN a, OUT b)`, `DETERMINISTIC`.
-  Deciding each one needs the reference, not the test suite.
-- **Phase 3 — model-driven features.** MRM/XSD schema import for message-tree
-  field completion, formatting. Beyond that: hover/completion for cross-file
-  symbols once multi-file (workspace) analysis exists.
+- **Grammar coverage.** A handful of constructs are still unadjudicated against
+   the IBM railroad diagrams (catalogued with per-family verdicts in
+   [`tree-sitter-esql/VERIFICATION.md`](tree-sitter-esql/VERIFICATION.md)):
+   `COPY`, `LOG … VALUES`, spaced `ELSE IF`, `DECLARE … LIST`,
+   `CALL r(IN a, OUT b)`, `DETERMINISTIC`, and the no-12.0.x-page group
+   (`DECIDEMODE`-style `PROPAGATE` clauses, `ASJSON`/`TOMIME` options).
+   Deciding each one needs the reference, not the test suite.
+ - **Phase 3 — model-driven features.** MRM/XSD schema import for message-tree
+   field completion, formatting. The workspace index now exists
+   (`workspace/symbol`, SHARED-aware undeclared check): the next consumer is
+   cross-file go-to-definition/hover for `CALL` targets, then completion.
 - Longer term: optional integration with the ACE ESQL compiler for
   authoritative validation.
 

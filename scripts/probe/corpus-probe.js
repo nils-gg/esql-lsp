@@ -21,6 +21,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const argv = process.argv.slice(2);
 /* Paths resolve from this file, so a probe works from any checkout. */
@@ -59,7 +60,7 @@ const corpusDir = () => {
  * An unrecognised flag is an error for the same reason: a flag that is not read
  * is a result that is not real.
  */
-const KNOWN_ARGS = new Set(['corpus', 'out', 'mode', 'phases', 'only', 'limit', 'hold', 'boot', 'reqTimeout', 'file', 'heuristic']);
+const KNOWN_ARGS = new Set(['corpus', 'out', 'mode', 'phases', 'only', 'limit', 'hold', 'boot', 'reqTimeout', 'file', 'heuristic', 'workspace']);
 const arg = (n, d) => {
   const a = process.argv.slice(2);
   const eq = a.find((x) => x.startsWith(`--${n}=`));
@@ -84,6 +85,18 @@ const limit = Number(arg('limit', 0));
 const hold = Number(arg('hold', 800));
 const bootMs = Number(arg('boot', mode === 'heuristic' ? 2500 : 6000));
 const REQ_TIMEOUT = Number(arg('reqTimeout', 15000));
+/**
+ * `--workspace` (ISSUES.md I-13 acceptance): hand the server the corpus
+ * directory as its workspace root, so the cross-file SHARED scan can resolve
+ * sibling declarations. Every round-2/round-3 number was measured with a
+ * `rootUri: null` client — the flag keeps that default and is opt-in.
+ */
+const rootParams = process.argv.slice(2).includes('--workspace')
+  ? {
+      rootUri: pathToFileURL(corpus).href,
+      workspaceFolders: [{ uri: pathToFileURL(corpus).href + '/', name: 'corpus' }],
+    }
+  : { rootUri: null, workspaceFolders: null };
 
 function findFiles(dir) {
   const out = [];
@@ -223,7 +236,7 @@ function positionsOf(lines) {
   if (phases.includes('bulk')) {
     const c = new Client({ ESQL_LSP_NO_GRAMMAR: mode === 'heuristic' ? '1' : '' });
     const init = await c.ok('initialize', {
-      processId: process.pid, rootUri: null,
+      processId: process.pid, ...rootParams,
       capabilities: {
         textDocument: {
           publishDiagnostics: {}, hover: {}, definition: {}, references: {},
@@ -277,7 +290,7 @@ function positionsOf(lines) {
   if (phases.includes('feat') || phases.includes('edit')) {
     const c = new Client({ ESQL_LSP_NO_GRAMMAR: mode === 'heuristic' ? '1' : '' });
     const init = await c.ok('initialize', {
-      processId: process.pid, rootUri: null,
+      processId: process.pid, ...rootParams,
       capabilities: {
         textDocument: {
           publishDiagnostics: {}, hover: {}, definition: {}, references: {},

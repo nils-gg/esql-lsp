@@ -11,6 +11,9 @@
  *     types, parser domains, declared variables, 43 snippets)
  *   - hover (function / tree var / domain / type documentation)
  *   - document symbols (namespaces, modules, functions, variables)
+ *   - workspace symbols (flat outline of the workspace's `.esql` files and
+ *     open buffers) and a cross-file-aware undeclared-variable check that
+ *     honours SHARED declarations in sibling files (ISSUES.md I-13)
  *
  * Phase 2 (tree-sitter grammar, loaded lazily & optionally — the server
  * degrades to the heuristics above when the native grammar cannot load):
@@ -36,6 +39,7 @@ import {
   DocumentSymbolParams,
   DocumentSymbol,
   SymbolInformation,
+  SymbolKind,
   DefinitionParams,
   ReferenceParams,
   Location,
@@ -63,6 +67,8 @@ import {
   Tree,
 } from './parser';
 import { linesOf } from './scanner';
+import { WorkspaceIndex, extractFileFacts, WorkspaceSymbol } from './workspaceIndex';
+import { fileURLToPath } from 'url';
 
 const DIAGNOSTICS_DEBOUNCE_MS = 300;
 
@@ -72,6 +78,13 @@ const connection = createConnection(process.stdin, process.stdout);
 const textDocuments = new TextDocuments<TextDocument>(TextDocument);
 
 let settings: EsqlSettings = DEFAULT_SETTINGS;
+
+/**
+ * Cross-file view (ISSUES.md I-13): the bounded `.esql` scan under the
+ * client's workspace root, consulted by the undeclared-variable check and
+ * `workspace/symbol`. Empty and inert when no root was given.
+ */
+const workspaceIndex = new WorkspaceIndex();
 
 /**
  * Whether the *client* declared `workspace.semanticTokens.refreshSupport`.
@@ -140,6 +153,26 @@ function parsedDocument(uri: string, text: string): ParsedDocument {
   return entry;
 }
 
+/**
+ * The workspace's SHARED declarations (ISSUES.md I-13), seen as: the bounded
+ * disk snapshot, with every OPEN document's contribution taken from its live
+ * text instead of the snapshot — an unsaved `DECLARE x SHARED …` in a sibling
+ * buffer counts, a deleted one stops counting. Returns undefined without a
+ * workspace root: the undeclared check then keeps its file-local meaning,
+ * which is what every unit test (and rootUri-less session) gets.
+ */
+function sharedNamesFromWorkspace(): ReadonlySet<string> | undefined {
+  if (!workspaceIndex.rootPath()) return undefined;
+  const names = new Set<string>();
+  const openUris = new Set<string>();
+  for (const doc of textDocuments.all()) {
+    openUris.add(doc.uri);
+    for (const n of extractFileFacts(doc.getText(), doc.uri).sharedNames) names.add(n);
+  }
+  for (const n of workspaceIndex.sharedNamesFromDisk(openUris)) names.add(n);
+  return names;
+}
+
 /** Compute and publish diagnostics for one document, right now. */
 function publishDiagnosticsFor(uri: string): void {
   const doc = textDocuments.get(uri);
@@ -148,7 +181,7 @@ function publishDiagnosticsFor(uri: string): void {
   try {
     const text = doc.getText();
     const { analysis } = parsedDocument(uri, text);
-    diagnostics = analyze(text, settings.diagnostics, analysis ?? undefined);
+    diagnostics = analyze(text, settings.diagnostics, analysis ?? undefined, sharedNamesFromWorkspace());
   } catch (err) {
     connection.console.error(`esql-lsp: analysis failed: ${String(err)}`);
   }
@@ -229,6 +262,18 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
     params.capabilities?.workspace?.semanticTokens?.refreshSupport === true;
   clientWantsHierarchicalSymbols =
     params.capabilities?.textDocument?.documentSymbol?.hierarchicalDocumentSymbolSupport === true;
+  // Workspace root for the I-13 index: `workspaceFolders` is the modern field,
+  // `rootUri` the deprecated one — clients that send both agree, so whichever
+  // arrives wins. Non-`file:` schemes (a VFS workspace) get no index; every
+  // feature then behaves exactly as it did before the index existed.
+  const root = params.workspaceFolders?.[0]?.uri ?? params.rootUri ?? undefined;
+  if (root && /^file:\/\//i.test(root)) {
+    try {
+      workspaceIndex.setRoot(fileURLToPath(root));
+    } catch {
+      // A malformed file: URI is indistinguishable from no workspace.
+    }
+  }
   connection.console.info(
     `esql-lsp: initialized (diagnostics: ${settings.diagnostics.enabled ? 'on' : 'off'})`
   );
@@ -250,6 +295,10 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       documentSymbolProvider: true,
       definitionProvider: true,
       referencesProvider: true,
+      // Flat outline over the I-13 workspace index plus open buffers (ISSUES.md
+      // I-13: cross-file resolution needed this and the shared-name-aware
+      // undeclared check; both degrade to "open documents only" without a root).
+      workspaceSymbolProvider: true,
       // Advertised even before the grammar finishes loading; the handler
       // returns empty results until then, and a refresh is requested once the
       // grammar is ready — see `clientWantsSemanticTokensRefresh`, which gates
@@ -275,6 +324,20 @@ connection.onNotification('initialized', () => {
   requestSemanticTokensRefresh();
   // Re-validate any document already open (some clients open before initialized).
   revalidateAll();
+  // The I-13 scan runs after the handshake so it can never block the first
+  // answer. When it lands, open documents re-check with the workspace's SHARED
+  // names in hand — the moment `FailureCount` stops being reported as
+  // undeclared. An open document edited before the scan finishes may flash the
+  // false positive first; the rescan re-publishes it away.
+  if (workspaceIndex.rootPath()) {
+    void workspaceIndex.rescan().then(() => {
+      const s = workspaceIndex.stats();
+      connection.console.info(
+        `esql-lsp: workspace index — ${s.files} .esql files indexed, ${s.skipped} skipped`
+      );
+      revalidateAll();
+    });
+  }
 });
 
 // Runtime settings updates (push-style). Clients send either the section
@@ -289,6 +352,39 @@ connection.onDidChangeConfiguration((change) => {
 
 textDocuments.onDidOpen((e) => scheduleDiagnostics(e.document.uri));
 textDocuments.onDidChangeContent((e) => scheduleDiagnostics(e.document.uri));
+
+// workspace/symbol over the I-13 index: open buffers first (their text is
+// current), then the disk snapshot; `query` filters as a case-insensitive
+// substring, and the count is bounded so a huge workspace cannot make the
+// response pathological. Without a workspace root the open buffers alone
+// answer — still more than no handler at all.
+const MAX_WORKSPACE_SYMBOLS = 2000;
+connection.onWorkspaceSymbol((params): SymbolInformation[] => {
+  const query = (params.query ?? '').toLowerCase();
+  const out: SymbolInformation[] = [];
+  const toInfo = (s: WorkspaceSymbol): SymbolInformation => ({
+    name: s.name,
+    kind: s.kind === 'module' ? SymbolKind.Module : s.kind === 'schema' ? SymbolKind.Namespace : SymbolKind.Function,
+    containerName: s.container,
+    location: { uri: s.uri, range: s.range },
+  });
+  const matches = (s: WorkspaceSymbol) => s.name.toLowerCase().includes(query);
+  const openUris = new Set<string>();
+  for (const doc of textDocuments.all()) {
+    openUris.add(doc.uri);
+    for (const s of extractFileFacts(doc.getText(), doc.uri).symbols) {
+      if (!matches(s)) continue;
+      out.push(toInfo(s));
+      if (out.length >= MAX_WORKSPACE_SYMBOLS) return out;
+    }
+  }
+  for (const s of workspaceIndex.symbolsFromDisk(openUris)) {
+    if (!matches(s)) continue;
+    out.push(toInfo(s));
+    if (out.length >= MAX_WORKSPACE_SYMBOLS) break;
+  }
+  return out;
+});
 textDocuments.onDidClose((e) => {
   parseCache.delete(e.document.uri); // the entry's text would never be asked for again
   cancelScheduledDiagnostics(e.document.uri);

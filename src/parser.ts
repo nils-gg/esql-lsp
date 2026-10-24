@@ -53,6 +53,13 @@ export interface DeclaredName {
   /** `DECLARE … CONSTANT` / `… CONSTANT` parameter. */
   constant: boolean;
   /**
+   * `DECLARE x SHARED …` — visible to every flow of the application, so the
+   * workspace index lets it satisfy the undeclared check in sibling files
+   * (ISSUES.md I-13). Both extraction paths fill it; optional because
+   * parameters never carry it and most callers ignore it.
+   */
+  shared?: boolean;
+  /**
    * Range in which this declaration is visible: the enclosing routine body
    * for parameters and body-level DECLAREs, the enclosing module for
    * module-level DECLAREs, the whole file otherwise.
@@ -752,6 +759,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
                 range: rangeOf(child),
                 kind: 'variable',
                 constant,
+                shared: kids.some((c) => c.type === 'kw_SHARED'),
                 scope: scope.visible,
               });
             }

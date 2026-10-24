@@ -8,6 +8,9 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { initGrammar } from '../src/parser';
 import { skipWithoutGrammar } from './grammarStatus';
 
@@ -1074,5 +1077,120 @@ test('grammar mode keeps semantic checks inside a damaged file (I-6)', async (t)
     assert.equal(syntax.range.end.line, 0, 'one line, not the whole damaged region');
   } finally {
     await client.close();
+  }
+});
+
+/**
+ * ISSUES.md I-13 over a real stdio session — and deliberately NOT gated on
+ * the grammar: the cross-file mechanism is the shared pattern extractor, so
+ * the machine without a C toolchain must get the same behaviour. With a
+ * workspace root, `DECLARE … SHARED` in a sibling file lands via the
+ * post-`initialized` scan and the undeclared-variable finding on the open
+ * file goes away; the second, root-less session must still report the same
+ * text — the mechanism silenced false positives, not the check.
+ */
+test('the workspace scan silences sibling-SHARED false positives (I-13)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-i13-e2e-'));
+  const declPath = path.join(dir, 'Receiver.esql');
+  const usePath = path.join(dir, 'ReceiverExceptionHandler.esql');
+  const useUri = pathToFileURL(usePath).href;
+  const USE = [
+    'BROKER SCHEMA com.test.re;',
+    'CREATE COMPUTE MODULE ReceiverExceptionHandler',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    '  SET FailureCount = FailureCount + 1;',
+    '  RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  try {
+    fs.writeFileSync(
+      declPath,
+      [
+        'BROKER SCHEMA com.test.recv;',
+        'CREATE COMPUTE MODULE Receiver',
+        'CREATE FUNCTION Main() RETURNS BOOLEAN',
+        'BEGIN',
+        '  DECLARE FailureCount SHARED INTEGER 0;',
+        '  SET FailureCount = 0;',
+        '  RETURN TRUE;',
+        'END;',
+        'END MODULE;',
+        '',
+      ].join('\n')
+    );
+    fs.writeFileSync(usePath, USE);
+
+    const client = new LspClient();
+    try {
+      const init = await client.request('initialize', {
+        processId: process.pid,
+        rootUri: pathToFileURL(dir).href,
+        workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'i13' }],
+        capabilities: {},
+        initializationOptions: {},
+      });
+      assert.equal(
+        init.result.capabilities.workspaceSymbolProvider,
+        true,
+        'workspace/symbol advertised'
+      );
+      client.notify('initialized', {});
+      client.notify('textDocument/didOpen', {
+        textDocument: { uri: useUri, languageId: 'esql', version: 1, text: USE },
+      });
+      // An early publish MAY still carry the finding (scan racing the first
+      // debounce); the publish that lands after the scan must not.
+      await client.waitFor(
+        'textDocument/publishDiagnostics',
+        (p: any) =>
+          p.uri === useUri &&
+          p.diagnostics.every((d: any) => d.code !== 'undeclared-variable'),
+        15000
+      );
+
+      // workspace/symbol answers over the scan + the open buffer.
+      const syms = await client.request('workspace/symbol', { query: 'Receiver' });
+      const module = (syms.result as any[]).find(
+        (s) => s.name === 'Receiver' && s.kind === 2 /* SymbolKind.Module */
+      );
+      assert.ok(module, `sibling module listed: ${JSON.stringify(syms.result)}`);
+      assert.ok(module.location.uri.endsWith('/Receiver.esql'), module.location.uri);
+      const none = await client.request('workspace/symbol', { query: 'nothing-matches' });
+      assert.deepEqual(none.result, [], 'query filters as a substring');
+    } finally {
+      await client.close();
+    }
+
+    // Control: same text, no workspace root ⇒ the check keeps its teeth.
+    const control = new LspClient();
+    try {
+      await control.request('initialize', {
+        processId: process.pid,
+        rootUri: null,
+        capabilities: {},
+        initializationOptions: {},
+      });
+      control.notify('initialized', {});
+      control.notify('textDocument/didOpen', {
+        textDocument: { uri: useUri, languageId: 'esql', version: 1, text: USE },
+      });
+      const flagged = await control.waitFor(
+        'textDocument/publishDiagnostics',
+        (p: any) =>
+          p.uri === useUri &&
+          p.diagnostics.some(
+            (d: any) => d.code === 'undeclared-variable' && /FailureCount/.test(d.message)
+          ),
+        15000
+      );
+      assert.ok(flagged, 'undeclared check still fires without a workspace');
+    } finally {
+      await control.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

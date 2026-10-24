@@ -480,3 +480,51 @@ test('grammar mode reports the undeclared name inside a damaged region (I-6)', a
   assert.match(undeclared[0].message, /neverDeclared/);
   assert.equal(undeclared[0].range.start.line, 5, 'on the SET line, inside the damaged region');
 });
+
+// ISSUES.md I-13: a name declared `SHARED` in a SIBLING FILE is visible here
+// too. The caller (server.ts) supplies the names; absent them the check keeps
+// its file-local meaning — which every other test in this file asserts.
+const USES_SHARED = [
+  'CREATE COMPUTE MODULE UsesShared',
+  'CREATE FUNCTION Main() RETURNS BOOLEAN',
+  'BEGIN',
+  '  SET FailureCount = FailureCount + 1;',
+  '  RETURN TRUE;',
+  'END;',
+  'END MODULE;',
+  '',
+].join('\n');
+
+test('workspace SHARED names satisfy the undeclared check (I-13)', async (t) => {
+  const shared = new Set(['FAILURECOUNT']);
+
+  // Fallback path — asserted in BOTH modes: this is the surface a
+  // toolchain-less machine gets, so it may not skip.
+  const local = analyze(USES_SHARED, D);
+  assert.ok(
+    local.some((d) => d.code === 'undeclared-variable' && /FailureCount/.test(d.message)),
+    'without a workspace view the file-local verdict stands'
+  );
+  const withWs = analyze(USES_SHARED, D, undefined, shared);
+  assert.ok(
+    !withWs.some((d) => d.code === 'undeclared-variable'),
+    `a sibling declares it SHARED: ${JSON.stringify(withWs.map((d) => d.code))}`
+  );
+
+  // Tree path — grammar-only expectation, skips without the addon. Both
+  // paths must agree on the SHARED verdict or the I-13 mechanism would
+  // ship half a fix.
+  if (await skipWithoutGrammar(t)) {
+    const { parse, analyzeDocument } = await import('../src/parser');
+    const doc = analyzeDocument(parse(USES_SHARED)!, USES_SHARED);
+    assert.ok(
+      analyze(USES_SHARED, D, doc).some((d) => d.code === 'undeclared-variable'),
+      'the tree path also reports it without the workspace view'
+    );
+    const quiet = analyze(USES_SHARED, D, doc, shared);
+    assert.ok(
+      !quiet.some((d) => d.code === 'undeclared-variable'),
+      `and silences it with the same set: ${JSON.stringify(quiet.map((d) => d.code))}`
+    );
+  }
+});

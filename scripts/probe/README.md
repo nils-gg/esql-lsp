@@ -37,7 +37,7 @@ before believing anything downstream.
 
 | script | measures | was written for |
 |---|---|---|
-| `corpus-probe.js` | protocol invariants over the whole corpus: every open doc publishes diagnostics, ranges in-bounds and non-overlapping, symbol trees nested, references monotonic, semantic-token stream legal, incremental edit moves the analysis and restore returns the baseline. `--mode heuristic` runs the fallback path. | I-1, I-2, I-3, I-6, I-9, I-14… round-2 sweep |
+| `corpus-probe.js` | protocol invariants over the whole corpus: every open doc publishes diagnostics, ranges in-bounds and non-overlapping, symbol trees nested, references monotonic, semantic-token stream legal, incremental edit moves the analysis and restore returns the baseline. `--mode heuristic` runs the fallback path; `--workspace` gives the server the corpus directory as workspace root — the I-13 acceptance switch (sibling SHARED declarations must then resolve; every number recorded before round 3 used a `rootUri: null` client). | I-1, I-2, I-3, I-6, I-9, I-13, I-14… round-2 sweep |
 | `grammar-scan.js` | raw tree-sitter pass: which files have `ERROR`/`MISSING` nodes and what text they cover. Exit code is the CLI's, not the probe's. | I-3 (the 26-of-103 table) |
 | `scope-hover.js` | for every name declared in ≥2 scopes, does hover/definition resolve to the declaration actually in scope? | I-15, I-16 |
 | `scope-completion.js` | server-driven completion check: any offered `Declared:` item whose own scope excludes the cursor is a violation. Needs a built `dist/`. | I-16 |

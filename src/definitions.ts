@@ -401,6 +401,9 @@ export function declarationsFromSource(source: string): DeclaredName[] {
         range: Range.create(i, col, i, col + name.length),
         kind: 'variable',
         constant: rawQuoted[2]?.toUpperCase() === 'CONSTANT',
+        // SHARED is what the workspace index looks for (ISSUES.md I-13);
+        // the masked line (comments blanked) is the evidence.
+        shared: /\bSHARED\b/i.test(line),
         scope: scopeOf(i),
       });
       continue;
@@ -409,6 +412,7 @@ export function declarationsFromSource(source: string): DeclaredName[] {
     const decl = DECLARE_RE.exec(line);
     if (decl) {
       const constant = /\bCONSTANT\b/i.test(line);
+      const shared = /\bSHARED\b/i.test(line);
       const detail = `${constant ? 'CONSTANT ' : ''}${decl[2].toUpperCase()}`;
       let searchFrom = 0;
       for (const rawName of decl[1].split(',')) {
@@ -421,6 +425,7 @@ export function declarationsFromSource(source: string): DeclaredName[] {
           range: Range.create(i, col, i, col + name.length),
           kind: 'variable',
           constant,
+          shared,
           scope: scopeOf(i),
         });
       }
