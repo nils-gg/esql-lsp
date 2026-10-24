@@ -29,6 +29,11 @@ native addon from **that copy** — not from `tree-sitter-esql/`.
   directory despite the "no parser directories" config warning).
 - `npm run smoke:stdio` — starts the built server and asserts it answers;
   `--expect-heuristic` / `--expect-grammar` pin which mode must be active.
+- `scripts/record_demo.sh` — drives the README demo (tmux + real nvim + real
+  server) and asserts the pane content at every step, so a plain run is an
+  end-to-end UI test; `--record` writes `docs/demo.cast` (gif:
+  `agg docs/demo.cast docs/demo.gif`). Runs in both modes — verify the
+  fallback with `ESQL_LSP_NO_GRAMMAR=1 scripts/record_demo.sh`.
 - `npm run verify:package` — packs, installs the tarball twice (without and with
   lifecycle scripts) and drives both installed servers. Needs `tar`; ~2 npm installs.
 

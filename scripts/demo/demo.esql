@@ -1,0 +1,17 @@
+BROKER SCHEMA com.demo;
+
+CREATE COMPUTE MODULE DemoFlow
+
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE TotalCount INTEGER 0;
+  DECLARE ReplyText CHARACTER 'ack';
+  SET OrderCount = 1;
+  SET TotalCount = TotalCount + 1;
+  SET OutputRoot.JSON.Data.Id = InputRoot.Properties.MsgId;
+  RETURN TRUE;
+END;
+-- The missing END MODULE, the undeclared OrderCount and the JSON.Data hint
+-- above are on purpose: the recorded tour points them out and fixes two of
+-- them live. ReplyText is declared for the completion step; FailureCount is
+-- declared SHARED in the sibling ReceiverShared.esql (the I-13 step).

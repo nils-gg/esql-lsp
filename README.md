@@ -22,6 +22,30 @@ and **OpenCode**.
 > automatic fallback to heuristics when the native grammar cannot load (see
 > [Roadmap](#roadmap)).
 
+## Demo
+
+![asciicast](docs/demo.gif)
+
+The ~30-second recording drives real Neovim against the real server
+([`scripts/demo/`](scripts/demo/) holds its throwaway config, a fixture with
+deliberate mistakes and a sibling file that declares what the flow shares):
+diagnostics land inline on open, typing the missing `DECLARE` clears the
+warning live, hover on `OutputRoot` shows the reference docs, omnifunc
+completion offers the names this file declares, references and document
+symbols come as lists — and `workspace/symbol` finds `CopyMessageHeaders`
+in the **sibling** file, then jumps into it: with a workspace root, sibling
+`DECLARE … SHARED` names silence undeclared false positives (a typed
+`SET FailureConceal = 1;` still warns — the check kept its teeth), and
+finishing the file with `END MODULE;` clears the structure errors. Every
+feature shown works identically without the grammar addon — the heuristic
+fallback is the same tour, asserted green (`ESQL_LSP_NO_GRAMMAR=1
+scripts/record_demo.sh`).
+
+Replay the committed cast locally with `asciinema play docs/demo.cast`, and
+re-record it with `scripts/record_demo.sh` (needs tmux + asciinema; every
+step asserts the pane, so a plain run doubles as an end-to-end UI test,
+`--record` captures). The gif is `agg docs/demo.cast docs/demo.gif`.
+
 ## Features
 
 ### Diagnostics
@@ -359,10 +383,14 @@ src/completion.ts      # context-sensitive completion
 src/hover.ts           # hover documentation
 src/symbols.ts         # document symbols (parse tree + pattern fallback)
 src/definitions.ts     # declarations/routines/references, go-to-definition, find-references
+src/workspaceIndex.ts  # bounded workspace scan: sibling SHARED names, workspace/symbol
 src/settings.ts        # initializationOptions / didChangeConfiguration handling
 src/data/esqlData.ts   # keywords, types, tree vars, domains, functions
 src/data/snippets.ts   # 43 LSP snippets
 scripts/               # prepack vendoring, addon build, packaging + stdio smoke checks
+scripts/record_demo.sh # feature demo tour: verify run = e2e UI test, --record = cast
+scripts/demo/          # recorded demo's nvim/tmux config + fixtures
+docs/                  # demo.cast + demo.gif (the README demo)
 test/                  # node:test unit + e2e (real stdio LSP sessions)
 clients/neovim/        # ready-to-use configs: modern (init-example.lua),
                        # legacy (lsp/esql.lua), filetype, treesitter example
