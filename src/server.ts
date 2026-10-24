@@ -135,7 +135,7 @@ function parsedDocument(uri: string, text: string): ParsedDocument {
   const hit = parseCache.get(uri);
   if (hit && hit.text === text) return hit;
   const tree = parse(text);
-  const entry: ParsedDocument = { text, tree, analysis: tree ? analyzeDocument(tree) : null };
+  const entry: ParsedDocument = { text, tree, analysis: tree ? analyzeDocument(tree, text) : null };
   parseCache.set(uri, entry);
   return entry;
 }

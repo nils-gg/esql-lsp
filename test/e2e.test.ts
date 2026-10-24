@@ -1066,6 +1066,12 @@ test('grammar mode keeps semantic checks inside a damaged file (I-6)', async (t)
       'https://github.com/nils-gg/esql-lsp#diagnostics',
       'codeDescription survives the real protocol (optional, but sent)'
     );
+    // I-12: the damage diagnostic is no longer a bare multi-line span — it
+    // names the module definition and sits on that definition's own line.
+    const syntax = diags.diagnostics.find((d: any) => d.code === 'syntax-error');
+    assert.match(syntax.message, /Syntax error in a module definition\./);
+    assert.equal(syntax.range.start.line, 0, 'on the CREATE MODULE header line');
+    assert.equal(syntax.range.end.line, 0, 'one line, not the whole damaged region');
   } finally {
     await client.close();
   }

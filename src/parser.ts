@@ -27,6 +27,11 @@ export interface SyntaxNode {
   children: SyntaxNode[];
   startPosition: { row: number; column: number };
   endPosition: { row: number; column: number };
+  /** Byte offset range in the document (used to find the enclosing line). */
+  startIndex: number;
+  endIndex: number;
+  /** Null only on the root; every damaged region has a parent to climb. */
+  parent: SyntaxNode | null;
   hasError: boolean;
   isMissing?: boolean;
 }
@@ -441,6 +446,83 @@ function expectedPhrase(tokenType: string, parentType?: string): string {
   return `Missing syntax: expected an ${tokenType.replace(/_/g, ' ')} here.`;
 }
 
+/**
+ * Phrases naming the construct a damaged region belongs to, for the message
+ * `Syntax error in <phrase>.` (ISSUES.md I-12: a bare `Syntax error.` over
+ * six lines from the middle of a statement is not actionable — naming the
+ * statement and pointing at its first line is). Derived from the node type
+ * when one survived the error recovery; other `*_statement` types fall back
+ * to a derived `A FOO BAR statement` phrase in `damagedPhraseFor`.
+ */
+const DAMAGED_CONSTRUCT_PHRASES: Record<string, string> = {
+  set_statement: 'a SET statement',
+  declare_statement: 'a DECLARE statement',
+  declare_handler_statement: 'a DECLARE HANDLER',
+  if_statement: 'an IF statement',
+  while_statement: 'a WHILE loop',
+  repeat_statement: 'a REPEAT loop',
+  for_statement: 'a FOR loop',
+  loop_statement: 'a LOOP block',
+  case_statement: 'a CASE statement',
+  call_statement: 'a CALL statement',
+  return_statement: 'a RETURN statement',
+  propagate_statement: 'a PROPAGATE statement',
+  block_statement: 'a BEGIN block',
+  create_module_statement: 'a module definition',
+  create_routine_statement: 'a routine definition',
+  broker_schema_statement: 'a BROKER SCHEMA statement',
+  insert_statement: 'an INSERT statement',
+  update_statement: 'an UPDATE statement',
+  delete_from_statement: 'a DELETE statement',
+  delete_field_statement: 'a DELETE FIELD statement',
+  create_field_statement: 'a CREATE FIELD statement',
+  attach_statement: 'an ATTACH statement',
+  detach_statement: 'a DETACH statement',
+  move_statement: 'a MOVE statement',
+  log_statement: 'a LOG statement',
+  eval_statement: 'an EVAL statement',
+  throw_statement: 'a THROW statement',
+  resignal_statement: 'a RESIGNAL statement',
+  iterate_statement: 'an ITERATE statement',
+  leave_statement: 'a LEAVE statement',
+  passthru_statement: 'a PASSTHRU statement',
+};
+
+/**
+ * When NO statement node survived — the broken statement is a raw token
+ * ERROR — its own opening keyword still says what it was trying to be.
+ */
+const DAMAGED_LEADING_KW_PHRASES: Record<string, string> = {
+  kw_SET: 'a SET statement',
+  kw_DECLARE: 'a DECLARE statement',
+  kw_IF: 'an IF statement',
+  kw_WHILE: 'a WHILE loop',
+  kw_REPEAT: 'a REPEAT loop',
+  kw_FOR: 'a FOR loop',
+  kw_LOOP: 'a LOOP block',
+  kw_CASE: 'a CASE statement',
+  kw_CALL: 'a CALL statement',
+  kw_RETURN: 'a RETURN statement',
+  kw_PROPAGATE: 'a PROPAGATE statement',
+  kw_INSERT: 'an INSERT statement',
+  kw_UPDATE: 'an UPDATE statement',
+  kw_DELETE: 'a DELETE statement',
+  kw_ATTACH: 'an ATTACH statement',
+  kw_DETACH: 'a DETACH statement',
+  kw_MOVE: 'a MOVE statement',
+  kw_LOG: 'a LOG statement',
+  kw_EVAL: 'an EVAL statement',
+  kw_THROW: 'a THROW statement',
+  kw_RESIGNAL: 'a RESIGNAL statement',
+  kw_COMMIT: 'a COMMIT statement',
+  kw_ROLLBACK: 'a ROLLBACK statement',
+};
+
+/** `a`/`an` before a derived uppercase phrase like `INSERT statement`. */
+function articleFor(phrase: string): string {
+  return /^[AEIOU]/.test(phrase) ? 'an' : 'a';
+}
+
 /** Labels for constructs that can be left incomplete (see `expectedPhrase`). */
 const CONSTRUCT_LABELS: Record<string, string> = {
   datatype: 'a data type',
@@ -460,7 +542,7 @@ const CONSTRUCT_LABELS: Record<string, string> = {
   propagate_statement: 'a propagation target after PROPAGATE',
 };
 
-export function analyzeDocument(tree: Tree): DocAnalysis {
+export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
   const declaredNames: DeclaredName[] = [];
   const setTargets: SetTarget[] = [];
   const syntaxIssues: SyntaxIssue[] = [];
@@ -468,6 +550,94 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
   const routines: RoutineInfo[] = [];
   const schemas: SchemaInfo[] = [];
   const references: Reference[] = [];
+
+  // The damaged-region namer clamps a named diagnostic to one line, which
+  // needs the document text. The caller (server.ts) has it; tests may not,
+  // and then serialising the tree once — only ever in the presence of named
+  // damage, never on the clean-document path — is the fallback.
+  let docText: string | undefined = source;
+  const text = (): string => (docText ??= tree.rootNode.text);
+
+  /** The end of the line `node` starts on (same row, one line at most). */
+  const endOfLineAt = (node: SyntaxNode): { row: number; column: number } => {
+    const src = text();
+    const nl = src.indexOf('\n', node.startIndex);
+    return {
+      row: node.startPosition.row,
+      column:
+        node.startPosition.column +
+        (nl === -1 ? src.length - node.startIndex : nl - node.startIndex),
+    };
+  };
+
+  /**
+   * Report an ERROR region as a diagnostic (ISSUES.md I-12): a bare
+   * `Syntax error.` spanning multiple lines from the middle of a statement
+   * is not actionable, so name the construct it sits in and underline that
+   * construct's first line instead. Two readings, in order: a surviving
+   * statement ancestor names the context (`SET x = 1` swallowed as a
+   * DECLARE's initial value → point at the DECLARE line); with no statement
+   * node at all, the damaged region's own opening keyword says what it was
+   * trying to be (`IF x = THEN` → an IF statement). Neither → the old
+   * honest message over the full region.
+   */
+  const describeDamagedRegion = (node: SyntaxNode): { message: string; range: Range } => {
+    const named = (phrase: string, anchor: SyntaxNode) => ({
+      message: `Syntax error in ${phrase}.`,
+      range: Range.create(
+        anchor.startPosition.row,
+        anchor.startPosition.column,
+        endOfLineAt(anchor).row,
+        endOfLineAt(anchor).column
+      ),
+    });
+    // 1. A region that opens with a statement keyword IS the failed
+    //    statement (error recovery left it as raw tokens): name it and
+    //    keep its own — precise — position.
+    const kids = node.children;
+    const first = kids[0];
+    if (first) {
+      if (first.type === 'kw_CREATE') {
+        // CREATE spans modules and routines; the next words say which.
+        for (const early of kids.slice(0, 4)) {
+          if (early.type === 'kw_MODULE') return named('a module definition', node);
+          if (early.type === 'kw_FUNCTION' || early.type === 'kw_PROCEDURE')
+            return named('a routine definition', node);
+        }
+      } else {
+        const phrase = DAMAGED_LEADING_KW_PHRASES[first.type];
+        if (phrase) return named(phrase, node);
+      }
+    }
+    // 2. Otherwise the nearest surviving STATEMENT ancestor says what the
+    //    damage sits in, and its first line is where the reader must look
+    //    (the swallowed-`;` shape: the ERROR is in the initial-value slot,
+    //    the fix is on the DECLARE line). Climb past `esql_statement` (a
+    //    bare wrapper) and `routine_body` (naming the BEGIN block of a
+    //    stray token helps nobody), and stop at the module/routine
+    //    containers: a two-token ERROR after the body must keep its own
+    //    position rather than every line of the file pointing at
+    //    `CREATE …` — an unmatched container says less than a precise
+    //    range does.
+    for (let a = node.parent; a && a.type !== 'source_file'; a = a.parent) {
+      if (
+        a.type === 'esql_statement' ||
+        a.type === 'routine_body' ||
+        a.type === 'create_module_statement' ||
+        a.type === 'create_routine_statement'
+      )
+        continue;
+      const stored = DAMAGED_CONSTRUCT_PHRASES[a.type];
+      const derived =
+        stored ??
+        (a.type.endsWith('_statement')
+          ? a.type.replace(/_statement$/, '').replace(/_/g, ' ').trim().toUpperCase() + ' statement'
+          : undefined);
+      if (derived) return named(stored ? derived : `${articleFor(derived)} ${derived}`, a);
+    }
+    // 3. Nothing to say beyond the truth: the bare message, own range.
+    return { message: 'Syntax error.', range: rangeOf(node) };
+  };
 
   /**
    * Records the module / routine / BROKER SCHEMA a node introduces and returns
@@ -521,12 +691,11 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
     const kids = node.children;
     if (node.type === 'ERROR' || node.type === 'MISSING' || node.isMissing || isInsertedNode(node)) {
       if (!underDamaged) {
-        syntaxIssues.push({
-          message: isInsertedNode(node)
-            ? expectedPhrase(node.type, parentType)
-            : 'Syntax error.',
-          range: rangeOf(node),
-        });
+        syntaxIssues.push(
+          isInsertedNode(node)
+            ? { message: expectedPhrase(node.type, parentType), range: rangeOf(node) }
+            : describeDamagedRegion(node)
+        );
       }
       // Error recovery preserves intact subtrees inside the damaged region
       // (e.g. a complete CREATE FUNCTION inside a module missing its
@@ -697,10 +866,20 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
   };
 
   visit(tree.rootNode, { visible: rangeOf(tree.rootNode) });
+  // Two sibling damage clusters inside one construct get clamped to the same
+  // named line (I-12) — from here they are indistinguishable, and a doubled
+  // identical diagnostic is I-17 noise again. Keep the first of each.
+  const seenIssues = new Set<string>();
+  const uniqueIssues = syntaxIssues.filter((i) => {
+    const key = `${i.message}@${i.range.start.line}:${i.range.start.character}:${i.range.end.line}:${i.range.end.character}`;
+    if (seenIssues.has(key)) return false;
+    seenIssues.add(key);
+    return true;
+  });
   return {
     declaredNames,
     setTargets,
-    syntaxIssues,
+    syntaxIssues: uniqueIssues,
     modules,
     routines,
     schemas,

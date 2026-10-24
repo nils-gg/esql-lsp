@@ -318,6 +318,75 @@ test('a recovered token is described by the construct that needed it', async (t)
   );
 });
 
+// ISSUES.md I-12: a bare `Syntax error.` spanning multiple lines from the
+// middle of a statement is not actionable. Damage now gets named after the
+// construct it sits in and clamped to that construct's first line — with the
+// precise-range bare message kept for regions nothing can honestly name.
+const i12wrap = (...body: string[]) =>
+  ['CREATE COMPUTE MODULE M', 'CREATE FUNCTION Main() RETURNS BOOLEAN', 'BEGIN', ...body, 'END', 'END MODULE;'].join('\n');
+
+test('damage inside a statement names it and points at the statement line (I-12)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // `;` missing after a DECLARE with an initial value: recovery skips
+  // `SET x` and reports from inside the expression — three lines of noise
+  // used to start mid-statement. The named point is the DECLARE line.
+  const src = i12wrap('DECLARE x INT 0', 'SET x = 1;', 'RETURN TRUE;');
+  const doc = analyzeDocument(parse(src)!, src);
+  assert.equal(doc.syntaxIssues.length, 1, JSON.stringify(doc.syntaxIssues));
+  const issue = doc.syntaxIssues[0];
+  assert.match(issue.message, /^Syntax error in a DECLARE statement\.$/);
+  assert.equal(issue.range.start.line, 3, 'the DECLARE line');
+  assert.equal(issue.range.end.line, 3, 'a single line');
+});
+
+test('a statement that never formed is named from its own keyword (I-12)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // `IF x = THEN`: no if_statement node survives, the region is raw tokens —
+  // and its leading keyword still says what the author was writing.
+  const src = i12wrap('IF x = THEN', '  SET y = 1;', 'RETURN TRUE;');
+  const doc = analyzeDocument(parse(src)!, src);
+  const named = doc.syntaxIssues.find((i) => /IF statement/.test(i.message));
+  assert.ok(named, JSON.stringify(doc.syntaxIssues.map((i) => i.message)));
+  assert.equal(named!.range.start.line, 3, 'at the IF itself, not some enclosing header');
+  assert.equal(named!.range.end.line, 3);
+});
+
+test('damage nothing can be said about keeps the bare message and its precise range (I-12)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const src = i12wrap('%%% ***', 'RETURN TRUE;');
+  const doc = analyzeDocument(parse(src)!, src);
+  assert.ok(doc.syntaxIssues.length >= 1);
+  const plain = doc.syntaxIssues.find((i) => i.message === 'Syntax error.');
+  assert.ok(plain, JSON.stringify(doc.syntaxIssues.map((i) => i.message)));
+  assert.equal(plain!.range.start.line, 3, 'at the garbage, not at a named construct');
+});
+
+test('a wholly collapsed module is reported on its definition line (I-12)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // Damage so deep (unterminated IF) that the whole module becomes one ERROR:
+  // the region opens with CREATE … MODULE, which is exactly what the reader
+  // must fix, and the old behavior was a bare span over the entire file.
+  const src = i12wrap('IF x = 1 THEN', '  SET y =', 'RETURN TRUE;');
+  const doc = analyzeDocument(parse(src)!, src);
+  assert.ok(
+    doc.syntaxIssues.some(
+      (i) =>
+        /^Syntax error in a module definition\.$/.test(i.message) &&
+        i.range.start.line === 0 &&
+        i.range.end.line === 0
+    ),
+    JSON.stringify(doc.syntaxIssues.map((i) => [i.message, i.range.start.line]))
+  );
+});
+
+test('two damage clusters clamped to the same line are one diagnostic (I-12)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const src = i12wrap('DECLARE x INT DEFAULT', '  1 +', 'RETURN TRUE;');
+  const doc = analyzeDocument(parse(src)!, src);
+  const keys = doc.syntaxIssues.map((i) => `${i.message}@${i.range.start.line}:${i.range.start.character}`);
+  assert.equal(new Set(keys).size, keys.length, `no duplicates: ${JSON.stringify(keys)}`);
+});
+
 test('syntax errors are detected from ERROR/MISSING nodes', async (t) => {
   if (!(await skipWithoutGrammar(t))) return;
   const tree = parse('CREATE COMPUTE MODULE M\nSET x = (1;\n')!;

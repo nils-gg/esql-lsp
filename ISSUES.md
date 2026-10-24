@@ -9,9 +9,9 @@ more, I-14 … I-22, and all nine are fixed; Round 3 (2026-10-24) closed the two
 big round-1 leftovers: I-3** — all eleven construct families adjudicated against
 the ACE 12.0.x reference, ten shipped as grammar rules, one (`OutputRoot.[<+1]`)
 adjudicated NOT-ESQL and still rejected on purpose — **and I-6**, semantic checks
-inside a damaged region. Still open from round 1: **I-12** (the multi-line
-`Syntax error.` span quality) and **I-13** (cross-file `SHARED`/`CALL`), which
-need a decision rather than a fix. The sections below the status table are
+inside a damaged region, plus **I-12**'s error-message quality. Still open from
+round 1: **I-13** (cross-file `SHARED`/`CALL`), which needs a decision rather
+than a fix. The sections below the status table are
 history.
 
 Every item was reproduced twice: once on a real file, once on the minimal snippet
@@ -91,7 +91,7 @@ same serial probe (one document at a time — see I-1), both modes.
 | I-9 | **fixed** | whole-file `(`/`[` depth, `SELECT` as a continuation word, operator at the start of the next line; range spans the statement; corpus 13 hints → **0**, genuine misses still flagged |
 | I-10 | **fixed** | quoted declares read from the raw line (range = the name, quotes excluded) and `wordAtPosition()` resolves quoted names for hover/definition/references; ghost `EXTERNAL` symbols 4 → **0**. The four real quoted names now exist — in heuristic mode (674 symbols vs grammar's 670), so the outline divergence that is left in those 4 files is I-3/H, not a fallback bug |
 | I-11 | **fixed** | hover for a module (kind + contained routines), hover/definition/references for `BROKER SCHEMA` with dotted-segment matching. Measured in **both** modes: Module hover 0/117 → **117/117**, Namespace hover/definition/references 0/50 → **50/50**, and every one of the 670 (grammar) / 674 (heuristic) symbols answers definition, references and hover at its own advertised position |
-| I-12 | partially fixed | no more token names in messages (`expected a data type here`, `expected a field reference here`); the multi-line `Syntax error.` span quality is still open |
+| I-12 | **fixed** (round 3) | no more token names in messages (`expected a data type here`, `expected a field reference here`); damage is now named and anchored — `Syntax error in a DECLARE statement.` on the statement's first line, precise bare message when nothing can be named (5 unit cases + the I-6 stdio case; corpus counts unchanged) |
 | I-13 | open | needs the workspace-index decision (see the note at the end) |
 
 Corpus effect on findings, 103 files, both modes (third column re-measured
@@ -591,7 +591,20 @@ Across 666 symbols in the corpus:
 
 ## I-12 · Low · error message quality
 
-**Partially fixed.** `expectedPhrase()` in `src/parser.ts` names the construct the token belongs to (through the parent node) instead of the grammar token: `Missing syntax: expected a data type here.` on `DECLARE ns NAMESPACE '…'` instead of `expected 'kw_BIT' here.`, while punctuation still prints as itself. Still open: the bare `Syntax error.` spanning several lines from the middle of a statement.
+**Fixed 2026-10-24 (round 3).** Both halves. Token names are gone:
+`expectedPhrase()` names the construct the token belongs to (`Missing syntax:
+expected a data type here.`), and family A means the `DECLARE ns NAMESPACE '…'`
+corpus shape no longer errors at all. The bare multi-line `Syntax error.` is
+named and anchored too: `describeDamagedRegion()` in `src/parser.ts` reads the
+region's statement context — a surviving statement node names the message
+(`Syntax error in a DECLARE statement.`) and the range clamps to that node's
+first line; with no statement node left, the region's own opening keyword names
+it (`an IF statement`); a wholly collapsed module reports on its definition
+line; and damage that nothing can honestly name keeps the old bare message
+with its precise range. Two clusters clamped onto one line are one diagnostic.
+Five unit cases + an extension of the I-6 stdio case cover it; the corpus
+re-scan is unchanged (the one damaged file reports its single-line
+`expected a field reference here.`), so no finding moved shape or count.
 
 * `Missing syntax: expected 'kw_BIT' here.` (15×) and
   `Missing syntax: expected 'identifier' here.` (1×) leak tree-sitter token names.
@@ -1451,3 +1464,27 @@ LR conflicts; `smoke:stdio --expect-grammar` PASS; `grammar-scan.js` over the
 corpus: 27 damaged → **1** (the J file); `corpus-probe.js` re-run: grammar-mode
 findings 63 → **8** across **5** files, heuristic 7 → 7, protocol violations **0**
 in both modes, 103/103 documents publishing.
+
+**I-12 — damage now says what it is.** A bare `Syntax error.` spanning six
+lines from a statement's middle was the last unreadable message.
+`describeDamagedRegion()` names the construct owning the damage and clamps the
+range to that construct's first line: a surviving statement ancestor names it
+(`Syntax error in a DECLARE statement.` — the swallowed-`;` shape now points at
+the DECLARE the reader must fix); with no statement node left, the region's own
+opening keyword names it (`an IF statement` for `IF x = THEN`, `a module
+definition` when a file collapses entirely); damage nothing can honestly be
+said about keeps the bare message **with its precise range** — naming
+everything would mean pointing at `CREATE …` for a stray token three
+statements deep, which says less than a small honest range. Ancestors
+`esql_statement`/`routine_body`/module/routine containers are climbed past for
+this reason. Side effect caught by the new tests: two damage clusters clamped
+onto one line become identical diagnostics, so `analyzeDocument` now dedups
+identical `message+range` pairs (I-17's lesson, applied to diagnostics).
+`analyzeDocument` gained an optional `source` parameter (the server has the
+text; serialising the tree is the fallback) purely for the line clamp.
+
+**Verified (I-12):** `npm test` 124/124; `ESQL_LSP_NO_GRAMMAR=1 npm test` 0 fail
+/ 30 skip; `smoke:stdio --expect-grammar` PASS; `corpus-probe.js` grammar-mode
+re-run unchanged — 0 violations, 8 findings in 5 files, and the one damaged
+file's diagnostic is its single-line `expected a field reference here.`; no
+multi-line bare `Syntax error.` remains anywhere on the corpus.
