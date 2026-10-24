@@ -1,9 +1,16 @@
 # ISSUES.md — findings from testing the LSP against real-world ESQL
 
 Tested 2026-10-23 against 103 `.esql` files from the 11 repositories listed at the
-bottom. Every item below was reproduced twice: once on the real file, once on the
-minimal snippet printed inline (so this document stands on its own — the corpus
-and the probe scripts lived in `/tmp` and are gone).
+bottom, and re-tested 2026-10-24 on the same corpus with a second probe that
+checks protocol invariants instead of opinions (range validity, symbol
+containment, references monotonicity, the semantic-token stream, ghost URIs,
+out-of-range positions, incremental round trips, latency). **Round 2 found nine
+new issues, I-14 … I-22, which are the current work list** — read the next
+section first; round 1 below it is the history.
+
+Every item was reproduced twice: once on a real file, once on the minimal snippet
+printed inline, so this document stands on its own without the corpus or the
+probe scripts (both lived in `/tmp`).
 
 **Grammar items are recorded, not fixed.** Per `AGENTS.md` /
 `tree-sitter-esql/VERIFICATION.md`, the IBM ACE 12.0.x railroad diagram — not
@@ -14,6 +21,40 @@ reference question and can be fixed directly.
 Severity: **Critical** = the feature silently does not work · **High** = wrong
 result on ordinary code · **Medium** = noise / missing feature on real code ·
 **Low** = polish.
+
+---
+
+## Round 2 (2026-10-24) — nine new findings, none fixed yet
+
+Round 1 asked "does the server answer, and is the answer near the right text".
+Round 2 probed the surfaces that question cannot reach: every returned range
+re-checked against the document, `selectionRange` ⊂ `range` and children ⊂ parent,
+`includeDeclaration=false` never exceeding `true`, the semantic-token stream
+decoded and measured against line lengths, requests for a document that was
+never opened, positions outside the document, an incremental edit and its undo,
+and the wall-clock cost of a request. New items:
+
+| item | sev | one line | measured |
+|---|---|---|---|
+| I-14 | **Critical** | answering `workspace/semanticTokens/refresh` with "method not found" **kills the server** | unhandled `ResponseError`, exit 1, 0.23 s after every grammar-mode start; the request is sent to clients that never asked for it and its promise is never handled |
+| I-15 | High | hover resolves a name to the **first declaration in the file**, not the one in scope | 16 of 40 use sites name the wrong routine, 1 also shows the wrong type; go-to-definition at the same cursor is right 39/40 → the two features disagree |
+| I-16 | High | completion offers declared names that are **not in scope** | 264 of 339 probed positions, in 28 of 94 files, 658 foreign names; worst position offers 20 |
+| I-17 | Medium | the same completion **label appears 2–3 times** | 228 duplicates in 100 of 103 files; 277 items → 244 labels on one real file |
+| I-18 | Medium | `\r` counts as content: ranges and tokens **run one column past EOL** on CRLF files | 7 corpus files; 202/4187 semantic tokens, 63 symbol ranges, 1 diagnostic |
+| I-19 | High | a lone-`\r` file **loses the outline**, differently in each mode | grammar: 1 of 3 symbols + 3 misleading errors at 0:0; heuristic: positions the client cannot reproduce, hover null |
+| I-20 | Medium | with 2+ documents open, **every request re-parses and re-analyses** the file | hover 0.81 ms → 11.44 ms, completion 0.42 ms → 10.96 ms; `analyzeDocument` is ~13× the parse |
+| I-21 | Medium | diagnostics have no `source` and no `code` | 100 % of them, both modes (63 grammar / 7 heuristic corpus findings) |
+| I-22 | Low | capability and lifecycle hygiene | `save: true` with no handler; hierarchical symbols always; `{esql:…}` honoured only in `didChangeConfiguration`; JS stack text in `-32603` |
+
+Round 1's fixes held up under the new probe: 103 files opened in **one** session
+all published diagnostics (slowest 622 ms, and 103/103 in heuristic mode too,
+slowest 361 ms), and the incremental `didChange` round trip works in both modes
+(inserted `DECLARE` appears in the outline, hover answers on it, the
+undeclared-name warning follows the edit, undo restores the exact outline).
+Volume, both modes together: 11,000 requests, 0 timeouts, 0 JSON-RPC errors, 0
+unexpected server-originated notifications other than the refresh in I-14, no
+request over 250 ms, clean `shutdown`/`exit`. The verified non-issues are listed
+at the bottom so nobody re-derives them.
 
 ---
 
@@ -79,8 +120,12 @@ Separately: incremental `didChange` (range edits, versions 1→4), a tree-sitter
 ERROR/MISSING scan, and a comment-node scan. Each returned range was re-read
 against the file text, which is what catches offset/UTF-16 mistakes.
 
-Corpus character: 83 ASCII + 3 UTF-8 with non-ASCII (one with CJK in a comment),
-0 CRLF (CRLF covered by a synthetic case), largest file 205 lines.
+Corpus character: 100 pure ASCII + 3 with non-ASCII characters (one of them CJK in
+a comment), 7 files with **CRLF** line endings, 0 with a lone `\r`, 0 with a UTF-8
+BOM, all valid UTF-8; largest file 296 lines / 12.2 KB. The first draft of this
+document claimed "0 CRLF" — that was the measurement, not the corpus: reading the
+files through a text mode with universal newlines converts `\r\n` to `\n` on the
+fly; reading the same files as bytes finds 7 (see I-18).
 `tongyy/iib-official-samples` and `abughali/ace-openapi3-sample` have **no `.esql`
 in their working trees** — their ESQL is inside archives: `Healthcare.zip` (13
 files) and `Scribble.zip` (1) from the former, `TomorrowsWeather.zip` (1) from the
@@ -546,13 +591,390 @@ only after a `CALL`.
 
 ---
 
+## I-14 · Critical · the server dies when a client answers `workspace/semanticTokens/refresh` with "method not found" *[clear bug]*
+
+**Minimal repro** (a 30-line client, no corpus needed): `initialize` with
+`capabilities: { textDocument: { semanticTokens: { requests: { full: true } } } }`
+— no `workspace` section — then answer whatever request the server sends with
+`{ code: -32601, message: 'Unhandled method …' }`, which is what a client that
+does not implement a server→client request must do.
+
+```
+server asked the client for workspace/semanticTokens/refresh → answered -32601
+node_modules/vscode-jsonrpc/lib/common/connection.js:565
+                        responsePromise.reject(new messages_1.ResponseError(…));
+ResponseError: Unhandled method workspace/semanticTokens/refresh
+    at handleResponse (…/vscode-jsonrpc/lib/common/connection.js:565:48)
+SERVER EXITED code=1
+```
+
+The server asks for the refresh when the grammar finishes loading
+(`src/server.ts:300`) — 0.23 s after `initialize` on this checkout — in grammar
+mode only (heuristic mode never loads the grammar, so it never crashes: the crash
+is exclusive to the configuration most users get). Every request the client makes
+after that gets a closed pipe, which clients report as "server crashed on
+startup".
+
+Three separate things went wrong, all in one line of code:
+
+1. the server never advertises `workspace.semanticTokens.refreshSupport`, and
+   never looks at the capability the client did send — the comment above the call
+   says *"No-op-safe when the client did not declare refresh support"*, but
+   `connection.languages.semanticTokens.refresh()` is not a no-op, it is
+   `connection.sendRequest(…)` (`vscode-languageserver@9.0.1`,
+   `lib/common/semanticTokens.js:13-15`);
+2. the returned promise is discarded, so the client's error response becomes an
+   **unhandled rejection**, which is fatal on Node ≥ 15;
+3. the request is sent at all — a server must not send a request the client did
+   not declare support for.
+
+Expected: no `workspace/semanticTokens/refresh` unless
+`params.capabilities.workspace?.semanticTokens?.refreshSupport`, advertised in
+return, and the promise caught either way. Fix both (the capability check is the
+correctness fix, the `.catch()` is the "nothing in this file may ever kill the
+server" fix). A `process.on('unhandledRejection')` that logs through
+`window/logMessage` is worth adding for the same reason: this is the failure mode
+for every future server→client request (`client/registerCapability`,
+`workspace/configuration`), not just this one.
+
+---
+
+## I-15 · High · hover resolves a name to the *first* declaration in the file, not the one in scope *[clear bug]*
+
+**Minimal repro** (fails in both modes):
+
+```esql
+CREATE COMPUTE MODULE TwoRoutines
+    CREATE FUNCTION First() RETURNS BOOLEAN
+    BEGIN
+        DECLARE shared INTEGER 1;
+        SET shared = shared + 1;      -- hover here → *in `First()`*   (correct)
+        RETURN TRUE;
+    END;
+
+    CREATE FUNCTION Second() RETURNS BOOLEAN
+    BEGIN
+        DECLARE shared INTEGER 2;
+        SET shared = shared * 3;      -- hover here → *in `First()`*   (WRONG)
+        RETURN TRUE;
+    END;
+END MODULE;
+```
+
+`src/hover.ts:124` takes `declarations.find((d) => eq(d.name))` — the first
+match in file order. The *declaration that is in scope at the cursor* is a
+different thing, and the server already knows how to find it:
+`definitions.ts`'s `definitionAt()` does. So hover and go-to-definition disagree
+at the same cursor.
+
+Measured over the corpus with a scope-aware probe (a use site of each declaration
+in turn, with positions that are not inside a string/comment taken from the
+server's own mask, so the probe cannot blame the server for a position it is
+correct not to answer). Names declared in two or more distinct scopes: **24** in
+103 files; **68** of their 168 use sites are shadowed by an earlier declaration in
+another scope (10 files). Probing one use per declaration — 40 probes:
+
+| probe result | count |
+|---|---|
+| hover named the **wrong enclosing routine** | **16** |
+| hover showed a different **type** than the declaration in scope | 1 |
+| go-to-definition returned exactly the in-scope declaration | **39** |
+| go-to-definition returned two candidates for a name declared twice | 1 |
+| go-to-definition returned somewhere else | **0** |
+
+So `definition` is scope-correct and `hover` is not — 16 positions where the two
+features, asked at the same cursor, describe different declarations.
+
+| file | name | cursor is in | hover says | definition says |
+|---|---|---|---|---|
+| `Paymob…/PaymentInit_BuildOrderRequest.esql` | `I` (decl. 25, 40) | `CopyMessageHeaders` @43:9 | `Main` ✗ | 40:10 ✓ |
+| `Paymob…/PaymentInit_LoadUserData.esql` | `POLICYNAME` (7, 24) | `Main` @26:66 | `getPolicyProperty` ✗ | 24:13 ✓ |
+| `…Healthcare/healthcare/Receiver.esql` | `MSHENV` (37, 88) | `BuildACKMSA` @92:5 | `BuildACKMSH` ✗ | 88:32 ✓ |
+| `…Healthcare/healthcare/ReceiverExceptionHandler.esql` | `MESSAGENUMBER` (14, 105) | `GetLastExceptionDetail` @113:9 | `Main` ✗ | 105:69 ✓ |
+| `…Healthcare/healthcare/ReceiverExceptionHandler.esql` | `MESSAGETEXT` (14, 105) | `GetLastExceptionDetail` @114:9 | `Main` ✗ | 105:96 ✓ |
+| `…Healthcare/transport/TransportReceiver.esql` | `ENV` (38, 172) | `CheckMSHFields` @183:7 | `Main` ✗ | 172:10 ✓ |
+| `…Healthcare/transport/TransportSender.esql` | `INPUTBLOB` (195, …) | `Main` @203:54 | `PrependMLLPByte` ✗ — and shows `BLOB` where the name in scope is `REFERENCE TO` | 195:10 ✓ |
+| `…Healthcare/transport/TransportSender.esql` | `ACKCODE` (264, …) | `CheckMSA` @271:7 | `Main` ✗ | 264:31 ✓ |
+| `…Healthcare/transport/TransportSender.esql` | `ERRORTEXT` (264, …) | `CheckMSA` @275:7 | `Main` ✗ | 264:54 ✓ |
+| `…Healthcare/Tests/Applications/ReceivingApplication.esql` | `ERRORTEXT` (10, 73) | `BuildACKMSA` @81:43 | `Main` ✗ | 73:79 ✓ |
+| `…Healthcare/Tests/Applications/ReceivingApplication.esql` | `INPUTMSH` (75, …) | `BuildACKMSA` @79:47 | `BuildACKMSH` ✗ | 75:10 ✓ |
+| `ace-read-credentials…/ReadFlow_ReadCredsFromESQL.esql` | `USERNAME`, `PASSWORD`, `APIKEY`, `CLIENTID`, `CLIENTSECRET` | `Main` @23:23…23:139 | `getCredentials` ✗ (5 names on one line) | 15:10, 16:10, 17:10, 18:10, 19:10 ✓ |
+
+The same first-match rule applies to routines (`src/hover.ts:118`): with two
+modules each containing a `Main()`, hovering the **second** module's `Main` header
+reports `*in module \`First_Module\`*` (grammar mode) or `*at document level*`
+(heuristic mode — `routinesFromSource()` does not fill `moduleName`, so the owner
+line is lost even when the match is right). Module names themselves resolve
+correctly (`Second_Module` hovers and jumps to line 8), because a name collision
+there would be the rarer case — the ownership line above them is what is wrong.
+
+The one definition that was not a single exact hit is not a scope bug either:
+`ReceivingApplication.esql` returns **both** candidates for `ACKCODE`
+(`10:8, 73:57`) where the name really is declared twice, and a `Definition`
+response may carry several locations.
+
+Fix in `hover.ts`: pick the innermost enclosing `scope` for the position (falling
+back to the outermost enclosing one, then to file order when the position is
+outside every scope), and fill `moduleName` in the fallback extractor so the owner
+line is right in heuristic mode too. The helper belongs in `definitions.ts` next
+to `definitionAt()`, because completion (I-16) needs the same answer —
+`AGENTS.md`: fix a quirk in one place or the four features disagree.
+
+---
+
+## I-16 · High · completion offers declared names that are not in scope *[clear bug]*
+
+`buildCompletionItems()` is handed every declared name in the document
+(`doc.declaredNames`) and offers all of them at every position; nothing consults
+the `scope` each entry carries. Measured over the corpus by building the answer
+the server would really return — `linePrefix` = the text before the position, as
+in `connection.onCompletion` — at 339 positions in 94 files (every use site of a
+name that is declared more than once, plus one `SET` target per routine):
+
+* **264 of those positions** (in **28 files**) offered at least one name whose own
+  `scope` excludes the position;
+* **658** distinct foreign names, summed over files;
+* worst single position: **20** foreign names —
+  `Paymob…/PaymentInit_BuildPaymentKeyRequest.esql` line 76 character 17, inside
+  `CopyEntireMessage`, prefix `"SET OutputRoot "`, offers
+  `paymobBaseUrl, authToken, paymobOrderId, amountCents, currency, integrationId,
+  firstName, lastName, email, phone, apartment, floor, street, building, city,
+  country, state, postalCode` (all declared in `Main`) **plus `I, J`** (declared in
+  `CopyMessageHeaders`).
+
+The scope data itself is right — `Main`'s declarations carry `scope 5–63`,
+`I`/`J` carry `65–73`, and the `CopyEntireMessage` body is line 75–77, so the
+filter is one comparison away. A file that grows routines degrades the list
+linearly, which is the opposite of what a scope-aware completion should do.
+Fix: filter `declaredNames` to those whose `scope` contains the position
+(module-level and `SHARED` declarations stay visible everywhere inside their
+module), reusing the containment test that `definitionAt` already uses. The
+fallback path needs the same filter from `declarationsFromSource()`, whose entries
+carry a `scope` too.
+
+---
+
+## I-17 · Medium · the same label is offered two or three times in one list *[clear bug]*
+
+**228 findings in 100 of the 103 files** in the round-2 probe (which asks one
+identifier position per file); asked at every position sampled in the second pass
+the same duplication appears in **103 of 103** files. It happens in *both* modes,
+because the list behind it is static data, not analysis. On a real file (
+`PaymentInit_BuildPaymentKeyRequest.esql`, an ordinary identifier position, prefix
+`"SET OutputRoot "`): **277 items, 244 distinct labels, 33 redundant entries —
+32 labels offered twice and one (`EXISTS`) three times.** The 33 redundant labels
+are the same set in every file that reaches a full list, plus `FLOOR` in this one:
+
+| label | offered as |
+|---|---|
+| `CHARACTER, INTEGER, FLOAT, DECIMAL, BOOLEAN, BLOB, BIT, DATE, TIME, TIMESTAMP, INTERVAL, ROW, REFERENCE, NAMESPACE` (14) | `Keyword` "ESQL keyword" **+** `Type` "ESQL data type" |
+| `EXISTS` | `Function` + `Keyword` + `Snippet` — **three times** |
+| `ENVIRONMENT` | `Keyword` + `Variable` (message tree variable) |
+| `FUNCTION, PROCEDURE, DECLARE, IF, WHILE, FOR, CASE, PROPAGATE, THROW, PASSTHRU` | `Keyword` + `Snippet` |
+| `SUBSTRING, CAST, COALESCE, LOG, CARDINALITY` | `Function` + `Snippet` |
+| `FLOOR` (in a file that declares `DECLARE floor CHARACTER`) | `Function` "FLOOR(x)" + `Variable` "Declared: CHARACTER" |
+
+`src/completion.ts`'s `general` branch concatenates
+keywords + tree vars + functions + types + declared names + snippets and only
+prefix-filters the result. Fix: merge on the upper-cased label with a fixed
+preference (declared name > tree variable > function > type > keyword), keep the
+snippet as a separate *suggestion* only when the label is not already a keyword
+or function, and put the declared variable first when it shadows a built-in
+(that one is genuinely useful information, not a duplicate).
+
+---
+
+## I-18 · Medium · `\r` is treated as content: ranges run one column past EOL on CRLF files *[clear bug]*
+
+7 of the 103 files are CRLF (all 7 from the IBM HL7 samples in
+`_from-archives/Healthcare/…`). A client's line does **not** include its line
+terminator, so every range that reaches "the end of the line" is one column too
+long for those files:
+
+* **grammar mode**: **202 of 4187** semantic tokens on those 7 files end one
+  column past EOL, all of them `comment` tokens — the grammar's comment token
+  includes the `\r` (`SegmentFilters.esql`: `comment at 0:0+90` on an 89-character
+  line). A client paints one column past the end of the line;
+* **heuristic mode**: **63 `documentSymbol` ranges** on the same 7 files, e.g.
+  `SegmentFilters.esql` symbol `Main` → *end char 6, line is 5 characters*,
+  `Receiver.esql` symbol `healthcare` → *end char 25, line is 24*. Symbol **names**
+  are still exact (round 1's I-4 fix holds), only the ranges that reach end of line
+  are off by one;
+* **the one diagnostic** that reaches end of line, in
+  `Sender.esql` (line 80): `Main() contains neither RETURN nor PROPAGATE.` → *end
+  char 40, line is 39 characters*. It comes from the same scanner path, so it is
+  off by one in grammar mode too — grammar mode only replaces the *syntax*
+  diagnostics, the semantic checks always run on the heuristic scan.
+
+Three sources, all of them line splitting that keeps the `\r`:
+
+* `src/scanner.ts:100` — `masked.split('\n')`, so every heuristic range derived
+  from a line's length includes the `\r`;
+* `src/definitions.ts:311,500` — `rawLines` for the quoted-name search;
+* the grammar's comment token, for the semantic-token side.
+
+Fix on the server side without touching the grammar: a `linesOf(source)` helper
+that splits on `/\r\n|\r|\n/`, used everywhere a line length becomes a character
+offset. Fix the comment token too (its length should stop before the line
+terminator) — that is a one-character regex change, and it also softens I-19.
+
+---
+
+## I-19 · High · a lone-`\r` (CR-only) file loses the outline, in both modes *[clear bug]*
+
+The same nine-line module as I-18, joined with a CR instead of an LF (no `\n`
+anywhere):
+
+| line ending | mode | symbols the client is told about | what else |
+|---|---|---|---|
+| LF | both | `EolProbe`, `Main`, `amount` | — |
+| CRLF | both | `EolProbe`, `Main`, `amount` | positions correct (only I-18's one-column overrun) |
+| **CR only** | grammar | **`EolProbe` only** | 3 diagnostics, all pinned at **0:0**: `Syntax error.`, `Module 'EolProbe' is missing its closing END MODULE;`, `Main() body is not closed with END;` — all three are wrong, the file is well-formed; 12 tokens, and on the variant that opens with a `--` comment **one** comment token 213 characters long, i.e. the whole file became a comment |
+| **CR only** | heuristic | `EolProbe`, `amount` — **no `Main`** | `amount` reported at **line 0 character 92**; the client has that name at line 3 character 12 → **hover at the real position returns null**; 2 diagnostics at 0:0 |
+
+Neither analysis path breaks a line at a lone `\r` (`tree-sitter` counts `\n`
+only, and the heuristic splits on `\n`), so both collapse a CR-only file onto one
+line — and every position they return is wrong for a client that *does* break
+lines there (`vscode-languageserver-textdocument` splits on `\r\n | \r | \n`). The
+two modes then lose different symbols, which is how the finding reads differently
+depending on whether the reader has a C toolchain.
+
+No corpus file is CR-only (measured: 0), so this is not a frequency finding — it
+is the accidental output of an EOL conversion, a file copied through a Windows
+`cmd` redirection, or an old Mac file, and the LSP's answer is "your well-formed
+file is a syntax error and has no routines".
+
+Fix (also kills I-18): normalise line endings once, where text enters the server —
+`didOpen`/`didChange` hand the analysis `text.replace(/\r\n?/g, '\n')`, or one
+shared `linesOf()` used by the scanner and `definitions.ts` plus normalised text
+given to `parse()`. Removing a `\r` that immediately precedes a line break moves no
+column, so every position stays aligned with the client; a lone-`\r` file gains the
+lines the client already counts.
+
+---
+
+## I-20 · Medium · with two or more documents open, every request re-parses and re-analyses the file *[clear bug]*
+
+`src/server.ts:92-98` keeps **one** parsed document, keyed by its whole text. Any
+second open document evicts it, so each request pays for a fresh parse *and*
+analysis. Measured over a real stdio session with 3 corpus files open
+(12.5 KB + 7.7 KB + 3.3 KB), grammar mode:
+
+| pattern | median | mean |
+|---|---|---|
+| hover, same document 20× in a row | **0.81 ms** | 1.98 ms |
+| hover, alternating across the 3 documents | **11.44 ms** | 12.36 ms |
+| completion, same document 20× | **0.42 ms** | 1.53 ms |
+| completion, alternating across the 3 documents | **10.96 ms** | 11.73 ms |
+
+(The first request of each run is cold in both columns, which is why the means are
+close; the medians are the signal.)
+
+The analysis, not tree-sitter, is the cost: on the biggest corpus file
+(12.2 KB, 296 lines) `parse` is **2.4 ms** and `analyzeDocument` **26–31 ms**
+across repeated runs — ~13× the parse — and it scales roughly linearly with the
+size of one document: 12 KB → 26 ms, 49 KB → 74 ms, 148 KB → 206 ms,
+370 KB → **495 ms** of analysis per request. `src/parser.ts` walks the tree with
+`node.children`, and in `node-tree-sitter` 0.25.1 that property returns a **fresh
+array of freshly allocated `SyntaxNode`s every time it is read** (the child nodes
+themselves are identity-stable). Measured on `TransportSender.esql` (2300 nodes):
+
+| walk | cost |
+|---|---|
+| parse only | 2.1 ms |
+| one full walk, reading `children` once per node | 7.0 ms |
+| the same walk reading `children` twice per node — what `childOf()` + a loop does (`src/parser.ts:262`, 17 `node.children` reads, 10 `childOf()` call sites) | 13.7 ms |
+| a `TreeCursor` walk (`rootNode.walk()`) | 7.1 ms — no better |
+
+So the win is not a different traversal API: it is **not walking at all per
+request**, and reading `node.children` once per node instead of once per field.
+
+Two things make it worse than it looks: `completionProvider.triggerCharacters`
+includes `' '`, so completion is asked for on every space typed in the *visible*
+document; and `didChangeContent` schedules diagnostics, so with N open documents
+being cycled (a `workspace/symbol`-style sweep, an extension walking files, or
+simply two files in a split view) each keystroke re-does the full walk.
+
+Fix in two cheap steps: (a) cache by document, invalidated on `didChange`/
+`didClose`, instead of one text-equality slot (the text itself is a fine key — the
+current bug is only that there is one slot); (b) hoist `const kids = node.children`
+in the walk so each node's child array is built once. Re-measure with this
+document's numbers after each step.
+
+---
+
+## I-21 · Medium · diagnostics carry no `source` and no `code` *[clear bug]*
+
+Every diagnostic in both modes: `source: undefined`, `code: undefined`. Corpus
+count: **63** grammar-mode / **7** heuristic-mode diagnostics, 100 % of them
+(the probe records one finding per diagnostic, so this is simply "all").
+`src/diagnostics.ts` calls `Diagnostic.create(range, message, severity)` and
+never passes the optional fields.
+
+Consequences for a real user: the Problems pane shows no owner for the message
+(so it cannot be told apart from another ESQL extension's, or from a linter),
+`@sort source` / "exclude this source" / per-source colouring have nothing to
+work with, and a client cannot offer a targeted suppression because there is no
+stable code to suppress. Fix: `source: 'esql'` on every diagnostic plus a stable
+`code` per check (`undeclared-variable`, `missing-end-module`,
+`deprecated-xmlns`, `no-propagation`, `missing-semicolon`, `syntax-error`, …),
+which also gives the settings table a natural second name and lets
+`codeDescription` point at the README section.
+
+---
+
+## I-22 · Low · capability and lifecycle hygiene *[clear bug]*
+
+Four small protocol honesty problems, all verified over stdio:
+
+1. **`save: true` is advertised, and there is no save handler**
+   (`src/server.ts:159`; `grep -n "onDidSave" src/` → nothing). A client that
+   honours the advertisement sends `didSave` and gets silence. Either drop the
+   advertisement or use it (a save is the natural moment to re-check a file a
+   formatter touched).
+2. **`documentSymbol` always answers the hierarchical shape.** Asked by a client
+   whose capabilities say `documentSymbol: {}` (no
+   `hierarchicalDocumentSymbolSupport`), the server still answers with
+   `DocumentSymbol[]` — items carrying `range` + `selectionRange` (and
+   `children` where there is nesting) and no `location` at all, which such a
+   client cannot render. Measured on a real file: 2 items, DocumentSymbol shape,
+   `grep location` over the response → nothing. The capability check is one line
+   in `onDocumentSymbol`; `symbols.ts` already builds both shapes' worth of data.
+3. **`initializationOptions` does not accept the `{ esql: … }` wrapper**, although
+   `src/settings.ts` documents that both shapes are accepted ("the server accepts
+   either `{ esql: {...} }` or the settings object directly"): with
+   `{ esql: { diagnostics: { checkUndeclaredVariables: false } } }` at initialize,
+   `Variable 'nobody' is used in SET but never declared` is still published;
+   `didChangeConfiguration` with the same wrapper does silence it, because that
+   handler unwraps (`src/server.ts:190`) and `onInitialize` does not
+   (`src/server.ts:150`). Fix: unwrap in one shared place.
+4. **Malformed parameters leak a JavaScript stack into a JSON-RPC message**
+   instead of answering. A client that sends `hover` without `position`, or
+   positions as strings (a JSON-only client), gets:
+   `-32603 … Cannot read properties of undefined (reading 'line')`,
+   `-32603 … Range#create called with invalid arguments[3, 1, 3, 7]`,
+   `-32603 … Cannot read properties of undefined (reading 'uri')`.
+   A guarded `position`/`textDocument` check returning `null` (or an
+   `InvalidParams` error) would keep those messages in the protocol. The server
+   never *died* on any of these, and answered every later request correctly —
+   that part is good.
+
+---
+
 ## Not issues (checked, behaving as designed)
 
-* **No crashes, ever.** 103 files × both modes: 0 timeouts, 0 unanswered requests,
-  0 malformed frames, 0 server stderr errors, clean `shutdown`/`exit`.
-* **No bad ranges.** 0 out-of-bounds ranges and 0 definition-text mismatches over
-  every diagnostic, symbol, definition and reference returned; the UTF-8 files and
-  a synthetic CRLF file show no offset drift.
+Round 1 (2026-10-23). Two bullets were too broad; they are corrected in place
+rather than deleted, because the round-2 probe is what corrected them.
+
+* **No crashes from corpus traffic.** 103 files × both modes: 0 timeouts, 0
+  unanswered requests, 0 malformed frames, 0 server stderr errors, clean
+  `shutdown`/`exit`. *Corrected 2026-10-24:* the server does die, but not on
+  corpus traffic — on a client that answers the refresh request (I-14).
+* **No bad ranges in LF files.** 0 out-of-bounds ranges and 0 definition-text
+  mismatches over every diagnostic, symbol, definition and reference returned; the
+  UTF-8 files show no offset drift. *Corrected 2026-10-24:* that held because the
+  corpus was assumed to be LF; on its 7 CRLF files ranges do overrun EOL by one
+  column (I-18).
 * **Incremental sync works.** Range edits (versions 1→4): after inserting a line,
   hover and definition follow the new positions; a newly introduced
   `SET typoTarget = 1;` warns at the right line, and undoing the edit removes it.
@@ -565,6 +987,11 @@ only after a `CALL`.
 * 5 files legitimately have no module (module-less ESQL: `CREATE PROCEDURE …
   LANGUAGE JAVA EXTERNAL NAME`, `DECLARE x SHARED ROW`,
   `DECLARE RETRY_AT_THIS_HOUR EXTERNAL INTEGER 20`) — the outline is right, not empty-by-bug.
+  Each shape was also parsed on its own: `BROKER SCHEMA` + `DECLARE`, a
+  `SHARED ROW` declaration, a `DECLARE … EXTERNAL`, and a
+  `LANGUAGE JAVA EXTERNAL NAME "…"` routine all come back with 0 syntax issues and
+  the right symbols. Only a top-level `SET` **outside** any routine is reported,
+  and that really is not valid ESQL.
 * Heuristic mode emits 0 semantic tokens: expected — tokens are produced from the
   grammar's `queries/highlights.scm`, so without the addon there is no source for
   them. The capability is advertised unconditionally (see the comment at
@@ -575,13 +1002,56 @@ only after a `CALL`.
   PROPAGATE.` (correct — `Sender.esql`, module `InitNoSequenceRetry`, really falls
   off the end), undeclared variable in `SET` on a clean file.
 
+Round 2 (2026-10-24), from the invariant probe — recorded so the next round does
+not re-derive them:
+
+* **Bulk open works at scale**: 103 documents in ONE session, 103/103 publish
+  diagnostics, slowest 622 ms. (I-1's fix, confirmed in the situation that used to
+  break it.)
+* **Incremental `didChange` really moves the analysis**, in both modes, on 7
+  representative files: inserting `DECLARE r2ProbeVar INTEGER 3; SET r2ProbeUse =
+  r2ProbeVar;` puts `r2ProbeVar` in the outline, hover answers on it, the
+  undeclared-variable check reports `r2ProbeUse` at the new line, and deleting the
+  two inserted lines restores the outline **exactly**, name for name. Relevant to
+  I-6 too: a *newly inserted* `DECLARE` inside the damaged
+  `Routing_using_memory_cache.esql` **is** seen.
+* **The empty answer has the right shape.** For a URI that was never opened, all
+  six requests answer empty (`[]`, `null`, or `{"data":[]}` — an empty token
+  stream is an object, not an array, so a naive "is the answer empty" test calls it
+  an answer). Nothing errors for an unopened document.
+* **Nonsense positions and nonsense parameters are survivable**: line past EOF,
+  character 99999, negative line, negative character, a `didChange` whose range
+  starts at line 9999, `references` with no `context`, `completion` with a numeric
+  `uri`, `hover` before `initialize`, `$/cancelRequest`, a second `initialize`, a
+  duplicate `didOpen` — no crash, and the next real request answers correctly. (The
+  JSON-RPC *message* for malformed params is the problem, not the survival: I-22.4.)
+* **Positions are UTF-16 code units, not bytes.** With an accent (`é`), a curly
+  quote, three CJK characters or an emoji placed earlier on the same line as a
+  `DECLARE`, the name is still reported at its real character column, hover answers
+  there, `definition` points there, and no semantic token crosses EOL. A UTF-8 BOM
+  changes nothing (same 3 symbols, 22 tokens, 0 diagnostics as without it).
+* Completion asked for **inside a comment or a string literal** narrows to the one
+  identifier being typed instead of offering the 250-item list. Not a bug: on
+  masked text there is no prefix to expand.
+* A symbol `range` spanning many lines (a module, a routine) is legitimate; a probe
+  that flags "range longer than 50 lines" measures nesting, not a defect.
+
 ## Suggested order of work
 
-I-1 (nothing else can be trusted until every document reports) → I-4 and I-5
-(cheap, restore the sold no-toolchain surface) → I-2 (silent, one-line regex) →
-I-9, I-7, I-8 (heuristic/analyzer noise) → I-6 (parity) → I-11, I-12 (features,
-messages) → I-3 families, each after its railroad diagram is read, starting with
-A/F/B (highest real-world frequency) → I-13 (needs a design decision).
+**Round 2 (current).** I-14 (kills the server for every client that is not VS
+Code; the fix is three lines) → I-15 + I-16 (one root cause each in `hover.ts` and
+`completion.ts`; both need "which declaration is in scope at this position", so
+add that helper to `definitions.ts` — `AGENTS.md`: fix a quirk in one place or the
+four features disagree) → I-18 + I-19 (one `linesOf()` helper plus normalising line
+endings at ingest: one change, two findings, testable with a synthetic file in both
+modes) → I-17 (dedup the `general` list) → I-20 (uri+version cache first, the tree
+walk second) → I-21 (`source` + `code`) → I-22 (protocol hygiene).
+
+**Round 1 (still open).** I-3 families A–K, each after its railroad diagram is
+read, starting with A/F/B (highest real-world frequency) → I-6 (parity inside
+damaged regions — round 2 showed an inserted `DECLARE` *is* seen, so the gap is
+narrower than first written) → I-12 (multi-line `Syntax error.` spans) → I-13
+(needs a design decision).
 
 ---
 
