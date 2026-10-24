@@ -3,9 +3,10 @@
  * user-defined routines) on top of the built-in reference from src/data/.
  *
  * Like definitions.test.ts this file runs the heuristic path unconditionally —
- * that mode is a supported product surface — and additionally checks the
- * grammar path whenever the addon is available. The two differ in one
- * documented way: only the tree knows which module owns a declaration.
+ * that mode is a supported product surface — and additionally checks the grammar
+ * path whenever the addon is available. The two are expected to agree about
+ * *which* declaration a position means and who owns it; they differ only in how
+ * precisely each one computes the ranges.
  */
 
 import { test } from 'node:test';
@@ -73,7 +74,9 @@ test('hover documents a declared variable with its type', async () => {
   const { heuristic, grammar } = await both(8, at(8, 'orderRef', 4));
   assert.match(heuristic!, /### `orderRef`/);
   assert.match(heuristic!, /\*\*Declared variable\*\* — `REFERENCE`/);
-  assert.match(heuristic!, /\*at document level\*/, 'the fallback has no module model');
+  // Both modes know the module now: the fallback reads `CREATE … MODULE`
+  // headers itself (I-15 — it used to lose this line without a tree).
+  assert.match(heuristic!, /\*in module `OrderProcessing`\*/);
   if (grammar) {
     assert.match(grammar, /\*\*Declared variable\*\* — `REFERENCE`/);
     assert.match(grammar, /\*in module `OrderProcessing`\*/, 'the tree knows the owner');
@@ -140,6 +143,107 @@ test('built-in functions, tree variables and domains still document', async () =
 
   const type = await both(3, at(3, 'INTEGER', 20));
   assert.match(type.heuristic!, /ESQL data type/);
+});
+
+/**
+ * ISSUES.md I-15: hover used to take the FIRST match in file order, so with a
+ * name declared twice it described the wrong declaration — while
+ * go-to-definition at the same cursor resolved the scope. The two features are
+ * required to agree.
+ */
+const SHADOW = [
+  'CREATE COMPUTE MODULE Shadowing', // 0
+  'CREATE FUNCTION First() RETURNS BOOLEAN', // 1
+  'BEGIN', // 2
+  "DECLARE value CHARACTER;", // 3
+  "SET value = 'first';", // 4
+  'RETURN TRUE;', // 5
+  'END;', // 6
+  'CREATE FUNCTION Second() RETURNS INTEGER', // 7
+  'BEGIN', // 8
+  'DECLARE value INTEGER 2;', // 9
+  'SET value = 3;', // 10
+  'RETURN value;', // 11
+  'END;', // 12
+  'END MODULE;', // 13
+  '',
+].join('\n');
+const SHADOW_LINES = SHADOW.split('\n');
+const there = (line: number, word: string, from = 0) => SHADOW_LINES[line].indexOf(word, from);
+
+/** Hovers SHADOW at a position in both modes. */
+async function bothShadow(line: number, character: number) {
+  const analysis = await doc();
+  const tree = analysis ? analyzeDocument(parse(SHADOW)!) : undefined;
+  return {
+    heuristic: text(hoverAt(SHADOW, line, character)),
+    grammar: tree ? text(hoverAt(SHADOW, line, character, tree)) : null,
+  };
+}
+
+test('a name declared in two routines hovers the one the cursor is inside', async () => {
+  for (const [line, type, routine] of [
+    [4, 'CHARACTER', 'First'],
+    [10, 'INTEGER', 'Second'],
+  ] as const) {
+    const { heuristic, grammar } = await bothShadow(line, there(line, 'value'));
+    assert.match(heuristic!, /### `value`/);
+    assert.match(
+      heuristic!,
+      new RegExp(`\\*\\*Declared variable\\*\\* — \`${type}\``),
+      `line ${line + 1} sees the ${type} declaration`
+    );
+    assert.match(heuristic!, new RegExp(`\\*in \`${routine}\\(\\)\`\\*`));
+    if (grammar) {
+      assert.match(grammar!, new RegExp(`\\*\\*Declared variable\\*\\* — \`${type}\``));
+      assert.match(grammar!, new RegExp(`\\*in \`${routine}\\(\\)\`\\*`));
+    }
+  }
+});
+
+/** Two modules, one routine name: hover must not describe the first file order. */
+const TWOMAIN = [
+  'CREATE COMPUTE MODULE First_Module', // 0
+  'CREATE FUNCTION Main() RETURNS BOOLEAN', // 1
+  'BEGIN', // 2
+  'RETURN TRUE;', // 3
+  'END;', // 4
+  'END MODULE;', // 5
+  '', // 6
+  'CREATE COMPUTE MODULE Second_Module', // 7
+  'CREATE FUNCTION Main() RETURNS BOOLEAN', // 8
+  'BEGIN', // 9
+  'RETURN FALSE;', // 10
+  'END;', // 11
+  'END MODULE;', // 12
+  '',
+].join('\n');
+const TWOMAIN_LINES = TWOMAIN.split('\n');
+
+test('with two Main() routines, hover names the module the cursor is in', async () => {
+  for (const [line, module] of [
+    [1, 'First_Module'],
+    [8, 'Second_Module'],
+  ] as const) {
+    const character = TWOMAIN_LINES[line].indexOf('Main');
+    const analysis = await doc();
+    const tree = analysis ? analyzeDocument(parse(TWOMAIN)!) : undefined;
+    const heuristic = text(hoverAt(TWOMAIN, line, character));
+    assert.match(heuristic!, /\*\*ESQL function\*\*/);
+    assert.match(
+      heuristic!,
+      new RegExp(`\\*in module \`${module}\`\\*`),
+      `line ${line + 1} belongs to ${module} (heuristic)`
+    );
+    if (tree) {
+      const grammar = text(hoverAt(TWOMAIN, line, character, analyzeDocument(parse(TWOMAIN)!)));
+      assert.match(
+        grammar!,
+        new RegExp(`\\*in module \`${module}\`\\*`),
+        `line ${line + 1} belongs to ${module} (grammar)`
+      );
+    }
+  }
 });
 
 test('hovering inside a string or comment yields nothing', async () => {

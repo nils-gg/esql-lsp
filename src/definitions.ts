@@ -301,16 +301,82 @@ export function locatedRoutineParams(maskedLines: string[]): LocatedParam[] {
 }
 
 /**
+ * Line ranges of every `CREATE FUNCTION/PROCEDURE` statement found by pattern —
+ * the same spans `routinesFromSource()` reports as `declRange`, without the
+ * parameter and return-type work, because the scope pass only needs the extent.
+ *
+ * A body that never closes (the normal state of a buffer while it is being
+ * typed) extends to EOF: the alternative would make every declaration in that
+ * body invisible, which is the opposite of what a fallback should do. Same rule
+ * the module fallback uses for a missing `END MODULE`.
+ */
+function routineSpans(lines: string[]): Range[] {
+  const out: Range[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!FN_RE.test(lines[i])) continue;
+    const bodyEnd = findBodyEndLine(lines, i);
+    const end = bodyEnd <= i ? lines.length - 1 : bodyEnd;
+    out.push(Range.create(i, 0, end, (lines[end] ?? '').length));
+  }
+  return out;
+}
+
+/**
+ * The narrowest of `spans` that contains `line`, or `outer` when none does
+ * (module-level and `BROKER SCHEMA`-level declarations, which the heuristics
+ * cannot attribute to a block).
+ */
+function innermostSpan(spans: Range[], line: number, outer: Range): Range {
+  let best: Range | undefined;
+  for (const s of spans) {
+    if (line < s.start.line || line > s.end.line) continue;
+    if (!best || s.end.line < best.end.line) best = s;
+  }
+  return best ?? outer;
+}
+
+/**
+ * Scope for a declaration that no routine covers: the module it sits in, so a
+ * name declared in a module header stops being visible past `END MODULE` the way
+ * the parse tree says it does. A module with no `END MODULE` reaches EOF, which
+ * keeps the generous behaviour a buffer being typed needs.
+ */
+function moduleScope(
+  modules: Array<{ name: string; start: number; end: number }>,
+  lines: string[],
+  line: number,
+  outer: Range
+): Range {
+  let best: { start: number; end: number } | undefined;
+  for (const m of modules) {
+    if (line < m.start || line > m.end) continue;
+    if (!best || m.start > best.start) best = m;
+  }
+  return best
+    ? Range.create(best.start, 0, best.end, (lines[best.end] ?? '').length)
+    : outer;
+}
+
+/**
  * DECLARED from masked lines: every name of a (possibly multi-name) DECLARE,
  * every routine parameter (single- or multi-line list), and the quoted-name
- * declare form. Ranges cover the name only; the scope is the whole file because
- * the heuristics have no block model.
+ * declare form. Ranges cover the name only.
+ *
+ * `scope` is the enclosing routine's statement when the heuristics can see one
+ * (`routineSpans`), otherwise the enclosing module (`moduleScope`), otherwise the
+ * file: they have no block model, so a declaration they cannot attribute to a
+ * block stays visible for the whole enclosing statement. That is deliberately
+ * generous — completion and hover show a name a little too widely rather than
+ * hiding one that is legal.
  */
 export function declarationsFromSource(source: string): DeclaredName[] {
-  const { lines } = scan(source);
-  const rawLines = source.split('\n');
+  const { lines, rawLines } = scan(source);
   const out: DeclaredName[] = [];
-  const scope = fileScope(lines);
+  const outer = fileScope(lines);
+  const spans = routineSpans(lines);
+  const modules = moduleSpans(lines);
+  const scopeOf = (line: number) =>
+    innermostSpan(spans, line, moduleScope(modules, lines, line, outer));
   // One pass for all parameters (their list may span lines), then emitted at
   // the line each name actually sits on.
   const params = locatedRoutineParams(lines);
@@ -335,7 +401,7 @@ export function declarationsFromSource(source: string): DeclaredName[] {
         range: Range.create(i, col, i, col + name.length),
         kind: 'variable',
         constant: rawQuoted[2]?.toUpperCase() === 'CONSTANT',
-        scope,
+        scope: scopeOf(i),
       });
       continue;
     }
@@ -355,7 +421,7 @@ export function declarationsFromSource(source: string): DeclaredName[] {
           range: Range.create(i, col, i, col + name.length),
           kind: 'variable',
           constant,
-          scope,
+          scope: scopeOf(i),
         });
       }
     }
@@ -367,7 +433,7 @@ export function declarationsFromSource(source: string): DeclaredName[] {
         range: Range.create(p.line, p.character, p.line, p.character + p.name.length),
         kind: 'parameter',
         constant: p.constant,
-        scope,
+        scope: scopeOf(p.line),
       });
     }
   }
@@ -397,6 +463,38 @@ function findBodyEndLine(lines: string[], fromLine: number): number {
   return fromLine;
 }
 
+/** Module name and the lines its statement covers, from masked lines (a module
+ * with no `END MODULE` owns everything below it, as in `modulesFromSource`). */
+function moduleSpans(lines: string[]): Array<{ name: string; start: number; end: number }> {
+  const out: Array<{ name: string; start: number; end: number }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = MODULE_RE.exec(lines[i]);
+    if (!m) continue;
+    let end = lines.length - 1;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (END_MODULE_RE.test(lines[j])) {
+        end = j;
+        break;
+      }
+    }
+    out.push({ name: m[2], start: i, end });
+  }
+  return out;
+}
+
+/** The module a routine header belongs to: the innermost (last-starting) one. */
+function owningModule(
+  modules: Array<{ name: string; start: number; end: number }>,
+  line: number
+): string | undefined {
+  let found: { name: string; start: number } | undefined;
+  for (const m of modules) {
+    if (line < m.start || line > m.end) continue;
+    if (!found || m.start > found.start) found = m;
+  }
+  return found?.name;
+}
+
 /**
  * CREATE FUNCTION/PROCEDURE headers found by pattern (no grammar), with the
  * parameter list and return type collected across the lines a split header
@@ -404,8 +502,9 @@ function findBodyEndLine(lines: string[], fromLine: number): number {
  * cannot disagree about a routine's shape.
  */
 export function routinesFromSource(source: string): RoutineInfo[] {
-  const { lines } = scan(source);
+  const { lines, rawLines } = scan(source);
   const out: RoutineInfo[] = [];
+  const modules = moduleSpans(lines);
 
   for (let i = 0; i < lines.length; i++) {
     const m = FN_RE.exec(lines[i]);
@@ -440,7 +539,10 @@ export function routinesFromSource(source: string): RoutineInfo[] {
       returnType,
       range: Range.create(i, col, i, col + name.length),
       declRange: Range.create(i, 0, bodyEnd, (lines[bodyEnd] ?? '').length),
-      moduleName: undefined,
+      // Which module this header sits in: hover says "in module `X`" from this
+      // field, and the fallback used to leave it empty, so the same hover lost
+      // its owner line in heuristic mode (I-15). Innermost when nested.
+      moduleName: owningModule(modules, i),
     });
   }
   return out;
@@ -456,7 +558,7 @@ export function routinesFromSource(source: string): RoutineInfo[] {
 export function modulesFromSource(
   source: string
 ): Array<{ name: string; kind: string; range: Range; nameRange: Range }> {
-  const { lines } = scan(source);
+  const { lines, rawLines } = scan(source);
   const out: Array<{ name: string; kind: string; range: Range; nameRange: Range }> = [];
   for (let i = 0; i < lines.length; i++) {
     const m = MODULE_RE.exec(lines[i]);
@@ -481,7 +583,7 @@ export function modulesFromSource(
 
 /** The file's `BROKER SCHEMA` declaration, if any. */
 export function schemaFromSource(source: string): { name: string; range: Range } | undefined {
-  const { lines } = scan(source);
+  const { lines, rawLines } = scan(source);
   for (let i = 0; i < lines.length; i++) {
     const m = BROKER_RE.exec(lines[i]);
     if (!m) continue;
@@ -496,8 +598,7 @@ export function schemaFromSource(source: string): { name: string; range: Range }
  * (`OutputRoot.JSON.Data` never matches `Data`) — references without a tree.
  */
 function occurrences(source: string, name: string): Range[] {
-  const { lines } = scan(source);
-  const rawLines = source.split('\n');
+  const { lines, rawLines } = scan(source);
   const out: Range[] = [];
   const re = /[_a-zA-Z][_a-zA-Z0-9]*/g;
   let m: RegExpExecArray | null;
@@ -525,6 +626,95 @@ function occurrences(source: string, name: string): Range[] {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
+ * The declaration that a position actually sees, innermost scope first. Used by
+ * `definitionAt`, by hover (I-15) and by completion (I-16): three features that
+ * must agree, because they are asked about the same cursor and the user notices
+ * immediately when they do not.
+ */
+export function visibleDeclarationsAt(
+  declarations: DeclaredName[],
+  line: number,
+  character: number
+): DeclaredName[] {
+  return declarations
+    .filter((d) => rangeContains(d.scope, line, character))
+    .sort(rangeEndsBefore);
+}
+
+/** Narrowest scope first: a routine body ends before its module does. */
+function rangeEndsBefore(a: DeclaredName, b: DeclaredName): number {
+  return (
+    a.scope.end.line - b.scope.end.line ||
+    a.scope.end.character - b.scope.end.character ||
+    b.scope.start.line - a.scope.start.line
+  );
+}
+
+/**
+ * The declaration of `name` that a position refers to — the one whose `scope`
+ * contains the position, innermost first, so a routine's own `DECLARE` wins over
+ * a same-named one in an earlier routine. When the cursor already sits on a
+ * declaration of that name, that declaration answers (a definition request on a
+ * declaration must not jump elsewhere). Only when no declaration of the name is
+ * in scope do the candidates come back in file order, so a name declared in an
+ * outer module, or one the recovery pass placed somewhere unexpected, still
+ * resolves rather than silently answering nothing.
+ */
+export function declarationAt(
+  declarations: DeclaredName[],
+  name: string,
+  line: number,
+  character: number
+): DeclaredName | undefined {
+  const named = declarations.filter((d) => eqName(d.name, name));
+  if (!named.length) return undefined;
+  const here = named.find((d) => rangeContains(d.range, line, character));
+  if (here) return here;
+  const inScope = visibleDeclarationsAt(named, line, character);
+  return inScope.length ? inScope[0] : named[0];
+}
+
+/**
+ * The routine a position is inside — the innermost one whose statement (header
+ * plus body) covers it. Not a lookup *of* a routine by name: this is the answer
+ * to "who owns this line", which is what a declaration's owner line needs.
+ */
+export function enclosingRoutine(
+  routines: RoutineInfo[],
+  line: number,
+  character: number
+): RoutineInfo | undefined {
+  const around = routines.filter((r) =>
+    rangeContains(r.declRange ?? r.range, line, character)
+  );
+  if (!around.length) return undefined;
+  return around.reduce((inner, r) =>
+    (r.declRange ?? r.range).start.line > (inner.declRange ?? inner.range).start.line
+      ? r
+      : inner
+  );
+}
+
+/**
+ * The routine to hover when the word under the cursor is a routine *name*: the
+ * one with that name which the cursor belongs to, when there is one — a file
+ * with two modules each holding a `Main()` must not hover the second module's
+ * `Main` as if it were the first's (I-15). Falls back to file order.
+ */
+export function routineByNameAt(
+  routines: RoutineInfo[],
+  name: string,
+  line: number,
+  character: number
+): RoutineInfo | undefined {
+  const named = routines.filter((r) => eqName(r.name, name));
+  if (!named.length) return undefined;
+  const owner = enclosingRoutine(routines, line, character);
+  if (owner && named.includes(owner)) return owner;
+  return named[0];
+}
+
+/**
  * Declaration ranges for the symbol under the cursor; empty when the word is
  * a built-in, a message-tree path element, or simply undeclared.
  */
@@ -534,8 +724,8 @@ export function definitionAt(
   character: number,
   doc?: DocAnalysis
 ): Range[] {
-  const { lines } = scan(source);
-  const at = wordAtPosition(lines, source.split('\n'), line, character);
+  const { lines, rawLines } = scan(source);
+  const at = wordAtPosition(lines, rawLines, line, character);
   if (!at) return [];
 
   if (doc) {
@@ -592,8 +782,8 @@ export function referencesAt(
   includeDeclaration = true,
   doc?: DocAnalysis
 ): Range[] {
-  const { lines } = scan(source);
-  const at = wordAtPosition(lines, source.split('\n'), line, character);
+  const { lines, rawLines } = scan(source);
+  const at = wordAtPosition(lines, rawLines, line, character);
   if (!at) return [];
 
   if (doc) {

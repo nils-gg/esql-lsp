@@ -17,6 +17,10 @@ import {
   referencesAt,
   declarationsFromSource,
   routinesFromSource,
+  rangeContains,
+  visibleDeclarationsAt,
+  declarationAt,
+  enclosingRoutine,
 } from '../src/definitions';
 
 const SRC = [
@@ -327,4 +331,71 @@ test('a quoted EXTERNAL declare declares the name, not the keyword', () => {
   // trusted where the masked view agrees the DECLARE is live code.
   const commented = ['-- DECLARE "fake" EXTERNAL CHARACTER;', ''].join('\n');
   assert.deepEqual(declarationsFromSource(commented), []);
+});
+
+/**
+ * I-15/I-16: the fallback has to know *scopes*, not just names. Hover, completion
+ * and go-to-definition all ask these helpers where a name lives, and while the
+ * pattern path answered with the whole file as every declaration's scope, a
+ * shadowed name hovered the wrong declaration and completion offered variables
+ * the cursor could not see.
+ */
+const SCOPES = [
+  'CREATE COMPUTE MODULE Outer', // 0
+  '  CREATE FUNCTION First() RETURNS BOOLEAN', // 1
+  '  BEGIN', // 2
+  '    DECLARE value CHARACTER;', // 3
+  '    SET value = 1;', // 4
+  '  END;', // 5
+  '  CREATE FUNCTION Second() RETURNS INTEGER', // 6
+  '  BEGIN', // 7
+  '    DECLARE value INTEGER;', // 8
+  '    SET value = 3;', // 9
+  '  END;', // 10
+  'END MODULE;', // 11
+  '', // 12
+].join('\n');
+
+test('the pattern path puts each declaration in the scope that owns it', async () => {
+  const check = (doc: DocAnalysis | undefined) => {
+    const declarations = doc ? doc.declaredNames : declarationsFromSource(SCOPES);
+    const values = declarations.filter((d) => d.name === 'value');
+    assert.equal(values.length, 2, `two declarations of 'value': ${JSON.stringify(declarations.map((d) => [d.name, d.detail]))}`);
+
+    // Each one visible where it is declared, invisible in the other routine.
+    assert.equal(rangeContains(values[0].scope, 4, 8), true, "First()'s value covers its own SET");
+    assert.equal(rangeContains(values[1].scope, 4, 8), false, "Second()'s value does not");
+    assert.equal(rangeContains(values[1].scope, 9, 8), true, "Second()'s value covers its own SET");
+    assert.equal(rangeContains(values[0].scope, 9, 8), false, "First()'s value does not");
+
+    // So the helpers agree at one cursor about which declaration it means.
+    assert.match(
+      declarationAt(declarations, 'value', 4, 8)!.detail,
+      /CHARACTER/,
+      'line 4 means the CHARACTER declaration'
+    );
+    assert.match(
+      declarationAt(declarations, 'value', 9, 8)!.detail,
+      /INTEGER/,
+      'line 9 means the INTEGER declaration'
+    );
+
+    // Outside every routine (past END MODULE) nothing is visible any more.
+    assert.deepEqual(
+      visibleDeclarationsAt(declarations, 12, 0).map((d) => d.name),
+      [],
+      'a position past END MODULE sees no routine-local declarations'
+    );
+
+    // And "who owns this line" answers with the routine, which is what hover needs.
+    const routines = doc ? doc.routines : routinesFromSource(SCOPES);
+    assert.equal(enclosingRoutine(routines, 4, 8)?.name, 'First', 'line 4 belongs to First()');
+    assert.equal(enclosingRoutine(routines, 9, 8)?.name, 'Second', 'line 9 belongs to Second()');
+    assert.equal(enclosingRoutine(routines, 12, 0), undefined, 'past END MODULE nobody owns the line');
+  };
+  check(undefined);
+  // Same fixture through the tree path, when the addon is there: the two paths
+  // disagree about the exact scope edges (body vs whole routine statement), but
+  // not about which declaration a cursor sees.
+  if (await tree()) check(analyzeDocument(parse(SCOPES)!));
 });

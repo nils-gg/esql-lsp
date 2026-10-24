@@ -8188,7 +8188,7 @@
     },
     "line_comment": {
       "type": "PATTERN",
-      "value": "--[^\\n]*"
+      "value": "--[^\\r\\n]*"
     }
   },
   "extras": [

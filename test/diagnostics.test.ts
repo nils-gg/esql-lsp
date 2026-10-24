@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import { DiagnosticSeverity } from 'vscode-languageserver';
 import { analyze } from '../src/diagnostics';
 import { DEFAULT_SETTINGS } from '../src/settings';
+import { skipWithoutGrammar } from './grammarStatus';
 
 const D = DEFAULT_SETTINGS.diagnostics;
 
@@ -379,4 +380,58 @@ test('diagnostics can be disabled via settings', () => {
   };
   assert.deepEqual(analyze(src, allOff), []);
   assert.deepEqual(analyze(src, { ...allOff, enabled: false }), []);
+});
+
+/**
+ * I-21: every finding is addressed by `source` + `code`. A client groups and
+ * suppresses by those two fields, and the message is not a stable key; a
+ * diagnostic without them is unaddressable. Asserted on both paths, because
+ * the fallback is a sold mode, not a degraded extra.
+ */
+const MESSY = [
+  'CREATE COMPUTE MODULE Messy', // 0 — no END MODULE anywhere
+  'CREATE FUNCTION Main() RETURNS BOOLEAN', // 1
+  'BEGIN', // 2
+  'SET OutputRoot.XMLNS.Data.x = 1;', // 3 — deprecated parser
+  'SET nowhere = 1', // 4 — undeclared, and no semicolon
+  'RETURN 1;', // 5
+  'END;', // 6
+  '',
+].join('\n');
+
+const CODES = [
+  'syntax-error',
+  'module-no-main',
+  'missing-end-module',
+  'undeclared-variable',
+  'no-propagation',
+  'unclosed-main',
+  'deprecated-parser',
+  'missing-semicolon',
+  'output-root-properties',
+];
+
+function assertAddressable(diags: readonly { source?: string; code?: string | number; message: string }[], mode: string) {
+  assert.ok(diags.length >= 3, `${mode}: the fixture really produces findings`);
+  for (const d of diags) {
+    assert.equal(d.source, 'esql', `${mode}: \`${d.message}\` names its source`);
+    assert.equal(typeof d.code, 'string', `${mode}: \`${d.message}\` carries a code`);
+    assert.ok(CODES.includes(d.code as string), `${mode}: unknown code ${JSON.stringify(d.code)}`);
+  }
+}
+
+test('every heuristic diagnostic carries a source and a code', () => {
+  assertAddressable(analyze(MESSY, D), 'heuristic');
+  assert.deepEqual(
+    analyze(MESSY, D).map((d) => d.code),
+    ['missing-end-module', 'undeclared-variable', 'deprecated-parser', 'missing-semicolon'],
+    'and the codes name the checks that fired'
+  );
+});
+
+test('every grammar-backed diagnostic carries a source and a code', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const { parse, analyzeDocument } = await import('../src/parser');
+  const tree = parse(MESSY)!;
+  assertAddressable(analyze(MESSY, D, analyzeDocument(tree)), 'grammar');
 });

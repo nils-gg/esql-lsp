@@ -1330,8 +1330,12 @@ export default grammar({
     // left as an error rather than silently eating the rest of the file.
     comment: $ => /\/\*(?:[^*]|\*+[^*/])*\*+\//,
 
-    // -- to end of line
-    line_comment: $ => /--[^\n]*/,
+    // -- to end of line. `\r` ends it too: a client's line does not include its
+    // terminator, so a token that swallowed the `\r` of a CRLF file was painted
+    // one column past the end of the line (ISSUES.md I-18). A lone `\r` still
+    // does not make tree-sitter start a new line — that limitation is I-19, not
+    // something a token regex can fix.
+    line_comment: $ => /--[^\r\n]*/,
 
   },
 });

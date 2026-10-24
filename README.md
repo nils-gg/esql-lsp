@@ -43,6 +43,12 @@ boundary. With the grammar loaded, undeclared-variable analysis and syntax
 errors come from the parse tree (exact ranges, multi-line aware); intact
 statements inside a broken region are still analysed.
 
+Every diagnostic also carries `source: "esql"` and a stable `code`, so a client
+can group by owner and suppress one check without matching message text. The
+codes mirror the setting names below: `syntax-error`, `missing-end-module`,
+`module-no-main`, `no-propagation`, `unclosed-main`, `undeclared-variable`,
+`deprecated-parser`, `missing-semicolon`, `output-root-properties`.
+
 ### Completion
 
 - ~70 built-in ESQL functions with signature + markdown documentation
@@ -51,10 +57,13 @@ statements inside a broken region are still analysed.
   `Data` after `.JSON.`, common `LocalEnvironment` fields, types after
   `DECLARE <name>` / `RETURNS`
 - Variables declared in the current document (each name of a multi-name
-  `DECLARE a, b, c` included)
+  `DECLARE a, b, c` included), **in scope at the cursor only** — a name
+  declared in another routine is not offered, and one declared outside the
+  module is not offered past `END MODULE`
 - 43 snippets (module skeletons, IF/CASE/WHILE, THROW, PASSTHRU, JSON
   responses, …) — triggered like `module-compute`, `throw`, `trycatch`
-- Filtered by the word you are typing
+- Filtered by the word you are typing; one item per label, so a word that is
+  both a keyword and a data type (`INTEGER`) is offered once
 
 ### Hover
 
@@ -63,7 +72,9 @@ parser domains and data types — and for the document's own symbols: a
 `DECLARE` (its type, `CONSTANT`, and the routine or module that owns it) and a
 user-defined `FUNCTION`/`PROCEDURE` (its full header line). A name you declared
 wins over a built-in of the same spelling, so hovering your own `LENGTH`
-documents your `DECLARE`, not `LENGTH()`.
+documents your `DECLARE`, not `LENGTH()`. Resolved in scope: with `value`
+declared in two routines, hovering inside `Second()` documents `Second()`'s
+declaration, and go-to-definition at the same cursor agrees with it.
 
 ### Document symbols
 
@@ -73,6 +84,13 @@ under their module, parameters and body `DECLARE`s under their routine. Built
 from the parse tree when it is loaded, otherwise from the same pattern
 extractor the definition and hover paths use, so both modes outline the same
 names (every name of a multi-name `DECLARE a, b, c` included).
+
+The answer takes the shape the client declared: with
+`textDocument.documentSymbol.hierarchicalDocumentSymbolSupport` the nested
+`DocumentSymbol[]`, without it the flat `SymbolInformation[]` list (`location`
+per entry, `containerName` naming the parent) — a client that never declared the
+capability cannot render `children`, so it used to lose everything below module
+level.
 
 ### Go to definition and find references
 
@@ -259,6 +277,12 @@ feeds published diagnostics back to the agent as feedback while it edits.
   semantic tokens; it happens when the native addon could not build (needs a C
   toolchain at `npm install` time) or was skipped (`--ignore-scripts`).
   Neovim: `:lua vim.lsp.log.set_level('info')`, then `:LspLog`.
+- **A file with Windows (`\r\n`) or old-Mac (`\r`) line endings.** Fine in both
+  modes: the server splits lines the way an LSP client does — `\r\n`, `\r` or
+  `\n`, terminator excluded — so symbols, hover, diagnostics and semantic tokens
+  land on the row the editor shows, and no token is painted past end-of-line.
+  Internally the text is normalised for the parser only; your buffer is never
+  rewritten. If ranges ever look shifted by a line, that is a bug worth filing.
 - **Want the heuristic mode on purpose** (to compare, or to work around a broken
   build)? Start the server with `ESQL_LSP_NO_GRAMMAR=1`; the test suite uses the
   same switch to prove the fallback stays good.

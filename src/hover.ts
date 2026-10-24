@@ -31,6 +31,9 @@ import {
   modulesFromSource,
   schemaFromSource,
   matchesSchemaName,
+  declarationAt,
+  routineByNameAt,
+  enclosingRoutine,
 } from './definitions';
 import type { DocAnalysis, DeclaredName, RoutineInfo } from './parser';
 
@@ -66,10 +69,10 @@ function declarationOwnerLine(
   modules: { name: string; range: Range }[]
 ): string {
   // Parameters sit in the routine's header (outside BEGIN..END), so the whole
-  // CREATE..END statement is the containment test that works for both.
-  const owner = routines.find(
-    (r) => rangeContains(r.declRange, d.range.start.line, d.range.start.character)
-  );
+  // CREATE..END statement is the containment test that works for both. The
+  // innermost enclosing one: with two `Main()` routines in one file, `find`
+  // blamed the first for the second's variables (I-15).
+  const owner = enclosingRoutine(routines, d.range.start.line, d.range.start.character);
   if (owner) return `\n\n*in \`${owner.name}()\`*`;
   const mod = modules.find((m) =>
     rangeContains(m.range, d.range.start.line, d.range.start.character)
@@ -101,10 +104,10 @@ export function hoverAt(
   character: number,
   doc?: DocAnalysis
 ): Hover | null {
-  const { lines } = scan(source);
+  const { lines, rawLines } = scan(source);
   // Shared with go-to-definition/references, so a quoted declare name hovers
   // exactly where it is navigable (and vice versa).
-  const w = wordAtPosition(lines, source.split('\n'), line, character);
+  const w = wordAtPosition(lines, rawLines, line, character);
   if (!w) return null;
 
   const upper = w.word.toUpperCase();
@@ -112,21 +115,29 @@ export function hoverAt(
 
   // ── this document's own symbols first: they shadow nothing a reader
   //    cares about more than the declaration right in front of them ──
+  // Resolved *at the cursor*, never "the first match in file order": a name
+  // declared in two routines must hover the one the cursor is inside, or hover
+  // and go-to-definition describe different things at the same position
+  // (ISSUES.md I-15).
   const routines: RoutineInfo[] = doc
     ? doc.routines
     : routinesFromSource(source);
-  const routine = routines.find((r) => eq(r.name));
+  const routine = routineByNameAt(routines, w.word, line, character);
   if (routine) return routineHover(routine);
 
   const declarations: DeclaredName[] = doc
     ? doc.declaredNames
     : declarationsFromSource(source);
-  const declaration = declarations.find((d) => eq(d.name));
+  const declaration = declarationAt(declarations, w.word, line, character);
   if (declaration) {
     return declarationHover(
       declaration,
       routines,
-      doc ? doc.modules.map((m) => ({ name: m.name, range: m.range })) : []
+      doc
+        ? doc.modules.map((m) => ({ name: m.name, range: m.range }))
+        : // The pattern fallback knows the module spans too, so the owner line
+          // reads the same in both modes (I-15).
+          modulesFromSource(source)
     );
   }
 

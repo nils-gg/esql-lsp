@@ -119,7 +119,7 @@ export function analyze(
   if (doc && settings.checkSyntaxErrors) {
     for (const issue of doc.syntaxIssues) {
       diagnostics.push(
-        Diagnostic.create(issue.range, issue.message, DiagnosticSeverity.Error)
+        diag(issue.range, issue.message, DiagnosticSeverity.Error, 'syntax-error')
       );
     }
   }
@@ -139,6 +139,37 @@ export function analyze(
   if (settings.checkOutputRootProperties) checkOutputRootProperties(lines, diagnostics);
 
   return diagnostics;
+}
+
+/**
+ * Stable identifiers for the checks below, carried on every diagnostic as
+ * `code` (with `source: 'esql'`).
+ *
+ * Without them a client cannot tell an esql-lsp finding from another ESQL
+ * extension's or a linter's, has nothing to group or colour by, and has no key
+ * to suppress a single check with — the message text is not a stable key
+ * (ISSUES.md I-21). They mirror the `diagnostics.check*` setting names, so the
+ * settings table and the Problems pane agree.
+ */
+export type DiagnosticCode =
+  | 'syntax-error'
+  | 'module-no-main'
+  | 'missing-end-module'
+  | 'undeclared-variable'
+  | 'no-propagation'
+  | 'unclosed-main'
+  | 'deprecated-parser'
+  | 'missing-semicolon'
+  | 'output-root-properties';
+
+/** Every diagnostic this server publishes is built here. */
+function diag(
+  range: Range,
+  message: string,
+  severity: DiagnosticSeverity,
+  code: DiagnosticCode
+): Diagnostic {
+  return Diagnostic.create(range, message, severity, code, 'esql');
 }
 
 /** 1. Module structure: missing END MODULE, missing Main(). */
@@ -162,10 +193,11 @@ function checkModuleStructure(lines: string[], out: Diagnostic[]): void {
 
     if (END_MODULE_RE.test(line)) {
       if (moduleStart >= 0 && !hasMain) {
-        out.push(Diagnostic.create(
+        out.push(diag(
           lineRange(i, line),
           `Module '${moduleName}' contains no Main() function. ACE cannot execute it.`,
-          DiagnosticSeverity.Warning
+          DiagnosticSeverity.Warning,
+          'module-no-main'
         ));
       }
       moduleClosed = i;
@@ -175,10 +207,11 @@ function checkModuleStructure(lines: string[], out: Diagnostic[]): void {
   }
 
   if (moduleStart >= 0 && moduleClosed < moduleStart) {
-    out.push(Diagnostic.create(
+    out.push(diag(
       lineRange(moduleStart, lines[moduleStart]),
       `Module '${moduleName || '<unnamed>'}' is missing its closing 'END MODULE'.`,
-      DiagnosticSeverity.Error
+      DiagnosticSeverity.Error,
+      'missing-end-module'
     ));
   }
 }
@@ -197,10 +230,11 @@ function checkDeclaredVariables(source: string, lines: string[], out: Diagnostic
     if (RESERVED_SET_TARGETS.has(upper) || declared.has(upper)) continue;
 
     const col = line.indexOf(name, m.index);
-    out.push(Diagnostic.create(
+    out.push(diag(
       lineRange(i, line, col, col + name.length),
       `Variable '${name}' is used in SET but never declared with DECLARE.`,
-      DiagnosticSeverity.Warning
+      DiagnosticSeverity.Warning,
+      'undeclared-variable'
     ));
   }
 }
@@ -211,10 +245,11 @@ function checkDeclaredVariablesFromTree(doc: DocAnalysis, out: Diagnostic[]): vo
   for (const target of doc.setTargets) {
     const upper = target.name.toUpperCase();
     if (RESERVED_SET_TARGETS.has(upper) || declared.has(upper)) continue;
-    out.push(Diagnostic.create(
+    out.push(diag(
       target.range,
       `Variable '${target.name}' is used in SET but never declared with DECLARE.`,
-      DiagnosticSeverity.Warning
+      DiagnosticSeverity.Warning,
+      'undeclared-variable'
     ));
   }
 }
@@ -249,10 +284,11 @@ function checkPropagateOrReturn(lines: string[], out: Diagnostic[]): void {
       depth--;
       if (depth <= 0 && bodySeen) {
         if (!hasReturnOrPropagate) {
-          out.push(Diagnostic.create(
+          out.push(diag(
             lineRange(mainStart, lines[mainStart]),
             'Main() contains neither RETURN nor PROPAGATE. The message will not reach any terminal.',
-            DiagnosticSeverity.Warning
+            DiagnosticSeverity.Warning,
+            'no-propagation'
           ));
         }
         inMain = false;
@@ -266,10 +302,11 @@ function checkPropagateOrReturn(lines: string[], out: Diagnostic[]): void {
 
   // Main() declared but its BEGIN block was never closed.
   if (inMain && bodySeen) {
-    out.push(Diagnostic.create(
+    out.push(diag(
       lineRange(mainStart, lines[mainStart]),
       'Main() body is not closed with END;.',
-      DiagnosticSeverity.Warning
+      DiagnosticSeverity.Warning,
+      'unclosed-main'
     ));
   }
 }
@@ -280,10 +317,11 @@ function checkDeprecatedParsers(lines: string[], out: Diagnostic[]): void {
     const line = lines[i];
     const m = XMLNS_RE.exec(line);
     if (!m) continue;
-    out.push(Diagnostic.create(
+    out.push(diag(
       lineRange(i, line, m.index, m.index + 'XMLNS'.length),
       "Parser 'XMLNS' is deprecated. Use 'XMLNSC' in ACE 12.",
-      DiagnosticSeverity.Warning
+      DiagnosticSeverity.Warning,
+      'deprecated-parser'
     ));
   }
 }
@@ -325,10 +363,11 @@ function checkMissingSemicolons(lines: string[], out: Diagnostic[]): void {
     while (next < lines.length && !lines[next].trim()) next++;
     if (next < lines.length && CONTINUATION_START_RE.test(lines[next])) continue;
 
-    out.push(Diagnostic.create(
+    out.push(diag(
       lineRange(i, line, line.length - trimmed.length, line.length),
       "Possible missing semicolon (';') at end of statement.",
-      DiagnosticSeverity.Hint
+      DiagnosticSeverity.Hint,
+      'missing-semicolon'
     ));
   }
 }
@@ -399,11 +438,12 @@ function checkOutputRootProperties(lines: string[], out: Diagnostic[]): void {
     if (PROPS_COPIED_RE.test(body) || OUTPUT_ROOT_COPIED_RE.test(body)) continue;
 
     const line = lines[offender];
-    out.push(Diagnostic.create(
+    out.push(diag(
       lineRange(offender, line),
       "Building OutputRoot.JSON.Data but no copy of Properties detected in this " +
         "routine. Did you forget 'SET OutputRoot.Properties = InputRoot.Properties;'?",
-      DiagnosticSeverity.Hint
+      DiagnosticSeverity.Hint,
+      'output-root-properties'
     ));
   }
 }

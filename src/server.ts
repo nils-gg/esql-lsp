@@ -35,11 +35,15 @@ import {
   Hover,
   DocumentSymbolParams,
   DocumentSymbol,
+  SymbolInformation,
   DefinitionParams,
   ReferenceParams,
   Location,
   Diagnostic,
   Range,
+  Position,
+  ResponseError,
+  ErrorCodes,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
@@ -48,7 +52,7 @@ import { buildCompletionItems, detectCompletionContext } from './completion';
 import { hoverAt } from './hover';
 import { documentSymbols, documentSymbolsFromTree } from './symbols';
 import { definitionAt, referencesAt, declarationsFromSource } from './definitions';
-import { mergeSettings, EsqlSettings, DEFAULT_SETTINGS } from './settings';
+import { mergeSettings, unwrapSettings, EsqlSettings, DEFAULT_SETTINGS } from './settings';
 import {
   initGrammar,
   parse,
@@ -58,6 +62,7 @@ import {
   DocAnalysis,
   Tree,
 } from './parser';
+import { linesOf } from './scanner';
 
 const DIAGNOSTICS_DEBOUNCE_MS = 300;
 
@@ -67,6 +72,28 @@ const connection = createConnection(process.stdin, process.stdout);
 const textDocuments = new TextDocuments<TextDocument>(TextDocument);
 
 let settings: EsqlSettings = DEFAULT_SETTINGS;
+
+/**
+ * Whether the *client* declared `workspace.semanticTokens.refreshSupport`.
+ * Server→client requests are opt-in by capability: sending one to a client that
+ * never declared it invites a "method not found" response, and the promise for
+ * that request used to be discarded, which made the response an unhandled
+ * rejection and killed the process (ISSUES.md I-14). So: never send it unless
+ * asked for, and catch it anyway.
+ */
+let clientWantsSemanticTokensRefresh = false;
+
+/**
+ * Whether the *client* asked for hierarchical document symbols. Default false,
+ * which is what the protocol says a client without `…documentSymbol.
+ * hierarchicalDocumentSymbolSupport` means. This server has always answered
+ * `textDocument/documentSymbol` with the nested `DocumentSymbol[]` shape, which
+ * a client that never declared the capability reads as one flat list of
+ * nameless entries — the outline silently loses everything below module level
+ * (ISSUES.md I-22). Serving the shape the client declared costs one flattening
+ * pass and makes that client's outline work.
+ */
+let clientWantsHierarchicalSymbols = false;
 
 /**
  * Pending validation timers, one per document. This MUST be keyed by URI: with
@@ -89,13 +116,28 @@ interface ParsedDocument {
   analysis: DocAnalysis | null;
 }
 
-let cachedParse: ParsedDocument | undefined;
+/**
+ * Parse results, one entry per open document, dropped when the document closes.
+ *
+ * There used to be a single slot compared by text, which is fine for one open
+ * file and wrong for two: a client cycling two buffers (a `workspace/symbol`
+ * sweep, a split view, an extension walking files) missed the slot on every
+ * alternating request and re-parsed plus re-walked the whole tree, ~10 ms of
+ * analysis per keystroke on a real 370 KB file (ISSUES.md I-20).
+ *
+ * The text is still compared, because `didChange` is handled by the document
+ * model and a request can arrive for a version this server has not parsed yet;
+ * the comparison is reference-cheap for an unchanged buffer.
+ */
+const parseCache = new Map<string, ParsedDocument>();
 
-function parsedDocument(text: string): ParsedDocument {
-  if (cachedParse && cachedParse.text === text) return cachedParse;
+function parsedDocument(uri: string, text: string): ParsedDocument {
+  const hit = parseCache.get(uri);
+  if (hit && hit.text === text) return hit;
   const tree = parse(text);
-  cachedParse = { text, tree, analysis: tree ? analyzeDocument(tree) : null };
-  return cachedParse;
+  const entry: ParsedDocument = { text, tree, analysis: tree ? analyzeDocument(tree) : null };
+  parseCache.set(uri, entry);
+  return entry;
 }
 
 /** Compute and publish diagnostics for one document, right now. */
@@ -105,7 +147,7 @@ function publishDiagnosticsFor(uri: string): void {
   let diagnostics: Diagnostic[] = [];
   try {
     const text = doc.getText();
-    const { analysis } = parsedDocument(text);
+    const { analysis } = parsedDocument(uri, text);
     diagnostics = analyze(text, settings.diagnostics, analysis ?? undefined);
   } catch (err) {
     connection.console.error(`esql-lsp: analysis failed: ${String(err)}`);
@@ -146,8 +188,47 @@ function revalidateAll(): void {
   }
 }
 
+/**
+ * Whether the grammar loaded. Semantic tokens are only worth asking the client
+ * to redo once it has, and the request itself has to wait for the client to
+ * finish initializing — see `requestSemanticTokensRefresh`.
+ */
+let grammarIsReady = false;
+/** True from the `initialized` notification on: the client may be asked things. */
+let clientIsReady = false;
+/** Only ever one refresh per process; more would be editor-visible flicker. */
+let refreshSent = false;
+
+/**
+ * Ask the client to re-request semantic tokens, once, and only when all three
+ * hold: the grammar has landed (the event worth reporting), the client finished
+ * initializing (a server→client request before that is out of order), and the
+ * client declared `workspace.semanticTokens.refreshSupport` — sending it to a
+ * client that never asked used to produce a "method not found" answer whose
+ * promise nobody held, and the resulting unhandled rejection ended the process
+ * (ISSUES.md I-14).
+ *
+ * The promise is caught either way. Tokens stay correct without the refresh —
+ * every document re-requested after an edit sees the grammar — so a declined or
+ * unanswered refresh costs nothing but the initial repaint.
+ */
+function requestSemanticTokensRefresh(): void {
+  if (refreshSent || !grammarIsReady || !clientIsReady) return;
+  if (!clientWantsSemanticTokensRefresh) return;
+  refreshSent = true;
+  Promise.resolve(connection.languages.semanticTokens.refresh()).catch((err) => {
+    connection.console.info(
+      `esql-lsp: semanticTokens/refresh declined by the client: ${String(err)}`
+    );
+  });
+}
+
 connection.onInitialize((params: InitializeParams): InitializeResult => {
-  settings = mergeSettings(params.initializationOptions);
+  settings = mergeSettings(unwrapSettings(params.initializationOptions));
+  clientWantsSemanticTokensRefresh =
+    params.capabilities?.workspace?.semanticTokens?.refreshSupport === true;
+  clientWantsHierarchicalSymbols =
+    params.capabilities?.textDocument?.documentSymbol?.hierarchicalDocumentSymbolSupport === true;
   connection.console.info(
     `esql-lsp: initialized (diagnostics: ${settings.diagnostics.enabled ? 'on' : 'off'})`
   );
@@ -156,7 +237,10 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       textDocumentSync: {
         openClose: true,
         change: TextDocumentSyncKind.Incremental,
-        save: true,
+        // No `save`. Diagnostics are produced from didOpen/didChange, so a save
+        // notification would only re-publish what the last change already
+        // published; advertising it promised a `textDocument/didSave` handler
+        // this server does not have (ISSUES.md I-22).
       },
       completionProvider: {
         triggerCharacters: ['.', ' ', '('],
@@ -167,28 +251,38 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       definitionProvider: true,
       referencesProvider: true,
       // Advertised even before the grammar finishes loading; the handler
-      // returns empty results until then, and a refresh is requested once
-      // the grammar is ready (if the client supports it).
+      // returns empty results until then, and a refresh is requested once the
+      // grammar is ready — see `clientWantsSemanticTokensRefresh`, which gates
+      // that request on the client having asked for it. Advertising it is what
+      // makes the request legal, so it is advertised only when we may send it.
       semanticTokensProvider: {
         legend: { tokenTypes: SEMANTIC_TOKEN_TYPES, tokenModifiers: [] },
         full: true,
       },
+      workspace: {
+        // The bundled ServerCapabilities['workspace'] type predates the
+        // semanticTokens section (LSP 3.16), so it needs the cast.
+        semanticTokens: { refreshSupport: clientWantsSemanticTokensRefresh },
+      } as unknown as NonNullable<InitializeResult['workspace']>,
     },
   };
 });
 
 connection.onNotification('initialized', () => {
+  // From here on a server→client request is legal; the grammar may well have
+  // loaded before this arrived, so this is where the owed refresh actually goes.
+  clientIsReady = true;
+  requestSemanticTokensRefresh();
   // Re-validate any document already open (some clients open before initialized).
   revalidateAll();
 });
 
 // Runtime settings updates (push-style). Clients send either the section
-// keyed by its name ({ esql: {...} }) or the settings object itself; merge
-// over the defaults and re-validate every open document.
+// keyed by its name ({ esql: {...} }) or the settings object itself; both are
+// unwrapped by the same helper initializationOptions uses, merged over the
+// defaults, and every open document is re-validated.
 connection.onDidChangeConfiguration((change) => {
-  const raw = change.settings as Record<string, unknown> | undefined;
-  const esql = raw && typeof raw.esql === 'object' ? raw.esql : raw;
-  settings = mergeSettings(esql);
+  settings = mergeSettings(unwrapSettings(change.settings));
   connection.console.info('esql-lsp: settings updated (didChangeConfiguration)');
   revalidateAll();
 });
@@ -196,17 +290,110 @@ connection.onDidChangeConfiguration((change) => {
 textDocuments.onDidOpen((e) => scheduleDiagnostics(e.document.uri));
 textDocuments.onDidChangeContent((e) => scheduleDiagnostics(e.document.uri));
 textDocuments.onDidClose((e) => {
+  parseCache.delete(e.document.uri); // the entry's text would never be asked for again
   cancelScheduledDiagnostics(e.document.uri);
   connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] });
 });
 
+/* ------------------------------------------------------------------ *
+ *  Request guards                                                     *
+ * ------------------------------------------------------------------ */
+
+/**
+ * The document a request is about.
+ *
+ * `textDocument.uri` is required by the protocol, but clients that proxy or
+ * replay requests do send `{}`, and `params.textDocument.uri` then threw a
+ * TypeError straight out of the handler: the client received
+ * `-32603 InternalError` carrying V8's own words ("Cannot read properties of
+ * undefined (reading 'uri')") where the protocol asks for `InvalidParams`
+ * (ISSUES.md I-22). A server that answers a bad request with its own internals
+ * teaches the editor to show a type error to the user.
+ */
+function documentFor(params: unknown): TextDocument | undefined {
+  const uri = (params as { textDocument?: { uri?: unknown } } | null | undefined)?.textDocument
+    ?.uri;
+  if (typeof uri !== 'string' || uri.length === 0) {
+    throw new ResponseError(
+      ErrorCodes.InvalidParams,
+      'esql-lsp: request has no textDocument.uri',
+      'the request carried no document URI, so there is no document to answer about'
+    );
+  }
+  return textDocuments.get(uri);
+}
+
+/**
+ * A position the feature code may trust, or `null` for "outside this document".
+ *
+ * Two different failures, answered differently on purpose. A `position` that is
+ * missing or not a pair of non-negative integers is a malformed request and gets
+ * `InvalidParams`. A line or column past the end of the text is not: a client
+ * whose buffer moved between sending and this handler running is an ordinary
+ * race, and the honest reply is "there is nothing at that position" rather than
+ * an error the editor pops up. What it must not be is a TypeError from the word
+ * readers in hover/completion/definitions, which index the line array directly
+ * (ISSUES.md I-22).
+ */
+function viewPosition(doc: TextDocument, position: unknown): Position | null {
+  const line = (position as { line?: unknown } | null | undefined)?.line;
+  const character = (position as { character?: unknown } | null | undefined)?.character;
+  if (
+    typeof line !== 'number' ||
+    typeof character !== 'number' ||
+    !Number.isInteger(line) ||
+    !Number.isInteger(character) ||
+    line < 0 ||
+    character < 0
+  ) {
+    throw new ResponseError(
+      ErrorCodes.InvalidParams,
+      'esql-lsp: request has no usable position',
+      `expected a zero-based integer { line, character }, got ${JSON.stringify(position) ?? 'nothing'}`
+    );
+  }
+  // The client's own line split, so "past the end" means the same thing here as
+  // it does in the buffer it is looking at.
+  const lines = linesOf(doc.getText());
+  if (line >= lines.length) return null;
+  // One past the last character is where a cursor at end-of-line sits; anything
+  // further is not a position this document has.
+  if (character > lines[line].length) return null;
+  return { line, character };
+}
+
+/**
+ * `DocumentSymbol[]` in the flat `SymbolInformation[]` shape a client without
+ * `hierarchicalDocumentSymbolSupport` asked for. The symbol's own name range
+ * becomes its location, and `containerName` carries what the nesting said, so
+ * nothing is lost that the flat shape can hold.
+ */
+function flattenSymbols(
+  uri: string,
+  symbols: readonly DocumentSymbol[],
+  containerName = '',
+  into: SymbolInformation[] = []
+): SymbolInformation[] {
+  for (const symbol of symbols) {
+    into.push({
+      name: symbol.name,
+      kind: symbol.kind,
+      tags: symbol.tags,
+      containerName,
+      location: { uri, range: symbol.selectionRange },
+    });
+    if (symbol.children) flattenSymbols(uri, symbol.children, symbol.name, into);
+  }
+  return into;
+}
+
 connection.onCompletion((params: CompletionParams): CompletionItem[] => {
   if (!settings.completion.enabled) return [];
-  const doc = textDocuments.get(params.textDocument.uri);
+  const doc = documentFor(params);
   if (!doc) return [];
 
-  const pos = params.position;
-  if (pos.line < 0 || pos.line >= doc.lineCount) return [];
+  const pos = viewPosition(doc, params.position);
+  if (!pos) return [];
   const lineText = doc
     .getText(Range.create(pos.line, 0, pos.line + 1, 0))
     .replace(/\r?\n$/, '');
@@ -216,67 +403,75 @@ connection.onCompletion((params: CompletionParams): CompletionItem[] => {
   // Exact declared names/parameters from the parse tree when available; the
   // pattern fallback from definitions.ts keeps them offered without it.
   const text = doc.getText();
-  const analysis = parsedDocument(text).analysis;
+  const analysis = parsedDocument(doc.uri, text).analysis;
   const declarations = analysis ? analysis.declaredNames : declarationsFromSource(text);
-  return buildCompletionItems(context, linePrefix, text, declarations);
+  // The cursor position is what makes the declared-name list scope-correct.
+  return buildCompletionItems(context, linePrefix, text, declarations, {
+    line: pos.line,
+    character: pos.character,
+  });
 });
 
 connection.onHover((params: HoverParams): Hover | null => {
-  const doc = textDocuments.get(params.textDocument.uri);
+  const doc = documentFor(params);
   if (!doc) return null;
+  const position = viewPosition(doc, params.position);
+  if (!position) return null;
   const text = doc.getText();
-  return hoverAt(
-    text,
-    params.position.line,
-    params.position.character,
-    parsedDocument(text).analysis ?? undefined
-  );
+  return hoverAt(text, position.line, position.character, parsedDocument(doc.uri, text).analysis ?? undefined);
 });
 
 connection.onDocumentSymbol(
-  (params: DocumentSymbolParams): DocumentSymbol[] | null => {
-    const doc = textDocuments.get(params.textDocument.uri);
+  (params: DocumentSymbolParams): DocumentSymbol[] | SymbolInformation[] | null => {
+    const doc = documentFor(params);
     if (!doc) return null;
     const text = doc.getText();
-    const analysis = parsedDocument(text).analysis;
-    return analysis ? documentSymbolsFromTree(analysis) : documentSymbols(text);
+    const analysis = parsedDocument(doc.uri, text).analysis;
+    const symbols = analysis ? documentSymbolsFromTree(analysis) : documentSymbols(text);
+    // The nested shape only means anything to a client that asked for it.
+    return clientWantsHierarchicalSymbols ? symbols : flattenSymbols(doc.uri, symbols);
   }
 );
 
 connection.onDefinition((params: DefinitionParams): Location[] | null => {
-  const doc = textDocuments.get(params.textDocument.uri);
+  const doc = documentFor(params);
   if (!doc) return null;
+  const position = viewPosition(doc, params.position);
+  if (!position) return null;
   const text = doc.getText();
   const ranges = definitionAt(
     text,
-    params.position.line,
-    params.position.character,
-    parsedDocument(text).analysis ?? undefined
+    position.line,
+    position.character,
+    parsedDocument(doc.uri, text).analysis ?? undefined
   );
   return ranges.length ? ranges.map((range) => Location.create(doc.uri, range)) : null;
 });
 
 connection.onReferences((params: ReferenceParams): Location[] | null => {
-  const doc = textDocuments.get(params.textDocument.uri);
+  const doc = documentFor(params);
   if (!doc) return null;
+  const position = viewPosition(doc, params.position);
+  if (!position) return null;
   const text = doc.getText();
   const includeDeclaration = params.context?.includeDeclaration !== false;
   const ranges = referencesAt(
     text,
-    params.position.line,
-    params.position.character,
+    position.line,
+    position.character,
     includeDeclaration,
-    parsedDocument(text).analysis ?? undefined
+    parsedDocument(doc.uri, text).analysis ?? undefined
   );
   return ranges.length ? ranges.map((range) => Location.create(doc.uri, range)) : null;
 });
 
 connection.languages.semanticTokens.on((params) => {
-  const doc = textDocuments.get(params.textDocument.uri);
+  const doc = documentFor(params);
   if (!doc) return { data: [] };
-  const { tree } = parsedDocument(doc.getText());
+  const text = doc.getText();
+  const { tree } = parsedDocument(doc.uri, text);
   if (!tree) return { data: [] };
-  return { data: semanticTokensForTree(tree) ?? [] };
+  return { data: semanticTokensForTree(tree, text) ?? [] };
 });
 
 connection.onExit(() => {
@@ -287,21 +482,36 @@ connection.onExit(() => {
 // Load the grammar asynchronously so the server answers requests
 // immediately; re-validate open documents and refresh semantic tokens once
 // it is ready. Failure here is logged, never fatal (heuristics remain).
-initGrammar().then((ok) => {
-  connection.console.info(
-    ok
-      ? 'esql-lsp: tree-sitter grammar loaded — grammar syntax errors + semantic tokens active'
-      : 'esql-lsp: tree-sitter grammar unavailable — heuristic mode only'
-  );
-  if (ok) {
+initGrammar().then(
+  (ok) => {
+    connection.console.info(
+      ok
+        ? 'esql-lsp: tree-sitter grammar loaded — grammar syntax errors + semantic tokens active'
+        : 'esql-lsp: tree-sitter grammar unavailable — heuristic mode only'
+    );
+    if (!ok) return;
+    grammarIsReady = true;
     revalidateAll();
-    try {
-      // No-op-safe when the client did not declare refresh support.
-      connection.languages.semanticTokens.refresh();
-    } catch {
-      /* tokens still update on every edit */
-    }
+    requestSemanticTokensRefresh();
+  },
+  (err) => {
+    connection.console.error(`esql-lsp: grammar initialisation rejected: ${String(err)}`);
   }
+);
+
+/**
+ * Nothing here may take the server down. A rejected promise from a
+ * server→client request, or a throw inside an async handler, used to end the
+ * process (`ResponseError: Unhandled method workspace/semanticTokens/refresh`
+ * → exit 1, ~0.2 s after start, in grammar mode — ISSUES.md I-14), and a dead
+ * server is worse than any single wrong answer it could produce. Log and live;
+ * the individual call sites are still expected to handle their own failures.
+ */
+process.on('unhandledRejection', (reason) => {
+  connection.console.error(`esql-lsp: ignored unhandled rejection: ${String(reason)}`);
+});
+process.on('uncaughtException', (err) => {
+  connection.console.error(`esql-lsp: ignored uncaught exception: ${String(err)}`);
 });
 
 textDocuments.listen(connection);

@@ -9,6 +9,7 @@ import { strict as assert } from 'node:assert';
 import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
 import { initGrammar } from '../src/parser';
+import { skipWithoutGrammar } from './grammarStatus';
 
 const SERVER = path.join(__dirname, '..', 'src', 'server.js');
 
@@ -56,6 +57,10 @@ class LspClient {
   private pending = new Map<number, (msg: JsonRpcMessage) => void>();
   private nextId = 1;
   private notifications: Array<{ method: string; params: any }> = [];
+  /** Requests the SERVER sent to us (id + method), in arrival order. */
+  readonly serverRequests: string[] = [];
+  /** Set once the child process is gone, so a test can prove it did not die. */
+  exited: { code: number | null; signal: string | null } | null = null;
   private waiters: Array<{
     method: string;
     predicate: (params: any) => boolean;
@@ -63,18 +68,35 @@ class LspClient {
     timer: NodeJS.Timeout;
   }> = [];
 
-  constructor(options: { env?: NodeJS.ProcessEnv } = {}) {
+  constructor(
+    options: {
+      env?: NodeJS.ProcessEnv;
+      /**
+       * How to answer a request the server sends us. A real client that does
+       * not implement a server→client request answers `-32601`; that reply used
+       * to kill the server (ISSUES.md I-14), so tests can drive it deliberately.
+       * Default: ignore (leave the request unanswered), as the old tests did.
+       */
+      onServerRequest?: 'method-not-found' | 'ok' | 'ignore';
+    } = {}
+  ) {
     this.child = spawn(process.execPath, [SERVER], {
       stdio: 'pipe',
       // ESQL_LSP_NO_GRAMMAR=1 is passed in to exercise the heuristic-only mode
       // (the same degraded environment a machine without a C toolchain gets).
       env: options.env ? { ...process.env, ...options.env } : process.env,
     });
+    this.onServerRequest = options.onServerRequest ?? 'ignore';
     this.child.stdout.on('data', (d: Buffer) => this.onData(d));
     this.child.stderr.on('data', () => {
       /* server logs to stderr are expected; ignore */
     });
+    this.child.on('exit', (code, signal) => {
+      this.exited = { code, signal };
+    });
   }
+
+  private readonly onServerRequest: 'method-not-found' | 'ok' | 'ignore';
 
   private onData(chunk: Buffer): void {
     this.buffer = Buffer.concat([this.buffer, chunk]);
@@ -97,6 +119,20 @@ class LspClient {
   }
 
   private dispatch(msg: JsonRpcMessage): void {
+    if (msg.id !== undefined && msg.method) {
+      // A server→client request: answer like a real client would.
+      this.serverRequests.push(msg.method);
+      if (this.onServerRequest === 'method-not-found') {
+        this.write({
+          jsonrpc: '2.0',
+          id: msg.id,
+          error: { code: -32601, message: `Unhandled method ${msg.method}` },
+        });
+      } else if (this.onServerRequest === 'ok') {
+        this.write({ jsonrpc: '2.0', id: msg.id, result: null });
+      }
+      return;
+    }
     if (msg.id !== undefined) {
       const cb = this.pending.get(msg.id);
       if (cb) {
@@ -141,6 +177,21 @@ class LspClient {
     });
   }
 
+  /** Resolves when the server sends a request named `method` to us. */
+  waitForServerRequest(method: string, timeoutMs = 10000): Promise<void> {
+    if (this.serverRequests.includes(method)) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const deadline = Date.now() + timeoutMs;
+      const poll = () => {
+        if (this.serverRequests.includes(method)) return resolve();
+        if (this.exited) return reject(new Error(`server exited ${JSON.stringify(this.exited)}`));
+        if (Date.now() > deadline) return reject(new Error(`no ${method} request; saw ${JSON.stringify(this.serverRequests)}`));
+        setTimeout(poll, 50);
+      };
+      poll();
+    });
+  }
+
   waitFor(method: string, predicate: (params: any) => boolean, timeoutMs = 10000): Promise<any> {
     const past = this.notifications.find((n) => n.method === method && predicate(n.params));
     if (past) return Promise.resolve(past.params);
@@ -170,11 +221,15 @@ test('full LSP session over stdio: diagnostics, completion, symbols', async () =
     const init = await client.request('initialize', {
       processId: process.pid,
       rootUri: null,
-      capabilities: {},
+      // A client that can read the nested outline (Neovim, VS Code both declare
+      // this); the flat shape is covered by the heuristic-mode session below.
+      capabilities: { textDocument: { documentSymbol: { hierarchicalDocumentSymbolSupport: true } } },
       initializationOptions: { diagnostics: { checkMissingSemicolon: false } },
     });
     const caps = init.result.capabilities;
     assert.ok(caps.completionProvider, 'completion capability');
+    // I-22: `save: true` used to be advertised with no didSave handler behind it.
+    assert.equal(caps.textDocumentSync.save, undefined, 'no save handler is advertised');
     assert.ok(caps.hoverProvider, 'hover capability');
     assert.ok(caps.documentSymbolProvider, 'document symbol capability');
     assert.ok(caps.definitionProvider, 'go-to-definition capability');
@@ -219,15 +274,35 @@ test('full LSP session over stdio: diagnostics, completion, symbols', async () =
     // -> general context filtered by the word being typed.
     assert.ok(compLabels.length > 0, 'completion returned items');
 
+    // A position *inside* `Main`'s body: the full list, with the file's own
+    // declared names among it.
     const comp2 = await client.request('textDocument/completion', {
       textDocument: { uri },
-      position: { line: 12, character: 0 }, // empty last line -> general, no prefix filter
+      position: { line: 8, character: 0 }, // start of the PROPAGATE line, empty prefix
     });
     const labels2: string[] = (comp2.result ?? comp2).map((i: any) => i.label);
     assert.ok(labels2.includes('CAST'), 'offers built-in functions');
     assert.ok(labels2.includes('PROPAGATE'), 'offers keywords');
     assert.ok(labels2.includes('module-compute'), 'offers snippets');
-    assert.ok(labels2.includes('myVar'), 'offers declared variables');
+    assert.ok(labels2.includes('myVar'), 'offers the variable declared in this routine');
+    assert.equal(
+      new Set(labels2).size,
+      labels2.length,
+      `no label twice in one list (got ${labels2.length} items, ${new Set(labels2).size} labels) — I-17`
+    );
+
+    // ISSUES.md I-16: the same request from outside every routine must not carry
+    // that routine's declarations any more.
+    const comp3 = await client.request('textDocument/completion', {
+      textDocument: { uri },
+      position: { line: 12, character: 0 }, // empty line after END MODULE
+    });
+    const labels3: string[] = (comp3.result ?? comp3).map((i: any) => i.label);
+    assert.ok(labels3.includes('CAST'), 'the static part of the list is unaffected');
+    assert.ok(
+      !labels3.includes('myVar'),
+      'a name declared inside Main() is not offered past END MODULE — I-16'
+    );
 
     // ── document symbols ───────────────────────────────────────────────────
     const syms = await client.request('textDocument/documentSymbol', {
@@ -578,13 +653,26 @@ test('heuristic mode over stdio: diagnostics, symbols, definitions, hover', asyn
     });
     assert.deepEqual((tokens.result ?? tokens).data, [], 'no semantic tokens without the grammar');
 
-    // ── outline from the pattern fallback ──────────────────────────────────
+    // ── outline from the pattern fallback, in the shape this client declared ─
+    // This client declared no `hierarchicalDocumentSymbolSupport`, which the
+    // protocol defines as "the client reads SymbolInformation[]". Answering it
+    // with the nested shape used to drop everything below module level, because
+    // such a client ignores `children` (ISSUES.md I-22).
     const syms = await client.request('textDocument/documentSymbol', { textDocument: { uri } });
-    const moduleSym = (syms.result ?? []).find((s: any) => s.name === 'TestModule');
-    assert.ok(moduleSym, 'module symbol present');
+    const flat = syms.result ?? [];
+    assert.ok(flat.some((s: any) => s.name === 'TestModule'), 'module symbol present');
     assert.ok(
-      (moduleSym.children ?? []).some((c: any) => c.name === 'Main'),
-      'Main() nested under module'
+      flat.some((s: any) => s.name === 'Main' && s.containerName === 'TestModule'),
+      `Main() reports TestModule as its container: ${JSON.stringify(flat.map((s: any) => [s.name, s.containerName]))}`
+    );
+    assert.ok(
+      flat.length === 3,
+      `the nested Main becomes its own entry: ${JSON.stringify(flat.map((s: any) => [s.containerName, s.name]))}`
+    );
+    assert.equal(
+      flat.every((s: any) => s.children === undefined && s.location?.uri === uri),
+      true,
+      'flat entries carry a location and no children field'
     );
 
     // ── user-symbol features on the pattern fallback ───────────────────────
@@ -618,10 +706,311 @@ test('heuristic mode over stdio: diagnostics, symbols, definitions, hover', asyn
       position,
     });
     assert.match(hover.result.contents.value, /### `myVar`/);
+    // Owner line matches grammar mode: the innermost routine owns it. (I-15:
+    // the fallback used to blame the first routine in the file.)
+    assert.match(hover.result.contents.value, /\*in `Main\(\)`\*/);
+
+    // ── completion, scope-filtered on the pattern fallback too (I-16/I-17) ──
+    const inside = await client.request('textDocument/completion', {
+      textDocument: { uri },
+      position: { line: 8, character: 0 }, // inside Main()
+    });
+    const insideLabels: string[] = (inside.result ?? inside).map((i: any) => i.label);
+    assert.ok(insideLabels.includes('myVar'), 'declared name offered inside its routine');
+    assert.equal(
+      new Set(insideLabels).size,
+      insideLabels.length,
+      'no label twice in one list'
+    );
+
+    const outside = await client.request('textDocument/completion', {
+      textDocument: { uri },
+      position: { line: 12, character: 0 }, // past END MODULE
+    });
+    const outsideLabels: string[] = (outside.result ?? outside).map((i: any) => i.label);
+    assert.ok(outsideLabels.includes('CAST'), 'the static part is still there');
+    assert.ok(!outsideLabels.includes('myVar'), 'but not the out-of-scope declared name');
 
     const shutdown = await client.request('shutdown', null);
     assert.ok('result' in shutdown);
     client.notify('exit', undefined);
+  } finally {
+    await client.close();
+  }
+});
+
+/**
+ * ISSUES.md I-14 — the server used to send `workspace/semanticTokens/refresh`
+ * to every client and discard the promise, so the `-32601` answer from a client
+ * that never declared the capability became an unhandled rejection and the
+ * process exited 1 about 0.2 s after start, in grammar mode only.
+ */
+test('no refresh request is sent to a client that did not declare refreshSupport', async () => {
+  const client = new LspClient({ onServerRequest: 'method-not-found' });
+  try {
+    const init = await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {
+        textDocument: { publishDiagnostics: {}, semanticTokens: { requests: { full: true } } },
+      },
+      initializationOptions: {},
+    });
+    assert.equal(
+      init.result.capabilities.workspace?.semanticTokens?.refreshSupport,
+      false,
+      'the server must not advertise a refresh it may not send'
+    );
+    client.notify('initialized', {});
+
+    // Give the grammar time to load — that is the moment the request used to fire.
+    const uri = 'file:///tmp/esql-e2e/RefreshGate.esql';
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: FIXED },
+    });
+    await client.waitFor('textDocument/publishDiagnostics', (p) => p.uri === uri);
+    await new Promise((r) => setTimeout(r, 1500));
+
+    assert.deepEqual(client.serverRequests, [], 'no server→client request at all');
+    assert.equal(client.exited, null, 'server still running');
+    const syms = await client.request('textDocument/documentSymbol', { textDocument: { uri } });
+    assert.ok((syms.result ?? []).length > 0, 'and it still answers requests');
+  } finally {
+    await client.close();
+  }
+});
+
+test('a client that answers the refresh request with MethodNotFound does not kill the server', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return; // the refresh is sent only once the grammar lands
+  const client = new LspClient({ onServerRequest: 'method-not-found' });
+  const uri = 'file:///tmp/esql-e2e/RefreshDeclined.esql';
+  try {
+    const init = await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {
+        textDocument: { documentSymbol: {}, semanticTokens: { requests: { full: true } } },
+        workspace: { semanticTokens: { refreshSupport: true } },
+      },
+      initializationOptions: {},
+    });
+    assert.equal(
+      init.result.capabilities.workspace?.semanticTokens?.refreshSupport,
+      true,
+      'advertised back when the client declares it'
+    );
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: FIXED },
+    });
+
+    await client.waitForServerRequest('workspace/semanticTokens/refresh');
+    assert.deepEqual(client.serverRequests, ['workspace/semanticTokens/refresh']);
+    await new Promise((r) => setTimeout(r, 500)); // let the -32601 reply land
+    assert.equal(client.exited, null, 'the declined refresh must not end the process');
+
+    const syms = await client.request('textDocument/documentSymbol', { textDocument: { uri } });
+    assert.ok((syms.result ?? []).length > 0, 'requests after the declined refresh still answered');
+  } finally {
+    await client.close();
+  }
+});
+
+/**
+ * ISSUES.md I-22.3 — `{ esql: { … } }` is documented as an accepted shape for
+ * both configuration paths; it used to work only in didChangeConfiguration.
+ */
+test('initializationOptions accepts the { esql: … } section wrapper too', async () => {
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e/WrappedSettings.esql';
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: { textDocument: { publishDiagnostics: {} } },
+      initializationOptions: { esql: { diagnostics: { checkUndeclaredVariables: false } } },
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: BAD },
+    });
+    const diags = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.length > 0
+    );
+    const messages = diags.diagnostics.map((d: any) => d.message);
+    assert.ok(
+      !messages.some((m: string) => /Variable 'myVar'/.test(m)),
+      `the wrapped switch must silence the undeclared-variable check, got ${JSON.stringify(messages)}`
+    );
+    assert.ok(
+      messages.some((m: string) => /END MODULE/.test(m)),
+      'the other checks keep their defaults (one key does not disable the rest)'
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+/**
+ * I-21: every diagnostic names its source and carries a code, over a real stdio
+ * session. The code is what a user suppresses one check with, so it has to
+ * survive the wire — and turning a check off has to take its code with it.
+ */
+test('every diagnostic over the wire carries source and code', async () => {
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e/Codes.esql';
+  const SRC = [
+    'CREATE COMPUTE MODULE CodesModule',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    'DECLARE ccsid INTEGER InputRoot.Properties.CodedCharSetId;',
+    'SET OutputRoot.JSON.Data.a = 1;',
+    'SET nowhere = ccsid;',
+    'RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  const KNOWN = [
+    'syntax-error',
+    'module-no-main',
+    'missing-end-module',
+    'undeclared-variable',
+    'no-propagation',
+    'unclosed-main',
+    'deprecated-parser',
+    'missing-semicolon',
+    'output-root-properties',
+  ];
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: SRC },
+    });
+    const published = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) =>
+        p.uri === uri &&
+        p.diagnostics.some((d: any) => d.code === 'undeclared-variable') &&
+        p.diagnostics.some((d: any) => d.code === 'output-root-properties')
+    );
+    for (const d of published.diagnostics) {
+      assert.equal(d.source, 'esql', `\`${d.message}\` names its source`);
+      assert.equal(typeof d.code, 'string', `\`${d.message}\` carries a code`);
+      assert.ok(KNOWN.includes(d.code), `unknown diagnostic code ${JSON.stringify(d.code)}`);
+    }
+
+    // Switch one check off: its code leaves the published set, the others stay.
+    client.notify('workspace/didChangeConfiguration', {
+      settings: { esql: { diagnostics: { checkOutputRootProperties: false } } },
+    });
+    await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.every((d: any) => d.code !== 'output-root-properties')
+    );
+    const after = await client.request('textDocument/hover', {
+      textDocument: { uri },
+      position: { line: 4, character: 5 },
+    });
+    assert.equal(after.error, undefined, 'the session is healthy after the settings change');
+  } finally {
+    await client.close();
+  }
+});
+
+/**
+ * I-22: malformed requests. A client that sends `{}` (a proxy, a replay, a
+ * plugin with a bug) used to get `-32603 InternalError` quoting V8 — "Cannot
+ * read properties of undefined (reading 'uri')" — which some editors show the
+ * user. The protocol has InvalidParams for exactly this, and a position that
+ * merely fell off the end of the buffer is not an error at all: it is "nothing
+ * there".
+ */
+test('malformed requests answer InvalidParams, positions off the end answer nothing', async () => {
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e/Malformed.esql';
+  const SRC = [
+    'CREATE COMPUTE MODULE MalformedModule',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    'DECLARE myVar CHARACTER;',
+    "SET myVar = 'hello';",
+    'RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: SRC },
+    });
+    await client.waitFor('textDocument/publishDiagnostics', (p) => p.uri === uri);
+
+    const broken: Array<[string, unknown, string]> = [
+      ['textDocument/hover', undefined, 'no params at all'],
+      ['textDocument/hover', { position: { line: 3, character: 8 } }, 'no textDocument'],
+      ['textDocument/hover', { textDocument: {}, position: { line: 3, character: 8 } }, 'no uri'],
+      ['textDocument/hover', { textDocument: { uri } }, 'no position'],
+      ['textDocument/hover', { textDocument: { uri }, position: { line: '3', character: 8 } }, 'line as a string'],
+      ['textDocument/hover', { textDocument: { uri }, position: { line: -2, character: 0 } }, 'negative line'],
+      ['textDocument/hover', { textDocument: { uri }, position: { line: 3 } }, 'half a position'],
+      ['textDocument/completion', { textDocument: { uri }, position: null }, 'null position'],
+      ['textDocument/definition', { textDocument: { uri } }, 'definition without a position'],
+      ['textDocument/references', { textDocument: { uri }, position: { line: 1.5, character: 0 } }, 'fractional line'],
+      ['textDocument/documentSymbol', { textDocument: {} }, 'symbols without a uri'],
+      ['textDocument/semanticTokens/full', {}, 'tokens without a document'],
+    ];
+    for (const [method, params, what] of broken) {
+      const reply = await client.request(method, params);
+      assert.equal(
+        reply.error?.code,
+        -32602,
+        `${method} with ${what} answered ${JSON.stringify(reply).slice(0, 180)}; expected -32602 InvalidParams`
+      );
+      assert.equal(reply.result, undefined, `${method} with ${what} answered both an error and a result`);
+      // The message reaches a human in some editors: no V8 vocabulary in it.
+      assert.doesNotMatch(
+        String(reply.error.message),
+        /Cannot read propert|is not a function|TypeError|reading '/,
+        `${method} with ${what} leaked internals: ${reply.error.message}`
+      );
+    }
+
+    // A position past the end of the buffer is a client whose text moved under
+    // the request. That is "nothing there", not an error.
+    const beyond = await client.request('textDocument/hover', {
+      textDocument: { uri },
+      position: { line: 9999, character: 0 },
+    });
+    assert.equal(beyond.result, null, 'a line the document does not have holds nothing');
+    assert.equal(beyond.error, undefined, 'and it is not reported as an error');
+    const pastEnd = await client.request('textDocument/completion', {
+      textDocument: { uri },
+      position: { line: 4, character: 9999 },
+    });
+    assert.deepEqual(pastEnd.result, [], 'a column past the end of the line offers nothing');
+
+    // Last, the point of all of it: still alive, and still correct.
+    assert.equal(client.exited, null, 'the server survived the whole battery');
+    const hover = await client.request('textDocument/hover', {
+      textDocument: { uri },
+      position: { line: 3, character: 10 },
+    });
+    assert.match(hover.result?.contents?.value ?? '', /myVar/, 'and it still hovers');
   } finally {
     await client.close();
   }

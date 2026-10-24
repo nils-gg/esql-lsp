@@ -18,8 +18,25 @@ type State = 'code' | 'line-comment' | 'block-comment' | 'sq-string' | 'dq-strin
 export interface ScanResult {
   /** Same length and line structure as the input, comments/strings blanked. */
   masked: string;
-  /** `masked` split on newlines. */
+  /** `masked` split the way an LSP client splits its own buffer, see `linesOf`. */
   lines: string[];
+  /** The *unmasked* input, split the same way — for quoted names the mask blanks. */
+  rawLines: string[];
+}
+
+/**
+ * Split text into the lines an LSP client counts, without the terminators.
+ *
+ * `String#split('\n')` is not that: it leaves the `\r` of a CRLF file at the end
+ * of every line (so a range built from `line.length` reaches one column past
+ * where the client's line ends — ISSUES.md I-18), and it does not break at a
+ * lone `\r` at all, which collapses a CR-only file onto line 0 and makes every
+ * position meaningless (I-19). `vscode-languageserver-textdocument` — the model
+ * behind `doc.getText(Range)` — breaks lines at `\r\n`, `\r` or `\n` and excludes
+ * the terminator, so this matches the client.
+ */
+export function linesOf(text: string): string[] {
+  return text.split(/\r\n|\r|\n/);
 }
 
 export function scan(source: string): ScanResult {
@@ -54,8 +71,12 @@ export function scan(source: string): ScanResult {
         break;
 
       case 'line-comment':
-        if (c === '\n') {
-          out[i] = '\n';
+        // `\r` ends a line comment as surely as `\n` does — a client counts both
+        // (see `linesOf`). Keeping only `\n` here blanked the rest of a CR-only
+        // file, because the comment never appeared to end (ISSUES.md I-19). The
+        // terminator itself is kept so the masked text has the same lines.
+        if (c === '\n' || c === '\r') {
+          out[i] = c;
           state = 'code';
         } else {
           out[i] = ' ';
@@ -69,16 +90,16 @@ export function scan(source: string): ScanResult {
           i++;
           state = 'code';
         } else {
-          out[i] = c === '\n' ? '\n' : ' ';
+          out[i] = c === '\n' || c === '\r' ? c : ' ';
         }
         break;
 
       case 'sq-string':
       case 'dq-string': {
         const quote = state === 'sq-string' ? "'" : '"';
-        if (c === '\n') {
+        if (c === '\n' || c === '\r') {
           // ESQL string literals do not span lines; recover defensively.
-          out[i] = '\n';
+          out[i] = c;
           state = 'code';
         } else if (c === quote && n === quote) {
           // Escaped quote ('' or "").
@@ -97,7 +118,7 @@ export function scan(source: string): ScanResult {
   }
 
   const masked = out.join('');
-  return { masked, lines: masked.split('\n') };
+  return { masked, lines: linesOf(masked), rawLines: linesOf(source) };
 }
 
 /**

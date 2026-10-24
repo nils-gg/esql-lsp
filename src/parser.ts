@@ -16,6 +16,7 @@
  */
 
 import { Range } from 'vscode-languageserver';
+import { linesOf } from './scanner';
 
 /** Minimal structural view of a tree-sitter node (avoids pulling the
  *  runtime's types into the server's compile). */
@@ -237,11 +238,22 @@ export function grammarReady(): boolean {
   return runtimeParser !== null && runtimeLanguage !== null;
 }
 
-/** Parse a document; null when the grammar is unavailable or parsing fails. */
+/**
+ * Parse a document; null when the grammar is unavailable or parsing fails.
+ *
+ * Lone `\r` is normalised to `\n` first. Every LSP client ends a line at a
+ * lone `\r`, tree-sitter does not (it counts `\n` only), and without the
+ * normalisation a CR-only file is ONE line to the parser: the outline collapses
+ * and every position returned is meaningless (ISSUES.md I-19). The substitution
+ * keeps the text the same length and only ever replaces a terminator character,
+ * so each offset the tree reports still means what the client means at the same
+ * offset — `\r\n` is left exactly as it was.
+ */
 export function parse(text: string): Tree | null {
   if (!grammarReady()) return null;
+  const source = /\r(?!\n)/.test(text) ? text.replace(/\r(?!\n)/g, '\n') : text;
   try {
-    return runtimeParser.parse(text) as Tree;
+    return runtimeParser.parse(source) as Tree;
   } catch {
     return null;
   }
@@ -259,13 +271,21 @@ function rangeOf(node: SyntaxNode): Range {
 /** Kinds accepted by `CREATE <kind> MODULE`. */
 const MODULE_KINDS = ['COMPUTE', 'DATABASE', 'DATABASEEVENT', 'FILTER'];
 
-function childOf(node: SyntaxNode, type: string): SyntaxNode | undefined {
-  return node.children.find((c) => c.type === type);
+/**
+ * First child of `type`, from a child list the caller already read.
+ *
+ * Taking the array rather than the node is deliberate: `node.children` allocates
+ * a new array of new `SyntaxNode` wrappers on every read (node-tree-sitter
+ * 0.25.1), so a walk that looked up one field per node with this helper paid for
+ * the whole child list twice (ISSUES.md I-20).
+ */
+function childOf(kids: readonly SyntaxNode[], type: string): SyntaxNode | undefined {
+  return kids.find((c) => c.type === type);
 }
 
 /** `CREATE COMPUTE MODULE X` -> 'COMPUTE' (from the kw_* child). */
-function moduleKind(node: SyntaxNode): string {
-  for (const child of node.children) {
+function moduleKind(kids: readonly SyntaxNode[]): string {
+  for (const child of kids) {
     if (child.type.startsWith('kw_')) {
       const text = child.text.toUpperCase();
       if (MODULE_KINDS.includes(text)) return text;
@@ -279,23 +299,27 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-function moduleInfo(node: SyntaxNode): ModuleInfo | null {
-  const nameNode = childOf(node, 'identifier');
+function moduleInfo(node: SyntaxNode, kids: readonly SyntaxNode[]): ModuleInfo | null {
+  const nameNode = childOf(kids, 'identifier');
   if (!nameNode) return null;
   return {
     name: nameNode.text,
-    kind: moduleKind(node),
+    kind: moduleKind(kids),
     range: rangeOf(node),
     nameRange: rangeOf(nameNode),
   };
 }
 
-function routineInfo(node: SyntaxNode, moduleName?: string): RoutineInfo | null {
-  const nameNode = childOf(node, 'identifier');
+function routineInfo(
+  node: SyntaxNode,
+  kids: readonly SyntaxNode[],
+  moduleName?: string
+): RoutineInfo | null {
+  const nameNode = childOf(kids, 'identifier');
   if (!nameNode) return null;
-  const isFunction = node.children.some((c) => c.type === 'kw_FUNCTION');
+  const isFunction = kids.some((c) => c.type === 'kw_FUNCTION');
 
-  const params = node.children
+  const params = kids
     .filter((c) => c.type === 'routine_parameter')
     .map((c) => oneLine(c.text))
     .join(', ');
@@ -303,13 +327,13 @@ function routineInfo(node: SyntaxNode, moduleName?: string): RoutineInfo | null 
   // RETURNS <datatype> [NULLABLE | NOT NULL] — the datatype right after the
   // keyword (the only datatype in that position; parameter datatypes live
   // inside routine_parameter children, not here).
-  const returnsIndex = node.children.findIndex((c) => c.type === 'kw_RETURNS');
+  const returnsIndex = kids.findIndex((c) => c.type === 'kw_RETURNS');
   const returnNode =
     returnsIndex >= 0
-      ? node.children.slice(returnsIndex + 1).find((c) => c.type === 'datatype')
+      ? kids.slice(returnsIndex + 1).find((c) => c.type === 'datatype')
       : undefined;
 
-  const body = childOf(node, 'routine_body');
+  const body = childOf(kids, 'routine_body');
   return {
     name: nameNode.text,
     kind: isFunction ? 'FUNCTION' : 'PROCEDURE',
@@ -340,9 +364,22 @@ function routineInfo(node: SyntaxNode, moduleName?: string): RoutineInfo | null 
  * zero-width, empty-text leaf node typed after the expected token, without
  * any MISSING marker in the npm binding. Real nodes always have text, so
  * this pattern can only be an insertion.
+ *
+ * The width test comes first, and first matters: this runs for every node of
+ * every walk, and `node.text` copies the node's whole span — asking for it on
+ * nodes that are obviously not zero-width made the walk cost several times the
+ * traversal itself (ISSUES.md I-20).
  */
 function isInsertedNode(node: SyntaxNode): boolean {
-  return node.childCount === 0 && node.text === '';
+  if (node.childCount !== 0) return false;
+  // Zero width. Read through the native `startIndex`/`endIndex`, which the
+  // bundled node-tree-sitter 0.25.1 typings omit: `node.text === ''` says the
+  // same thing but copies the node's span, and this runs for every leaf.
+  const { startIndex, endIndex } = node as unknown as {
+    startIndex: number;
+    endIndex: number;
+  };
+  return startIndex === endIndex;
 }
 
 /** Scope the walk is currently inside. */
@@ -437,10 +474,14 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
    * the scope its children live in (`scope` unchanged when the node is not one
    * of those, or when its header is too damaged to identify).
    */
-  const openScope = (node: SyntaxNode, scope: WalkScope): WalkScope => {
+  const openScope = (
+    node: SyntaxNode,
+    kids: readonly SyntaxNode[],
+    scope: WalkScope
+  ): WalkScope => {
     switch (node.type) {
       case 'broker_schema_statement': {
-        const schemaNode = childOf(node, 'schema_name');
+        const schemaNode = childOf(kids, 'schema_name');
         if (schemaNode) {
           schemas.push({
             name: schemaNode.text.replace(/^\./, ''),
@@ -450,13 +491,13 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
         return scope;
       }
       case 'create_module_statement': {
-        const info = moduleInfo(node);
+        const info = moduleInfo(node, kids);
         if (!info) return scope;
         modules.push(info);
         return { visible: info.range, moduleName: info.name };
       }
       case 'create_routine_statement': {
-        const info = routineInfo(node, scope.moduleName);
+        const info = routineInfo(node, kids, scope.moduleName);
         if (!info) return scope;
         routines.push(info);
         return {
@@ -472,6 +513,12 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
 
 
   const visit = (node: SyntaxNode, scope: WalkScope, parentType?: string): void => {
+    // Read the child list ONCE per node. `node.children` allocates a fresh array
+    // of fresh node wrappers on every read, and this walk looks at several fields
+    // of the same node, so reading it per field multiplied the work: a full walk
+    // of a 2300-node document costs 7 ms reading once, 13.7 ms reading twice
+    // (ISSUES.md I-20).
+    const kids = node.children;
     if (node.type === 'ERROR' || node.type === 'MISSING' || node.isMissing || isInsertedNode(node)) {
       syntaxIssues.push({
         message: isInsertedNode(node)
@@ -489,13 +536,13 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
       // module still has CREATE COMPUTE MODULE <name>), so still open its
       // scope: the outline and go-to-definition must keep working while the
       // file is incomplete.
-      const inner = openScope(node, scope);
+      const inner = openScope(node, kids, scope);
       const moduleInfo = inner === scope ? damagedModuleInfo(node) : null;
       if (moduleInfo) modules.push(moduleInfo);
       const damagedScope: WalkScope = moduleInfo
         ? { visible: moduleInfo.range, moduleName: moduleInfo.name }
         : inner;
-      for (const child of node.children) {
+      for (const child of kids) {
         if (!child.hasError && !isInsertedNode(child)) visit(child, damagedScope, node.type);
       }
       return;
@@ -505,8 +552,8 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
       case 'broker_schema_statement':
       case 'create_module_statement':
       case 'create_routine_statement': {
-        const inner = openScope(node, scope);
-        for (const child of node.children) visit(child, inner, node.type);
+        const inner = openScope(node, kids, scope);
+        for (const child of kids) visit(child, inner, node.type);
         return; // handled: do not descend twice
       }
       case 'declare_statement': {
@@ -515,10 +562,10 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
         // separate node type (declare_handler_statement) and never land
         // here. The REFERENCE TO target is a field_reference child, not an
         // identifier, so it is not mistaken for a declaration.
-        const typeNode = childOf(node, 'datatype');
-        const constant = node.children.some((c) => c.type === 'kw_CONSTANT');
+        const typeNode = childOf(kids, 'datatype');
+        const constant = kids.some((c) => c.type === 'kw_CONSTANT');
         const detail = (constant ? 'CONSTANT ' : '') + (typeNode ? typeNode.text.toUpperCase() : '');
-        for (const child of node.children) {
+        for (const child of kids) {
           if (child.type === 'identifier') {
             declaredNames.push({
               name: child.text,
@@ -536,9 +583,9 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
         // One identifier child: the parameter name. Parameters are declared in
         // the header (outside BEGIN..END) but visible throughout the routine,
         // so their scope is the whole CREATE … END statement.
-        const typeNode = childOf(node, 'datatype');
+        const typeNode = childOf(kids, 'datatype');
         const visible = scope.routine ? scope.routine.declRange : scope.visible;
-        for (const child of node.children) {
+        for (const child of kids) {
           if (child.type === 'identifier') {
             declaredNames.push({
               name: child.text,
@@ -547,7 +594,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
                 : 'parameter',
               range: rangeOf(child),
               kind: 'parameter',
-              constant: node.children.some((c) => c.type === 'kw_CONSTANT'),
+              constant: kids.some((c) => c.type === 'kw_CONSTANT'),
               scope: visible,
             });
           }
@@ -555,7 +602,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
         break; // keep descending for recovered missing tokens
       }
       case 'set_statement': {
-        const target = childOf(node, 'field_reference');
+        const target = childOf(kids, 'field_reference');
         if (target && target.childCount === 1) {
           const only = target.children[0];
           if (only.type === 'identifier') {
@@ -570,17 +617,17 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
         // a bare `x` as a field reference with no path elements. Anything
         // with path elements (`a.b`, `a[1]`, `(XML.Element)T`) is a
         // message-tree path, not a variable.
-        if (node.childCount === 1 && node.children[0].type === 'identifier') {
+        if (kids.length === 1 && kids[0].type === 'identifier') {
           references.push({
-            name: node.children[0].text,
-            range: rangeOf(node.children[0]),
+            name: kids[0].text,
+            range: rangeOf(kids[0]),
             kind: 'variable',
           });
         }
         break; // descend: dynamic `{expression}` path parts hold references
       }
       case 'function_call': {
-        const name = childOf(node, 'identifier');
+        const name = childOf(kids, 'identifier');
         if (name) {
           references.push({ name: name.text, range: rangeOf(name), kind: 'routine' });
         }
@@ -589,7 +636,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
       case 'call_statement': {
         // `CALL [Schema.]Routine (…)`: the last name of the qualified name is
         // the routine; the whole dotted text is kept for qualified matching.
-        const qualified = childOf(node, 'qualified_name');
+        const qualified = childOf(kids, 'qualified_name');
         if (qualified) {
           const parts = qualified.children.filter((c) => c.type === 'identifier');
           const last = parts[parts.length - 1];
@@ -606,7 +653,7 @@ export function analyzeDocument(tree: Tree): DocAnalysis {
       }
     }
 
-    for (const child of node.children) visit(child, scope, node.type);
+    for (const child of kids) visit(child, scope, node.type);
   };
 
   visit(tree.rootNode, { visible: rangeOf(tree.rootNode) });
@@ -675,8 +722,15 @@ interface RawToken {
  * and its child `(kw_INT) @type`); we keep the OUTERMOST capture of each
  * span and drop anything overlapping an already-kept token. Tokens spanning
  * several lines (block comments) are skipped — per-line tokens only.
+ *
+ * `source` is the document the tree was built from, and it is only there to
+ * clamp each token to the length the *client* has for that line: a token must
+ * never run past the end of the line the client counts, and a grammar token can
+ * (a comment token includes its `\r`, so on a CRLF file every comment reached one
+ * column too far — ISSUES.md I-18). Clamping here makes that a protocol
+ * guarantee rather than a property of whatever the grammar happens to match.
  */
-export function semanticTokensForTree(tree: Tree): number[] | null {
+export function semanticTokensForTree(tree: Tree, source: string): number[] | null {
   if (!highlightsQuery) return null;
   let captures: Array<{ name: string; node: SyntaxNode }>;
   try {
@@ -685,6 +739,7 @@ export function semanticTokensForTree(tree: Tree): number[] | null {
     return null;
   }
 
+  const lineLengths = linesOf(source).map((l) => l.length);
   const tokens: RawToken[] = [];
   for (const cap of captures) {
     const type = TOKEN_TYPE_MAP[cap.name];
@@ -692,8 +747,10 @@ export function semanticTokensForTree(tree: Tree): number[] | null {
     const s = cap.node.startPosition;
     const e = cap.node.endPosition;
     if (s.row !== e.row) continue; // single-line tokens only
-    if (e.column <= s.column) continue;
-    tokens.push({ line: s.row, start: s.column, end: e.column, type });
+    const lineLength = lineLengths[s.row];
+    const end = lineLength === undefined ? e.column : Math.min(e.column, lineLength);
+    if (end <= s.column) continue;
+    tokens.push({ line: s.row, start: s.column, end, type });
   }
 
   // Start ascending; for the same start the longest (outermost) first.

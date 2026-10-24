@@ -105,7 +105,12 @@ async function main() {
   const init = await request(1, 'initialize', {
     processId: process.pid,
     rootUri: null,
-    capabilities: {},
+    // A client that can read the nested outline. The server answers
+    // `documentSymbol` in the shape the client declared, so a smoke client that
+    // declared nothing would (correctly) get the flat `SymbolInformation[]`
+    // list and this script's nesting check below would be meaningless. The flat
+    // shape is asserted in test/e2e.test.ts.
+    capabilities: { textDocument: { documentSymbol: { hierarchicalDocumentSymbolSupport: true } } },
     initializationOptions: {},
   });
   const caps = init.result.capabilities;

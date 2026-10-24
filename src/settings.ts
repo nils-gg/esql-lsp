@@ -54,6 +54,23 @@ function bool(obj: Record<string, unknown>, key: string, dflt: boolean): boolean
   return typeof v === 'boolean' ? v : dflt;
 }
 
+/**
+ * Unwrap the two shapes a client may send for this server's settings: the
+ * settings object directly, or the section form `{ esql: { ... } }` that a
+ * client keying settings by configuration section sends.
+ *
+ * Both `initializationOptions` and `workspace/didChangeConfiguration` must go
+ * through this, or the same configuration works in one path and is silently
+ * ignored in the other (ISSUES.md I-22.3: the wrapper used to be honoured only
+ * by didChangeConfiguration, so `{ esql: { diagnostics: { … } } }` at
+ * initialize did nothing at all).
+ */
+export function unwrapSettings(raw: unknown): unknown {
+  const obj = pick(raw);
+  const esql = obj['esql'];
+  return esql && typeof esql === 'object' ? esql : raw;
+}
+
 /** Merge client-supplied initializationOptions over the defaults. */
 export function mergeSettings(initOptions: unknown): EsqlSettings {
   const root = pick(initOptions);

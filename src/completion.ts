@@ -13,8 +13,8 @@
  *   DECLARE name /   -> data types
  *   RETURNS          -> data types
  *   anything else    -> keywords + functions + tree vars + types +
- *                       declared vars + snippets, filtered by the word
- *                       currently being typed
+ *                       declared vars in scope + snippets, one item per
+ *                       label, filtered by the word currently being typed
  */
 
 import { CompletionItem, CompletionItemKind } from 'vscode-languageserver';
@@ -28,7 +28,7 @@ import {
   EsqlDomainDoc,
 } from './data/esqlData';
 import { ESQL_SNIPPETS } from './data/snippets';
-import { declarationsFromSource } from './definitions';
+import { declarationsFromSource, visibleDeclarationsAt } from './definitions';
 import type { DeclaredName } from './parser';
 
 export type CompletionContextKind =
@@ -146,30 +146,12 @@ function snippetItems(): CompletionItem[] {
 }
 
 /**
- * Variables DECLAREd anywhere in the document (regex fallback path).
- *
- * Delegates to the one shared extractor (`declarationsFromSource`), so the
- * fallback offers exactly what the outline shows — including multi-name
+ * Declared names → completion items, from either source of declarations: the
+ * parse tree, or the shared regex extractor (`declarationsFromSource`). Both
+ * modes come through here, so they offer the same shape — including multi-name
  * DECLAREs, parameters of a multi-line routine header, and quoted `EXTERNAL`
- * names — instead of keeping its own copy of the patterns.
+ * names.
  */
-function declaredVarItems(source: string): CompletionItem[] {
-  return declaredItemsFromTree(declarationsFromSource(source));
-}
-
-function filterByPrefix(items: CompletionItem[], prefix: string): CompletionItem[] {
-  if (!prefix) return items;
-  const p = prefix.toLowerCase();
-  return items.filter((i) => i.label.toLowerCase().startsWith(p));
-}
-
-/** The word currently being typed (may be empty). */
-export function wordBeingTyped(linePrefix: string): string {
-  const m = linePrefix.match(/[A-Za-z_]\w*$/);
-  return m ? m[0] : '';
-}
-
-/** Tree-based declared names/parameters -> completion items. */
 function declaredItemsFromTree(declarations: DeclaredName[]): CompletionItem[] {
   const seen = new Set<string>();
   const items: CompletionItem[] = [];
@@ -184,11 +166,90 @@ function declaredItemsFromTree(declarations: DeclaredName[]): CompletionItem[] {
   return items;
 }
 
+function filterByPrefix(items: CompletionItem[], prefix: string): CompletionItem[] {
+  if (!prefix) return items;
+  const p = prefix.toLowerCase();
+  return items.filter((i) => i.label.toLowerCase().startsWith(p));
+}
+
+/** The word currently being typed (may be empty). */
+export function wordBeingTyped(linePrefix: string): string {
+  const m = linePrefix.match(/[A-Za-z_]\w*$/);
+  return m ? m[0] : '';
+}
+
+/**
+ * One item per label. The lists the `general` context concatenates overlap: the
+ * same word is a keyword *and* a data type (`INTEGER`), a keyword *and* a
+ * function (`EXISTS`), and a declared variable can shadow a built-in (`FLOOR`
+ * in a file that declares `DECLARE floor CHARACTER`). A client shows each of
+ * those as its own row with identical text, which is pure noise
+ * (ISSUES.md I-17). Merging keeps the form that says the most about what will be
+ * inserted.
+ *
+ * Matching is on the exact label, *not* case-folded: `IF` (keyword, inserts
+ * `IF`) and `if` (snippet, expands a block) are two different completions that
+ * merely look alike at a glance, and folding them made one of them vanish. They
+ * stay.
+ */
+const KIND_PREFERENCE: ReadonlyMap<CompletionItemKind, number> = new Map([
+  [CompletionItemKind.Variable, 0], // declared names and message tree variables
+  [CompletionItemKind.Snippet, 2], // snippets expand into real text
+  [CompletionItemKind.Function, 3],
+  [CompletionItemKind.TypeParameter, 4], // the data types are TypeParameter kind
+  [CompletionItemKind.Keyword, 5], // "ESQL keyword" says the least
+]);
+
+function dedupeByLabel(
+  items: CompletionItem[],
+  preferred: ReadonlySet<CompletionItem> = new Set()
+): CompletionItem[] {
+  const rankOf = (item: CompletionItem): number =>
+    preferred.has(item)
+      ? -1 // this document's own declared names beat any built-in of the same kind
+      : KIND_PREFERENCE.get(item.kind ?? CompletionItemKind.Keyword) ?? 9;
+  const best = new Map<string, CompletionItem>();
+  for (const item of items) {
+    const held = best.get(item.label);
+    if (!held) {
+      best.set(item.label, item);
+      continue;
+    }
+    if (rankOf(item) < rankOf(held)) best.set(item.label, item);
+  }
+  const kept = new Set(best.values());
+  const out: CompletionItem[] = [];
+  for (const item of items) {
+    if (!kept.has(item)) continue;
+    kept.delete(item); // keep exactly one, at its first position
+    out.push(item);
+  }
+  return out;
+}
+
+/**
+ * Declared names a position may actually use. Every entry carries the `scope`
+ * the parser computed for it (routine body / module / file), and offering the
+ * ones that are not in scope makes the list grow with the number of routines in
+ * the file rather than shrink to what is legal here: one real file offered all
+ * 20 names declared anywhere, at a position inside a routine that could see none
+ * of them (ISSUES.md I-16). Without a position (no caller context) nothing is
+ * filtered, which is the pre-I-16 behaviour.
+ */
+export function declarationsInScope(
+  declarations: DeclaredName[],
+  scope?: { line: number; character: number }
+): DeclaredName[] {
+  if (!scope) return declarations;
+  return visibleDeclarationsAt(declarations, scope.line, scope.character);
+}
+
 export function buildCompletionItems(
   context: CompletionContextKind,
   linePrefix: string,
   source: string,
-  declarations?: DeclaredName[]
+  declarations?: DeclaredName[],
+  position?: { line: number; character: number }
 ): CompletionItem[] {
   const prefix = wordBeingTyped(linePrefix);
 
@@ -231,15 +292,22 @@ export function buildCompletionItems(
       return filterByPrefix(items, prefix);
     }
     case 'general': {
+      const declared = declarations
+        ? declarationsInScope(declarations, position)
+        : declarationsInScope(declarationsFromSource(source), position);
+      const declaredItems = declaredItemsFromTree(declared);
       const items = [
         ...functionItems(),
         ...keywordItems(),
         ...treeVarItems(),
         ...typeItems(),
-        ...(declarations ? declaredItemsFromTree(declarations) : declaredVarItems(source)),
+        ...declaredItems,
         ...snippetItems(),
       ];
-      return filterByPrefix(items, prefix);
+      return filterByPrefix(
+        dedupeByLabel(items, new Set(declaredItems)),
+        prefix
+      );
     }
   }
 }

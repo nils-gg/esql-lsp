@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import { DiagnosticSeverity } from 'vscode-languageserver';
 import {
   grammarReady,
+  initGrammar,
   parse,
   analyzeDocument,
   semanticTokensForTree,
@@ -360,8 +361,9 @@ test('syntax error diagnostics are Errors and gated by checkSyntaxErrors', async
 
 test('semantic tokens encode as LSP relative quintuples', async (t) => {
   if (!(await skipWithoutGrammar(t))) return;
-  const tree = parse("DECLARE x INT 1;\n-- a comment\nSET x = 'text';\n")!;
-  const data = semanticTokensForTree(tree)!;
+  const source = "DECLARE x INT 1;\n-- a comment\nSET x = 'text';\n";
+  const tree = parse(source)!;
+  const data = semanticTokensForTree(tree, source)!;
   assert.ok(Array.isArray(data));
   assert.equal(data.length % 5, 0);
   assert.ok(data.length >= 5 * 5, 'several tokens encoded');
@@ -376,5 +378,129 @@ test('semantic tokens encode as LSP relative quintuples', async (t) => {
   // All type indices are inside the advertised legend.
   for (let i = 3; i < data.length; i += 5) {
     assert.ok(data[i] >= 0 && data[i] < SEMANTIC_TOKEN_TYPES.length);
+  }
+});
+
+// Regression tests for the round-2 findings about line endings and ranges
+// (ISSUES.md I-18 / I-19): the same text has to mean the same thing to the
+// client, to the scanner and to tree-sitter, whether it ends its lines with LF,
+// CRLF or a lone CR. A client counts all three as one line break; tree-sitter
+// counts only LF, so `parse()` bridges that gap — and every range the server
+// reports has to stay inside the line the client has at that row.
+
+const EOL_LINES = [
+  'CREATE COMPUTE MODULE Endings', // 0
+  'CREATE FUNCTION Main() RETURNS BOOLEAN', // 1
+  'BEGIN', // 2
+  '-- a comment', // 3
+  'DECLARE y INT;', // 4
+  'SET y = 7;', // 5
+  'RETURN TRUE;', // 6
+  'END;', // 7
+  'END MODULE;', // 8
+  '', // 9
+];
+const LF_TEXT = EOL_LINES.join('\n');
+const CRLF_TEXT = EOL_LINES.join('\r\n');
+const CR_TEXT = EOL_LINES.join('\r');
+const ALL_ENDINGS: Array<[string, string]> = [
+  ['LF', LF_TEXT],
+  ['CRLF', CRLF_TEXT],
+  ['lone CR', CR_TEXT],
+];
+
+test('a lone CR ends a line for the server, as it does for the client', async (t) => {
+  // The scanner half runs in heuristic mode too: it is what hover and the
+  // pattern-based diagnostics index by.
+  const { lines } = (await import('../src/scanner')).scan(CR_TEXT);
+  assert.equal(lines.length, EOL_LINES.length, 'the scanner counts a lone CR as a line break');
+  const { hoverAt } = await import('../src/hover');
+  assert.match(
+    (hoverAt(CR_TEXT, 4, 9)?.contents as { value?: string } | undefined)?.value ?? '',
+    /`y`/,
+    'hover describes the DECLARE the client sees on line 4'
+  );
+
+  if (!(await skipWithoutGrammar(t))) return;
+  for (const [name, text] of ALL_ENDINGS) {
+    const doc = analyzeDocument(parse(text)!);
+    assert.deepEqual(doc.syntaxIssues.map((i) => i.message), [], `${name}: line endings are not damage`);
+    assert.equal(
+      doc.declaredNames.find((d) => d.name === 'y')?.range.start.line,
+      4,
+      `${name}: DECLARE y is reported on client line 4`
+    );
+    assert.equal(
+      doc.setTargets.find((s) => s.name === 'y')?.range.start.line,
+      5,
+      `${name}: SET y is reported on client line 5`
+    );
+  }
+});
+
+test('every semantic token ends on the line it starts on', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // I-18: a comment token reached one column past its line on CRLF files, so the
+  // client painted the following line in comment colour. The encoder clamps each
+  // token to the length the client has for that line, whatever the grammar matched.
+  for (const [name, text] of ALL_ENDINGS) {
+    const data = semanticTokensForTree(parse(text)!, text)!;
+    const textLines = (await import('../src/scanner')).linesOf(text);
+    assert.ok(data.length >= 5 * 10, `${name}: several tokens encoded`);
+    let line = 0;
+    for (let i = 0; i < data.length; i += 5) {
+      line += data[i];
+      const [startLine, startChar, length] = [line, data[i + 1], data[i + 2]];
+      assert.ok(startChar >= 0 && length > 0, `${name}: token ${i / 5} has a sane start`);
+      assert.ok(
+        startChar + length <= textLines[startLine].length,
+        `${name}: token ${i / 5} (line ${startLine}, col ${startChar}, len ${length}) stays inside ` +
+          `the ${textLines[startLine].length}-column line the client has there`
+      );
+    }
+  }
+});
+
+test('no symbol or diagnostic range reaches past the end of its line', async () => {
+  // I-18, both modes: a range that runs past end-of-line makes the client mark
+  // up text it was never about, and `Range#create` complains about the shape.
+  const { analyze } = await import('../src/diagnostics');
+  const { DEFAULT_SETTINGS } = await import('../src/settings');
+  const { documentSymbols, documentSymbolsFromTree } = await import('../src/symbols');
+  const { declarationsFromSource } = await import('../src/definitions');
+  for (const [name, text] of ALL_ENDINGS) {
+    const lines = (await import('../src/scanner')).linesOf(text);
+    const check = (label: string, ranges: { start: { line: number; character: number }; end: { line: number; character: number } }[]) => {
+      for (const r of ranges) {
+        assert.ok(r.end.line < lines.length, `${name}: ${label} range ${JSON.stringify(r)} is inside the document`);
+        assert.ok(
+          r.end.character <= lines[r.end.line].length,
+          `${name}: ${label} range ${JSON.stringify(r)} does not reach past line ${r.end.line} ` +
+            `(${lines[r.end.line].length} columns)`
+        );
+      }
+    };
+    check('fallback declarations', declarationsFromSource(text).map((d) => d.range));
+    check(
+      'fallback symbols',
+      documentSymbols(text).flatMap((s) => [
+        s.selectionRange,
+        s.range,
+        ...(s.children ?? []).map((c) => c.selectionRange),
+      ])
+    );
+    check('fallback diagnostics', analyze(text, DEFAULT_SETTINGS.diagnostics).map((d) => d.range));
+
+    // The tree path, when this machine has the addon: same promise.
+    if (await initGrammar()) {
+      const doc = analyzeDocument(parse(text)!);
+      check('tree declarations', doc.declaredNames.map((d) => d.range));
+      check('tree SET targets', doc.setTargets.map((t2) => t2.range));
+      check('tree syntax issues', doc.syntaxIssues.map((i) => i.range));
+      check(
+        'tree symbols',
+        documentSymbolsFromTree(doc).flatMap((s) => [s.selectionRange, s.range])
+      );
+    }
   }
 });
