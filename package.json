@@ -36,6 +36,13 @@
     "grammar:test": "npm --prefix tree-sitter-esql test",
     "smoke:stdio": "node scripts/smoke-stdio.js",
     "verify:package": "node scripts/verify-package.js",
+    "probe:corpus": "node scripts/probe/corpus-probe.js",
+    "probe:grammar-scan": "node scripts/probe/grammar-scan.js",
+    "probe:scope-hover": "node scripts/probe/scope-hover.js",
+    "probe:scope-completion": "node scripts/probe/scope-completion.js",
+    "probe:line-endings": "node scripts/probe/line-endings.js",
+    "probe:cache-latency": "node scripts/probe/cache-latency.js",
+    "probe:malformed": "node scripts/probe/malformed-requests.js",
     "prepack": "npm run build && node scripts/prepack-grammar.js",
     "postinstall": "node scripts/build-grammar.js"
   },
