@@ -28,7 +28,7 @@ and **OpenCode**.
 
 | Check | Severity | Description |
 |---|---|---|
-| Syntax error / missing token | 🔴 Error | tree-sitter `ERROR` nodes plus recovered-but-inserted tokens (a missing `;` the parser silently repaired) — when the grammar is loaded |
+| Syntax error / missing token | 🔴 Error | tree-sitter `ERROR` nodes plus recovered-but-inserted tokens (a missing `;` the parser silently repaired) — when the grammar is loaded. Damage is named after its construct (`Syntax error in a SET statement.`) and underlines that construct's first line |
 | Missing `END MODULE` | 🔴 Error | Module never closed |
 | Module without `Main()` | ⚠️ Warning | ACE cannot execute the module |
 | `Main()` without `RETURN`/`PROPAGATE` | ⚠️ Warning | Message will not reach any terminal |

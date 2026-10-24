@@ -44,6 +44,7 @@ before believing anything downstream.
 | `line-endings.js` | a client transcript for CRLF and CR-only files: diagnostic ranges, symbol ranges, completion after a completion-trigger edit. | I-21 |
 | `cache-latency.js` | request latency with one document open vs. several (the old single-entry parse cache). | I-19 |
 | `malformed-requests.js` | protocol robustness battery: pre-initialize requests, unknown methods, wrong-shaped params, cancels, double didOpen, partial settings. Server must answer errors, never hang or die. | I-14, I-22 |
+| `large-file-bench.js` | median parse / analyze / diagnostics cost of the per-change chain over a synthetic document grown from 12 KB to 370 KB, both modes. Needs no corpus. | round-3 performance item |
 
 All of them drive the BUILT server (`bin/esql-lsp.js` / `dist/`), so run
 `npm run build` first. `grammar-scan.js` loads the grammar addon from

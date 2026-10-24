@@ -43,6 +43,7 @@
     "probe:line-endings": "node scripts/probe/line-endings.js",
     "probe:cache-latency": "node scripts/probe/cache-latency.js",
     "probe:malformed": "node scripts/probe/malformed-requests.js",
+    "probe:bench": "node scripts/probe/large-file-bench.js",
     "prepack": "npm run build && node scripts/prepack-grammar.js",
     "postinstall": "node scripts/build-grammar.js"
   },

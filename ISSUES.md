@@ -1488,3 +1488,35 @@ text; serialising the tree is the fallback) purely for the line clamp.
 re-run unchanged — 0 violations, 8 findings in 5 files, and the one damaged
 file's diagnostic is its single-line `expected a field reference here.`; no
 multi-line bare `Syntax error.` remains anywhere on the corpus.
+
+**Large-file analysis benchmark** (`scripts/probe/large-file-bench.js`,
+`npm run probe:bench`). The per-change chain the server runs — parse,
+`analyzeDocument`, diagnostics — timed over a synthetic one-module document
+grown 12 KB → 370 KB (the largest real file in the corpus is 12.2 KB, so the
+bottom of the range is the worst file people actually have and the top end is
+30× beyond real experience; the growth shape — hundreds of DECLARE/SET pairs —
+matches those files, just longer). Median of 3 warm runs on this machine:
+
+| KB | parse | analyze | diagnostics | total | heuristic total |
+|---|---|---|---|---|---|
+| 12 | 3.2 ms | 44.9 ms | 1.1 ms | 49 ms | 2.7 ms |
+| 50 | 12.4 ms | 158.3 ms | 4.3 ms | 178 ms | 8.4 ms |
+| 100 | 24.9 ms | 309.1 ms | 7.1 ms | 341 ms | 17.0 ms |
+| 200 | 49.7 ms | 606.6 ms | 14.2 ms | 669 ms | 40.3 ms |
+| 370 | 91.3 ms | 1124.8 ms | 24.7 ms | 1241 ms | 62.7 ms |
+
+Reading: every stage is **linear** in file size (no superlinear surprises
+anywhere up to 30× the largest real file). `analyzeDocument()` is ~90 % of the
+grammar-mode cost (~3 ms/KB) and is the only thing worth ever optimizing; the
+tree path costs ~20× the heuristic fallback, which is exactly the degradation
+story a toolchain-less machine gets. A full 370 KB analysis (~1.2 s) happens
+only when such a file is actually edited — the I-20 cache makes repeat requests
+free and the debounce coalesces keystrokes — so this is a recorded shape, not a
+fix queue entry.
+
+Bonus finding before any timing was read: the **heuristic path indexes one
+`DECLARE` per line**, so `DECLARE a INT; DECLARE b INT;` on a single line
+(legal ESQL) leaves `b` reported as undeclared in heuristic mode while the
+tree path parses it fine. Zero occurrences across the 103-file corpus (the
+mode reports nothing but the known true positives there), so it is recorded,
+not chased: any real corpus line with two statements will reopen it.
