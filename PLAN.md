@@ -471,21 +471,57 @@ implement second, and record the decision either way in `VERIFICATION.md`
 
 ### 15. N-1a — `prepareRename` + same-file rename  `[M]` → part of N-1
 
-- [ ] Capability: `renameProvider: { prepareProvider: true }`.
-- [ ] `prepareRename`: reuse `wordAtPosition` (quoted names already handled —
+- [x] Capability: `renameProvider: { prepareProvider: true }`.
+- [x] `prepareRename`: reuse `wordAtPosition` (quoted names already handled —
       placeholder = bare name); reject on built-ins, path elements, comments,
       past-EOF (follow the `viewPosition` conventions).
-- [ ] `rename` for file-local symbols (routine-body/module-scope variables,
+- [x] `rename` for file-local symbols (routine-body/module-scope variables,
       parameters): reuse `referencesAt` incl. quoted uses; return one
       `WorkspaceEdit` over the requesting file only.
-- [ ] **Refuse cleanly, don't half-do:** SHARED variables and routines while a
+- [x] **Refuse cleanly, don't half-do:** SHARED variables and routines while a
       workspace root exists and cross-file isn't wired yet →
       `ResponseError` naming why ("declared SHARED — other files may call it;
       cross-file rename arrives with the workspace pass"). This safety rule
       exists precisely because the same-file rename of a SHARED name *breaks*
       siblings.
-- [ ] Tests: e2e rename of a local var (both modes), quoted-name rename, the
+- [x] Tests: e2e rename of a local var (both modes), quoted-name rename, the
       refusal case.
+
+  *Landed as:* `referencesAt(includeDeclaration = true)` IS the rename range
+  engine — one shared engine means the edit list equals the find-references
+  list by construction, quoted names included; the server side is a symbol
+  resolver + validator + refusal, kept in `server.ts` because that is where
+  protocol knowledge lives. Resolver matches declarations/routines over BOTH
+  extraction sources (rename must offer what references offers); excluded by
+  absence: modules, schemas, namespace aliases (renaming `tns` without
+  offering its uri is half a rename), undeclared names, built-ins, path
+  parts. Refusals answer from `prepareRename` TOO, so a good client blocks at
+  F2 instead of after the user types: SHARED + any routine while a root
+  exists (without one nothing else can reference them, so the file-local
+  rename is complete — allowed), and `Main()` always (ACE calls it by name;
+  `module-no-main` would then warn — the name is the platform's, not the
+  user's). New-name validation: identifier-shaped unless the DECLARATION is
+  quoted (adjacent `"`s in the raw text license odd shapes; the edits rewrite
+  inside the quotes), the 12 official RESERVED words refused (non-reserved
+  ones are only discouraged and several — NAME, VALUE, TYPE — are common
+  names completion offers, so refusing them would refuse real code), and
+  collisions case-insensitively (a self-case-fix `total`→`Total` is not a
+  collision — it rewrites every occurrence, a free casing fix).
+  FORCED FIX, bigger than rename: the tree path never indexed a QUOTED use
+  (`field_reference` accepted one `identifier` child only), so a rename from
+  the DECLARE would have rewritten the declaration and left every
+  `SET "my var" = …` behind — and the gap was invisible to every existing
+  feature because `referencesAt` from a quoted USE adds the cursor's own
+  range, which covered for the missing reference. Now both paths return the
+  same three ranges from the declaration (`test/definitions.test.ts` pins
+  the tree mining too). Parameters are renameable (DeclKind `parameter`,
+  positional calls mean a parameter rename can never break a caller); the
+  pattern path's alias index (`detail === 'NAMESPACE'`) is excluded so the
+  modes agree on `DECLARE tns NAMESPACE '…'`. Tests: one 25-field rename
+  conversation recorded from a real session, asserted literally in BOTH
+  modes (grammar-mode run skip-guarded, fallback run unguarded), plus the
+  rooted refusal session with a sibling that really uses the SHARED name and
+  calls the routine.
 
 ### 16. N-1b + G-4 — workspace-wide rename, third files included  `[L]` → closes N-1, G-4 (needs 4, 6, 15)
 

@@ -97,6 +97,12 @@ Never hand-edit `parser.c` / `node-types.json` / `grammar.json` — regenerate.
 - Unclosed module (the normal state of a buffer being typed): the fallback lets a
   module without `END MODULE` own everything to EOF; the tree path rebuilds the
   header from the ERROR region (`damagedModuleInfo()`). Keep the two paths in agreement.
+- Rename (`prepareRename`/`rename`) is server-side wiring over `referencesAt()` —
+  the same ranges find-references shows are the ranges the edit rewrites, in both
+  modes; that agreement is asserted literally (`RENAME_EXPECTED` in
+  `test/e2e.test.ts`), so a change to either path must re-verify both runs. Its
+  refusals are load-bearing: `SHARED` names and routines are refused while a
+  workspace root exists (a half-rename breaks siblings), and `Main()` always.
 - Every diagnostic is switchable via `initializationOptions` /
   `didChangeConfiguration`; a new check needs a unit test + an e2e assertion over a
   real stdio session + a settings-toggle case (`test/e2e.test.ts`).

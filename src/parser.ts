@@ -1099,11 +1099,18 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
         // A single-identifier field reference IS a variable use: ESQL parses
         // a bare `x` as a field reference with no path elements. Anything
         // with path elements (`a.b`, `a[1]`, `(XML.Element)T`) is a
-        // message-tree path, not a variable.
-        if (kids.length === 1 && kids[0].type === 'identifier') {
+        // message-tree path, not a variable. The QUOTED spelling is the same
+        // variable (`SET "my var" = 1`): the pattern path's `occurrences`
+        // always found quoted uses, so a tree that skipped them made
+        // definition/rename/hover answer differently per mode on a quoted
+        // name — name and range go in unquoted, exactly like the DECLARE
+        // collector above, so cursor↔reference ranges agree everywhere.
+        const only = kids.length === 1 ? kids[0] : undefined;
+        if (only && (only.type === 'identifier' || only.type === 'quoted_identifier')) {
+          const quoted = only.type === 'quoted_identifier';
           references.push({
-            name: kids[0].text,
-            range: rangeOf(kids[0]),
+            name: quoted ? unquoteESQLName(only.text) : only.text,
+            range: quoted ? innerQuotedRange(only) : rangeOf(only),
             kind: 'variable',
           });
         }

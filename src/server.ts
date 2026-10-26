@@ -43,6 +43,9 @@ import {
   DefinitionParams,
   ReferenceParams,
   Location,
+  RenameParams,
+  PrepareRenameParams,
+  WorkspaceEdit,
   Diagnostic,
   Range,
   Position,
@@ -63,6 +66,8 @@ import {
   routinesFromSource,
   occurrences,
   wordAtPosition,
+  modulesFromSource,
+  schemaFromSource,
 } from './definitions';
 import { mergeSettings, unwrapSettings, EsqlSettings, DEFAULT_SETTINGS } from './settings';
 import {
@@ -536,6 +541,11 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       documentSymbolProvider: true,
       definitionProvider: true,
       referencesProvider: true,
+      // Same-file rename (N-1a, task 15). `prepareProvider` lets the client
+      // grey out the UI before typing a new name; the refusal rules (SHARED
+      // names, routines) answer through it, so they fire at F2, not after
+      // Enter. Cross-file rename arrives with the workspace pass (task 16).
+      renameProvider: { prepareProvider: true },
       // Flat outline over the I-13 workspace index plus open buffers (ISSUES.md
       // I-13: cross-file resolution needed this and the shared-name-aware
       // undeclared check; both degrade to "open documents only" without a root).
@@ -842,6 +852,247 @@ connection.onReferences((params: ReferenceParams): Location[] | null => {
   }
   return out.length ? out : null;
 });
+
+// ── rename (N-1a: prepareRename + same-file rename, CODE_REVIEW.md N-1) ────
+
+/**
+ * ESQL's 12 official RESERVED words — "you cannot use these keywords for
+ * variable names" (12.0.x "ESQL reserved keywords", fetched verbatim
+ * 2026-10-26). Only these are refused as rename targets: the NON-reserved
+ * page only warns they "can become difficult to understand", and several
+ * (NAME, VALUE, TYPE, DATA, LIST…) are common identifier shapes this
+ * server's own completion offers — refusing them would refuse real code.
+ * `ESQL_KEYWORDS` entries that are phrases ('GROUP BY', 'IS NOT NULL')
+ * can never equal a single word, so this list is the whole rule.
+ */
+const ESQL_RESERVED_WORDS = new Set([
+  'ALL', 'ASYMMETRIC', 'BOTH', 'CASE', 'DISTINCT', 'FROM', 'ITEM',
+  'LEADING', 'NOT', 'SYMMETRIC', 'TRAILING', 'WHEN',
+]);
+
+/** What a rename targets: a DECLAREd name (variable or parameter) or a routine. */
+interface RenameTarget {
+  kind: 'variable' | 'routine';
+  /** Name as written; placeholder material. */
+  name: string;
+  /** The word range under the cursor (what `prepareRename` highlights). */
+  range: Range;
+  shared: boolean;
+}
+
+/**
+ * The variable-or-routine whose DECLARATION the cursor sits on, or null for
+ * "not a renameable symbol here" — built-ins, path elements, comments,
+ * modules, schemas, namespace aliases and anything undeclared answer null,
+ * exactly the shape `referencesAt` reports as "no answer".
+ *
+ * Declared/routine names are matched over BOTH extraction sources
+ * (tree-sitter when loaded, the pattern path otherwise), because rename
+ * must offer what find-references offers. Namespace aliases are excluded
+ * on purpose: the value of `DECLARE tns NAMESPACE 'uri'` IS the uri, and
+ * renaming the prefix without offering the uri is half a rename (task 16's
+ * workspace pass can do the whole thing). Module and schema names name
+ * deployment artifacts (the filename, the deployed schema) — text-local
+ * rename would break the match with reality.
+ */
+function renameTargetAt(
+  text: string,
+  position: Position,
+  doc: DocAnalysis | undefined
+): RenameTarget | null {
+  const { lines, rawLines } = scan(text);
+  const at = wordAtPosition(lines, rawLines, position.line, position.character);
+  if (!at) return null;
+  const eq = (n: string) => n.toUpperCase() === at.word.toUpperCase();
+  const routines = doc ? doc.routines : routinesFromSource(text);
+  if (routines.some((r) => eq(r.name)))
+    return { kind: 'routine', name: at.word, range: at.range, shared: false };
+  const declarations = doc ? doc.declaredNames : declarationsFromSource(text);
+  // Both DeclKinds are renameable (PLAN N-1a: body/module variables AND
+  // parameters; ESQL calls are positional, so a parameter rename can never
+  // break a caller). `detail === 'NAMESPACE'` is how the PATTERN path
+  // indexes the alias form (`DECLARE tns NAMESPACE 'uri'`); the tree keeps
+  // those out of `declaredNames` (doc.namespaceAliases). Refuse them in
+  // both modes: renaming the prefix without offering the uri it stands for
+  // is half a rename, and the workspace pass is where the whole thing
+  // belongs. A parameter never carries SHARED, so the refusal rules below
+  // treat both kinds as the file-local 'variable' case.
+  const decl = declarations.find((d) => eq(d.name) && d.detail !== 'NAMESPACE');
+  if (decl) return { kind: 'variable', name: at.word, range: at.range, shared: decl.shared === true };
+  return null;
+}
+
+/**
+ * Is the declaration at `range` written in quotes (`DECLARE "a name" INTEGER`)?
+ * The recorded range holds the BARE name with the quotes just outside it —
+ * in both extraction paths — so adjacency answers this. A quoted
+ * declaration is the one place a new name may be an odd shape: the grammar
+ * accepts "enclosing names that do not conform to these rules in double
+ * quotation marks", so the validator lets anything without a quote through
+ * for those (and the edits rewrite inside the quotes, never touching them).
+ */
+function declarationIsQuoted(text: string, range: Range): boolean {
+  const lines = linesOf(text);
+  const before = (lines[range.start.line] ?? '').slice(range.start.character - 1, range.start.character);
+  const after = (lines[range.end.line] ?? '').slice(range.end.character, range.end.character + 1);
+  return before === '"' && after === '"';
+}
+
+/**
+ * Validate the new name. Plain identifiers only — unless the declaration
+ * being renamed is itself quoted, which licenses odd shapes. Reserved words
+ * and collisions with the file's own names (ESQL matches case-insensitively,
+ * so the check does too, and `x` → `X` would merge two declarations) are
+ * refused: a rename that silently duplicates a DECLARE is worse than no
+ * rename.
+ */
+function invalidNewName(name: string, quotedDeclaration: boolean): string | null {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return 'the new name is empty';
+  if (name !== trimmed) return 'the new name has surrounding whitespace';
+  if (!quotedDeclaration && !/^[_A-Za-z][_A-Za-z0-9]*$/.test(trimmed)) {
+    return `'${trimmed}' is not an ESQL identifier (letters, digits, underscore, not starting with a digit)`;
+  }
+  if (quotedDeclaration && trimmed.includes('"')) {
+    return 'a quoted name cannot contain a double quote (escape it as two double quotes)';
+  }
+  if (/^[_A-Za-z][_A-Za-z0-9]*$/.test(trimmed) && ESQL_RESERVED_WORDS.has(trimmed.toUpperCase())) {
+    return `'${trimmed}' is an ESQL reserved keyword — you cannot use it for a variable name`;
+  }
+  return null;
+}
+
+/** What `prepareRename` may answer: a range, a range + placeholder, a
+ * refusal the client shows, or null for "grey the action out". */
+type PrepareRenameAnswer =
+  | Range
+  | { range: Range; placeholder: string }
+  | ResponseError<void>
+  | null;
+
+connection.onPrepareRename((params: PrepareRenameParams): PrepareRenameAnswer => {
+  const doc = documentFor(params);
+  if (!doc) return null;
+  const position = viewPosition(doc, params.position);
+  if (!position) return null;
+  const text = doc.getText();
+  const target = renameTargetAt(text, position, parsedDocument(doc.uri, text).analysis ?? undefined);
+  if (!target) return null; // the cursor is not on a declared name — greyed out, no error dialog
+  const refusal = renameRefusal(target);
+  if (refusal) return refusal;
+  // Placeholder = the BARE name (quoted declarations record their name
+  // unquoted in both paths), so the client's input box prefills a name the
+  // validator will accept again.
+  return { range: target.range, placeholder: target.name };
+});
+
+connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null | ResponseError<void> => {
+  const doc = documentFor(params);
+  if (!doc) return null;
+  const position = viewPosition(doc, params.position);
+  if (!position) return null;
+  const text = doc.getText();
+  const analysis = parsedDocument(doc.uri, text).analysis ?? undefined;
+  const target = renameTargetAt(text, position, analysis);
+  if (!target) {
+    return new ResponseError(
+      ErrorCodes.InvalidParams,
+      'esql-lsp: nothing to rename here — the cursor is not on a declared variable, ' +
+        'parameter or routine name'
+    );
+  }
+  const refusal = renameRefusal(target);
+  if (refusal) return refusal;
+
+  // New-name validation, against the SAME name universe the rename edits:
+  // declarations, routines, modules, schemas and namespace aliases of this
+  // file (ESQL is case-insensitive, so is the collision check).
+  const declarations = analysis ? analysis.declaredNames : declarationsFromSource(text);
+  const decl = declarations.find((d) => d.name.toUpperCase() === target.name.toUpperCase());
+  const quoted = decl ? declarationIsQuoted(text, decl.range) : false;
+  const bad = invalidNewName(params.newName, quoted);
+  if (bad) return new ResponseError(ErrorCodes.InvalidParams, `esql-lsp: cannot rename to '${params.newName}' — ${bad}`);
+  const takenHere = new Set<string>();
+  for (const d of declarations) takenHere.add(d.name.toUpperCase());
+  if (analysis) {
+    for (const r of analysis.routines) takenHere.add(r.name.toUpperCase());
+    for (const m of analysis.modules) takenHere.add(m.name.toUpperCase());
+    for (const s of analysis.schemas) takenHere.add(s.name.toUpperCase());
+    for (const a of analysis.namespaceAliases) takenHere.add(a.name.toUpperCase());
+  } else {
+    for (const r of routinesFromSource(text)) takenHere.add(r.name.toUpperCase());
+    for (const m of modulesFromSource(text)) takenHere.add(m.name.toUpperCase());
+    const schema = schemaFromSource(text);
+    if (schema) takenHere.add(schema.name.toUpperCase());
+  }
+  const upper = params.newName.toUpperCase();
+  // The target's own name is not a collision: `total` → `Total` is a case
+  // fix, and the edits below rewrite every occurrence to the new spelling.
+  // Anything else the file already answers to is — a rename that leaves two
+  // declarations ESQL reads as one name is worse than no rename.
+  if (upper !== target.name.toUpperCase() && takenHere.has(upper)) {
+    return new ResponseError(
+      ErrorCodes.InvalidParams,
+      `esql-lsp: cannot rename to '${params.newName}' — the file already has a name that reads the same (ESQL names are case-insensitive)`
+    );
+  }
+
+  // referencesAt(includeDeclaration = true) is the range engine: same
+  // quoted-aware occurrence matching find-references uses, so what the
+  // user saw under "find references" is exactly what changes.
+  const ranges = referencesAt(text, position.line, position.character, true, analysis);
+  const changes = new Map<string, { range: Range; newText: string }[]>();
+  const seen = new Set<string>();
+  for (const r of ranges) {
+    const key = `${r.start.line}:${r.start.character}|${r.end.line}:${r.end.character}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const list = changes.get(doc.uri) ?? [];
+    list.push({ range: r, newText: params.newName });
+    changes.set(doc.uri, list);
+  }
+  if (!seen.size) return null;
+  return { changes: Object.fromEntries(changes) };
+});
+
+/**
+ * The half-renames this server refuses until the workspace pass (task 16).
+ * A SHARED variable is visible to every flow of the application and a
+ * routine is callable from sibling files — rewriting ONLY this file breaks
+ * those siblings, and a broken sibling is worse than an unsupported
+ * rename. The refusal needs the workspace root (the index is what knows
+ * about siblings): without one, nothing else can reference these names,
+ * so the file-local rename is complete and honest, and allowed.
+ */
+function renameRefusal(target: RenameTarget): ResponseError<void> | null {
+  // `Main()` is not a user-chosen name: the ACE runtime calls exactly that
+  // routine in every compute module (12.0.x: a module "must contain a
+  // Main() function"). Renaming it is never what the user wants, in any
+  // mode, rooted or not — and `module-no-main` would then warn.
+  if (target.kind === 'routine' && target.name.toUpperCase() === 'MAIN') {
+    return new ResponseError(
+      ErrorCodes.InvalidParams,
+      "esql-lsp: cannot rename 'Main' — ACE calls that routine by name in every " +
+        'compute module; renaming it makes the module unexecutable'
+    );
+  }
+  if (!workspaceIndex.rootPath()) return null;
+  if (target.kind === 'variable' && target.shared) {
+    return new ResponseError(
+      ErrorCodes.InvalidParams,
+      `esql-lsp: cannot rename '${target.name}' here — it is declared SHARED, so other ` +
+        'files may use it; cross-file rename arrives with the workspace pass'
+    );
+  }
+  if (target.kind === 'routine') {
+    return new ResponseError(
+      ErrorCodes.InvalidParams,
+      `esql-lsp: cannot rename '${target.name}' here — a routine can be called from ` +
+        'other files; cross-file rename arrives with the workspace pass'
+    );
+  }
+  return null;
+}
 
 connection.languages.semanticTokens.on((params) => {
   const doc = documentFor(params);

@@ -1795,3 +1795,257 @@ test('cross-file definition, references and hover over stdio (G-1/G-2/G-3)', asy
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+// ── N-1a: prepareRename + same-file rename (CODE_REVIEW.md N-1) ────────────
+
+/**
+ * One file that exercises every rename answer there is: a body variable
+ * (local, renameable), a quoted name (renameable, quotes preserved), a
+ * routine parameter (renameable — ESQL calls are positional), a SHARED
+ * variable (renameable ONLY without a workspace root), a sibling routine
+ * (same), `Main()` (never — ACE calls it by name), and the three things a
+ * text rename must not touch: the module name, the schema, the namespace
+ * alias. Positions are load-bearing: the expectations below are literal.
+ */
+const RENAME_SRC = [
+  'BROKER SCHEMA com.test;',                           //  0
+  'CREATE COMPUTE MODULE RenameN1',                    //  1
+  'CREATE FUNCTION Main() RETURNS BOOLEAN',            //  2
+  'BEGIN',                                             //  3
+  '  DECLARE total INTEGER;',                          //  4  decl, cursor 12
+  '  DECLARE count INTEGER 0;',                        //  5  collision source
+  '  DECLARE "my var" CHARACTER;',                     //  6  quoted, inner 11-17
+  "  DECLARE tns NAMESPACE 'urn:x';",                  //  7  alias: never renameable
+  '  DECLARE sharedTotal SHARED INTEGER;',             //  8
+  '  SET count = total + count;',                      //  9  two reads
+  '  SET OutputRoot.JSON.Data.msg = total;',           // 10  read, cursor 36
+  '  SET OutputRoot.JSON.Data.v = "my var";',          // 11  quoted read
+  '  SET sharedTotal = sharedTotal + 1;',              // 12  write + read
+  '  RETURN TRUE;',                                    // 13
+  'END;',                                              // 14
+  'END MODULE;',                                       // 15
+  '',                                                  // 16
+  'CREATE FUNCTION Helper(p INTEGER) RETURNS INTEGER', // 17  routine 16-22, param 23
+  'BEGIN RETURN p; END;',                              // 18
+  '',
+].join('\n');
+
+/** One server answer, printed the way a test can read it. */
+function renameShape(r: any): string | string[] {
+  if (r.error) return 'ERR ' + r.error.message;
+  const res = r.result;
+  if (res?.changes)
+    return (Object.values(res.changes as Record<string, any[]>).flat() as any[]).map(
+      (e) => `${e.range.start.line}:${e.range.start.character}-${e.range.end.character}->${JSON.stringify(e.newText)}`
+    );
+  if (res?.range)
+    return `prep ${res.range.start.line}:${res.range.start.character}-${res.range.end.character} ${JSON.stringify(res.placeholder)}`;
+  return 'null';
+}
+
+/**
+ * The whole rename conversation over a real stdio session. The server's own
+ * grammar load is async, and rename answers are mode-independent BY
+ * CONTRACT (both paths feed the same `referencesAt` engine), so both runs
+ * assert the SAME literal expectations — whichever path a given request
+ * happened to take. `npm run smoke:stdio -- --expect-grammar` is what pins
+ * that a live session really runs the tree path.
+ */
+async function renameSession(env?: Record<string, string>) {
+  const client = new LspClient(env ? { env } : {});
+  const uri = 'file:///tmp/esql-e2e/RenameN1.esql';
+  const prep = (line: number, character: number) =>
+    client.request('textDocument/prepareRename', { textDocument: { uri }, position: { line, character } });
+  const ren = (line: number, character: number, newName: string) =>
+    client.request('textDocument/rename', { textDocument: { uri }, position: { line, character }, newName });
+  try {
+    const init = await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      workspaceFolders: null,
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: RENAME_SRC },
+    });
+    return {
+      capability: init.result?.capabilities?.renameProvider ?? 'missing',
+      prepareDecl: renameShape(await prep(4, 12)),
+      prepareRead: renameShape(await prep(10, 36)),
+      prepareModule: renameShape(await prep(1, 24)),
+      prepareSchema: renameShape(await prep(0, 20)),
+      prepareAlias: renameShape(await prep(7, 12)),
+      prepareParam: renameShape(await prep(17, 23)),
+      renameParam: renameShape(await ren(17, 23, 'amount')),
+      renameSum: renameShape(await ren(4, 12, 'sum')),
+      renameCase: renameShape(await ren(4, 12, 'Total')),
+      renameReserved: renameShape(await ren(4, 12, 'FROM')),
+      renameSpaces: renameShape(await ren(4, 12, 'a b')),
+      renameAliasCollision: renameShape(await ren(4, 12, 'tns')),
+      renameOtherCollision: renameShape(await ren(4, 12, 'count')),
+      quotedPrepare: renameShape(await prep(6, 13)),
+      quotedRename: renameShape(await ren(6, 13, 'other name')),
+      quotedBadQuote: renameShape(await ren(6, 13, 'a"b')),
+      quotedToPlain: renameShape(await ren(6, 13, 'plain_name')),
+      mainPrepare: renameShape(await prep(2, 17)),
+      mainRename: renameShape(await ren(2, 17, 'Start')),
+      sharedPrepare: renameShape(await prep(8, 12)),
+      sharedRename: renameShape(await ren(8, 12, 'sharedBackup')),
+      routinePrepare: renameShape(await prep(17, 18)),
+      routineRename: renameShape(await ren(17, 18, 'Help2')),
+      afterHover: (
+        await client.request('textDocument/hover', {
+          textDocument: { uri },
+          position: { line: 4, character: 12 },
+        })
+      ).result?.contents?.value?.slice(0, 20),
+    };
+  } finally {
+    await client.close();
+  }
+}
+
+/** Recorded from a real session (see `renameSession`); every field is an
+ * assertion in both modes, not a smoke test. */
+const RENAME_EXPECTED = {
+  capability: { prepareProvider: true },
+  prepareDecl: 'prep 4:10-15 "total"',
+  prepareRead: 'prep 10:33-38 "total"',
+  prepareModule: 'null',
+  prepareSchema: 'null',
+  prepareAlias: 'null',
+  prepareParam: 'prep 17:23-24 "p"',
+  renameParam: [
+    '17:23-24->"amount"',
+    '18:13-14->"amount"',
+  ],
+  renameSum: [
+    '4:10-15->"sum"',
+    '9:14-19->"sum"',
+    '10:33-38->"sum"',
+  ],
+  renameCase: [
+    '4:10-15->"Total"',
+    '9:14-19->"Total"',
+    '10:33-38->"Total"',
+  ],
+  renameReserved: 'ERR esql-lsp: cannot rename to \'FROM\' — \'FROM\' is an ESQL reserved keyword — you cannot use it for a variable name',
+  renameSpaces: 'ERR esql-lsp: cannot rename to \'a b\' — \'a b\' is not an ESQL identifier (letters, digits, underscore, not starting with a digit)',
+  renameAliasCollision: 'ERR esql-lsp: cannot rename to \'tns\' — the file already has a name that reads the same (ESQL names are case-insensitive)',
+  renameOtherCollision: 'ERR esql-lsp: cannot rename to \'count\' — the file already has a name that reads the same (ESQL names are case-insensitive)',
+  quotedPrepare: 'prep 6:11-17 "my var"',
+  quotedRename: [
+    '6:11-17->"other name"',
+    '11:32-38->"other name"',
+  ],
+  quotedBadQuote: 'ERR esql-lsp: cannot rename to \'a"b\' — a quoted name cannot contain a double quote (escape it as two double quotes)',
+  quotedToPlain: [
+    '6:11-17->"plain_name"',
+    '11:32-38->"plain_name"',
+  ],
+  mainPrepare: 'ERR esql-lsp: cannot rename \'Main\' — ACE calls that routine by name in every compute module; renaming it makes the module unexecutable',
+  mainRename: 'ERR esql-lsp: cannot rename \'Main\' — ACE calls that routine by name in every compute module; renaming it makes the module unexecutable',
+  sharedPrepare: 'prep 8:10-21 "sharedTotal"',
+  sharedRename: [
+    '8:10-21->"sharedBackup"',
+    '12:6-17->"sharedBackup"',
+    '12:20-31->"sharedBackup"',
+  ],
+  routinePrepare: 'prep 17:16-22 "Helper"',
+  routineRename: [
+    '17:16-22->"Help2"',
+  ],
+  afterHover: '### `total`\n\n**Decla',
+};
+
+test('the fallback renames what find-references found, and refuses the rest (N-1a)', async () => {
+  // No skip guard: this is the mode a machine without a C toolchain lives in,
+  // and the answers below are the contract, not a degraded copy.
+  assert.deepEqual(await renameSession({ ESQL_LSP_NO_GRAMMAR: '1' }), RENAME_EXPECTED);
+});
+
+test('grammar mode answers the same renames at the same positions (N-1a)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  assert.deepEqual(await renameSession(), RENAME_EXPECTED);
+});
+
+/**
+ * The safety rule, over a session that HAS a sibling to break: a SHARED
+ * variable is visible to every flow and a routine is callable from other
+ * files, so rewriting only this file would leave the sibling broken — worse
+ * than an unsupported rename. The refusal must answer at PREPARE too, so the
+ * client grey the user out at F2 instead of after they typed a new name.
+ * A local variable still renames: the refusal is about the name's reach,
+ * not about rename being switched off.
+ */
+test('with a workspace root, SHARED names and routines refuse the half-rename (N-1a)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-n1-e2e-'));
+  const mainPath = path.join(dir, 'Main.esql');
+  const mainUri = pathToFileURL(mainPath).href;
+  const client = new LspClient();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'Sibling.esql'),
+      [
+        'CREATE FUNCTION Caller() RETURNS BOOLEAN',
+        'BEGIN',
+        '  SET sharedTotal = 1;',
+        '  CALL Helper(2);',
+        '  RETURN TRUE;',
+        'END;',
+        '',
+      ].join('\n')
+    );
+    fs.writeFileSync(mainPath, RENAME_SRC);
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: pathToFileURL(dir).href,
+      workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'n1' }],
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri: mainUri, languageId: 'esql', version: 1, text: RENAME_SRC },
+    });
+    const prep = (line: number, character: number) =>
+      client.request('textDocument/prepareRename', { textDocument: { uri: mainUri }, position: { line, character } });
+    const ren = (line: number, character: number, newName: string) =>
+      client.request('textDocument/rename', {
+        textDocument: { uri: mainUri },
+        position: { line, character },
+        newName,
+      });
+
+    const sharedErr = 'ERR ' + (await ren(8, 12, 'sharedBackup')).error.message;
+    assert.match(sharedErr, /cannot rename 'sharedTotal' here — it is declared SHARED/);
+    assert.match(sharedErr, /cross-file rename arrives with the workspace pass/);
+    assert.equal(
+      renameShape(await prep(8, 12)),
+      sharedErr,
+      'prepareRename refuses too: the UI blocks before the user types'
+    );
+
+    const routineErr = 'ERR ' + (await ren(17, 18, 'Help2')).error.message;
+    assert.match(routineErr, /cannot rename 'Helper' here — a routine can be called from other files/);
+    assert.equal(renameShape(await prep(17, 18)), routineErr, 'and at F2 as well');
+
+    const mainErr = renameShape(await ren(2, 17, 'Start'));
+    assert.ok(
+      typeof mainErr === 'string' && /ERR .*cannot rename 'Main' — ACE calls that routine by name/.test(mainErr),
+      `Main is refused with or without a root — the name comes from the platform (got ${JSON.stringify(mainErr)})`
+    );
+
+    assert.deepEqual(
+      renameShape(await ren(4, 12, 'sum')),
+      RENAME_EXPECTED.renameSum,
+      'a file-local rename still works in the same rooted session'
+    );
+  } finally {
+    await client.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

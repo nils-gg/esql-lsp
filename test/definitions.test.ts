@@ -22,6 +22,7 @@ import {
   declarationAt,
   enclosingRoutine,
 } from '../src/definitions';
+import { skipWithoutGrammar } from './grammarStatus';
 
 const SRC = [
   'BROKER SCHEMA com.acme.payments;',                                     // 0
@@ -467,4 +468,50 @@ test('the pattern path puts each declaration in the scope that owns it', async (
   // disagree about the exact scope edges (body vs whole routine statement), but
   // not about which declaration a cursor sees.
   if (await tree()) check(analyzeDocument(parse(SCOPES)!));
+});
+
+/**
+ * N-1a's precondition, and a silent mine in its own right: a QUOTED name's
+ * use sites have to be real references in the tree. Before rename existed
+ * the gap was invisible — `referencesAt` from a quoted USE still answered
+ * (the cursor's own range is added), so only a lookup starting at the
+ * DECLARATION showed the tree missing every quoted use. Rename edits come
+ * from this function, so a tree that missed them would have shipped a
+ * rename that rewrote the DECLARE and left every `SET "my var" = …` behind.
+ */
+test('a quoted variable use is a reference in both extraction paths (N-1a)', async (t) => {
+  const src = [
+    'CREATE COMPUTE MODULE QN1', //                    0
+    'CREATE FUNCTION Main() RETURNS BOOLEAN', //        1
+    'BEGIN', //                                         2
+    '  DECLARE "my var" INTEGER;', //                   3  cursor inside the quoted name
+    '  SET "my var" = 1;', //                           4  quoted use (write)
+    '  SET OutputRoot.a = "my var" * 2;', //            5  quoted use (read)
+    '  RETURN TRUE;', //                                6
+    'END', //                                           7
+    'END MODULE;', //                                   8
+    '',
+  ].join('\n');
+  const want = ['3:11-3:17', '4:7-4:13', '5:22-5:28'];
+
+  assert.deepEqual(format(referencesAt(src, 3, 12, true, undefined)), want, 'references (heuristic)');
+  assert.deepEqual(
+    format(referencesAt(src, 3, 12, false, undefined)),
+    ['4:7-4:13', '5:22-5:28'],
+    'uses only (heuristic)'
+  );
+
+  if (!(await skipWithoutGrammar(t))) return;
+  const doc = analyzeDocument(parse(src)!, src);
+  assert.deepEqual(doc.syntaxIssues, [], 'the fixture must be grammatically clean for this comparison');
+  assert.deepEqual(
+    doc.references.filter((r) => r.kind === 'variable').map((r) => [r.name, r.range.start.line + ':' + r.range.start.character]),
+    [
+      ['my var', '4:7'],
+      ['my var', '5:22'],
+    ],
+    'the tree indexes quoted uses as references — name unquoted, range INSIDE the quotes'
+  );
+  assert.deepEqual(format(referencesAt(src, 3, 12, true, doc)), want, 'references (grammar)');
+  assert.deepEqual(format(referencesAt(src, 3, 12, false, doc)), ['4:7-4:13', '5:22-5:28'], 'uses only (grammar)');
 });

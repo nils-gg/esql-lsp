@@ -18,9 +18,9 @@ and **OpenCode**.
 > Phase 2 (landed): the **tree-sitter grammar** in
 > [`tree-sitter-esql/`](tree-sitter-esql/) is integrated into the server —
 > grammar-backed syntax errors, exact declared-variable analysis, semantic
-> tokens, a parse-tree outline, go-to-definition and find-references — with
-> automatic fallback to heuristics when the native grammar cannot load (see
-> [Roadmap](#roadmap)).
+> tokens, a parse-tree outline, go-to-definition, find-references and
+> same-file rename — with automatic fallback to heuristics when the native
+> grammar cannot load (see [Roadmap](#roadmap)).
 
 ## Demo
 
@@ -145,6 +145,33 @@ Message-tree path parts (`OutputRoot.JSON.**Data**`) and built-ins resolve to
 nothing rather than to a guess. Available in both modes; the grammar-backed path
 keeps working while the file is still broken — a module whose `END MODULE` is
 still being typed still owns its routines and declarations.
+
+### Rename (same file)
+
+`prepareRename` + `rename` over the same `referencesAt` engine find-references
+uses, so what you saw under *references* is exactly what changes — quoted
+names included (`DECLARE "my var"` rewrites to `"other name"`, quotes kept).
+Renames a body/module variable, a routine parameter (ESQL calls are
+positional, so a parameter can never break a caller) or a routine, and fixes
+casing for free (`total` → `Total` rewrites every occurrence). Refusals come
+with a reason, and `prepareRename` answers them too, so a good client blocks
+at `F2` instead of after you type:
+
+- **not a renameable symbol here** (`Main()`, module names, `BROKER SCHEMA`,
+  namespace aliases, path elements, comments, undeclared names) — silent
+  `null`, the UI greys out;
+- **a name that reaches other files** (`DECLARE … SHARED`, or any routine)
+  while a workspace root exists — refusing beats rewriting one file and
+  leaving siblings broken; cross-file rename arrives with the workspace pass.
+  Without a root nothing else can reference these names, so the file-local
+  rename is complete and allowed;
+- **a bad new name** — not an identifier, an ESQL *reserved* keyword (the 12
+  that "you cannot use for variable names"; non-reserved ones are only
+  discouraged, so they stay allowed), a name the file already answers to
+  (ESQL is case-insensitive), or a `"` inside a quoted name.
+
+Identical answers in both modes (asserted over a real stdio session, in
+grammar and in `ESQL_LSP_NO_GRAMMAR=1` mode).
 
 ### Workspace (cross-file)
 
@@ -348,6 +375,13 @@ feeds published diagnostics back to the agent as feedback while it edits.
   semantic tokens; it happens when the native addon could not build (needs a C
   toolchain at `npm install` time) or was skipped (`--ignore-scripts`).
   Neovim: `:lua vim.lsp.log.set_level('info')`, then `:LspLog`.
+- **Rename refuses and shows a sentence instead of an input box.** That is
+  the answer, not a failure: either the name reaches other files (a `SHARED`
+  variable, a routine — the workspace root means siblings may use it, and
+  same-file rename would break them; cross-file rename arrives with the
+  workspace pass), or it is `Main()`/a module name/a schema, which name
+  things outside the file. Ordinary variables in the same file always
+  rename, with or without a root.
 - **A file with Windows (`\r\n`) or old-Mac (`\r`) line endings.** Fine in both
   modes: the server splits lines the way an LSP client does — `\r\n`, `\r` or
   `\n`, terminator excluded — so symbols, hover, diagnostics and semantic tokens
@@ -444,7 +478,10 @@ CONTRIBUTING.md        # dev setup, ground rules, PR guide
    `workspace/symbol`, SHARED-aware undeclared check, cross-file
    go-to-definition / find-references / hover, and SHARED-aware completion
    (`CALL` targets and `SHARED` variables offered with their declaring
-   file). The next consumer is rename across files.
+   file). Rename is the next consumer: same-file rename already ships (it
+   reuses the find-references engine and refuses `SHARED` names and routines
+   whenever a root makes siblings possible), cross-file rename is the part
+   that needs the index.
 - Longer term: optional integration with the ACE ESQL compiler for
   authoritative validation.
 
