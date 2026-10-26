@@ -40,6 +40,28 @@ export const ESQL_KEYWORDS: string[] = [
   'NAME', 'VALUE', 'TYPE',
   // SQL diagnostic fields
   'SQLSTATE', 'SQLCODE', 'SQLERRORTEXT', 'SQLNATIVEERROR',
+  // Backfill from the two official keyword pages (app-connect/12.0.x
+  // "ESQL reserved keywords" + "ESQL non-reserved keywords", both fetched
+  // verbatim 2026-10-26). The curated list above missed real keywords the
+  // flat diagnostics scans run into (`INSERT INTO`, `IS [NOT] INF`,
+  // `BETWEEN SYMMETRIC`, `PROPAGATE … FINALIZE NONE`, `LIKE … ESCAPE`),
+  // and every miss became a false `unknown-routine`/`undeclared-read`.
+  // Words the pages list that ESQL_FUNCTIONS already documents (CHAR,
+  // COUNT, CURRENT_*, LOG, MAX, MIN, SUM, UUIDAS*) are deliberately not
+  // duplicated here — the check allow lists union both arrays.
+  // Reserved (all 12):
+  'ALL', 'ASYMMETRIC', 'BOTH', 'LEADING', 'SYMMETRIC', 'TRAILING',
+  // Non-reserved, the rest of the page:
+  'ANY', 'BY', 'CCSID', 'CONDITION', 'COORDINATED', 'DATA', 'DAY',
+  'DAYOFWEEK', 'DAYOFYEAR', 'DAYS', 'DEFAULT', 'DOMAIN', 'DYNAMIC',
+  'ENCODING', 'ESCAPE', 'ESQL', 'EVENT', 'FINALIZE', 'FORMAT', 'FOUND',
+  'FULL', 'GMTTIME', 'GMTTIMESTAMP', 'GROUP', 'HOUR', 'IDENTITY', 'INF',
+  'INFINITY', 'INSERT', 'INT', 'IS', 'ISLEAPYEAR', 'JAVA', 'LANGUAGE',
+  'LIST', 'LOCALTIMEZONE', 'MODIFIES', 'MONTH', 'MONTHS', 'NAN', 'NONE',
+  'NUM', 'OPTIONS', 'ORDER', 'PARSE', 'PLACING', 'QUARTEROFYEAR',
+  'QUARTERS', 'READS', 'RESULT', 'SAMEFIELD', 'SECOND', 'SETS', 'SHARED',
+  'SHORT', 'SOME', 'SQL', 'SQLEXCEPTION', 'SQLWARNING', 'TRACE',
+  'UNCOORDINATED', 'UPDATE', 'WEEKOFMONTH', 'WEEKOFYEAR', 'WEEKS', 'YEAR',
 ];
 
 // ─── Data types ──────────────────────────────────────────────────────────────

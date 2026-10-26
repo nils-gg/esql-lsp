@@ -57,6 +57,7 @@ step asserts the pane, so a plain run doubles as an end-to-end UI test,
 | Module without `Main()` | ⚠️ Warning | ACE cannot execute the module |
 | `Main()` without `RETURN`/`PROPAGATE` | ⚠️ Warning | Message will not reach any terminal |
 | Variable in `SET` without `DECLARE` | ⚠️ Warning | Grammar-exact when loaded; case-insensitive regex otherwise; function params count as declared |
+| Variable `READ` without `DECLARE` | ⚠️ Warning | Expression reads (`SET x = Undeclared + 1`) — the write check above never saw them. Grammar path reads the tree; fallback mode scans conservatively (a subset, never a contradiction): clause words, DB statements, loop labels, literals and damaged files stay silent by design |
 | Deprecated `XMLNS` parser | ⚠️ Warning | Use `XMLNSC` in ACE 12 |
 | Legacy `LOGICAL` data type | 💡 Hint | Pre-ACE truth value; grammar accepts it (real legacy ESQL), the hint says prefer `BOOLEAN` — same in both modes |
 | `CALL`/call of an unknown routine | ⚠️ Warning | Target declared neither in this file nor in the workspace index, and not a built-in — with a did-you-mean. Silent without a workspace root (or when the index skipped files): no root means no knowledge, not an error |
@@ -77,7 +78,7 @@ suppress one check without matching message text, or offer "explain this
 problem". The codes mirror the setting names below: `syntax-error`,
 `missing-end-module`,
 `module-no-main`, `no-propagation`, `unclosed-main`, `undeclared-variable`,
-`deprecated-parser`, `deprecated-type`, `unknown-routine`, `missing-semicolon`, `output-root-properties`.
+`undeclared-read`, `deprecated-parser`, `deprecated-type`, `unknown-routine`, `missing-semicolon`, `output-root-properties`.
 
 ### Completion
 
@@ -375,6 +376,7 @@ to `true`:
     "enabled": true,
     "checkSyntaxErrors": true,
     "checkUndeclaredVariables": true,
+    "checkUndeclaredReads": true,
     "checkPropagation": true,
     "checkMissingSemicolon": true,
     "checkDeprecatedParsers": true,

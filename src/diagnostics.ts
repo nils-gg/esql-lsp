@@ -10,6 +10,8 @@
  * Checks (each independently toggleable via settings):
  *   1. Module structure      – missing `END MODULE` (error), missing Main() (warning)
  *   2. Undeclared variables  – `SET x = ...` without `DECLARE x` (warning)
+ *   2b. Undeclared reads     – expression reads of never-declared names
+ *                              (warning; fallback mode scans conservatively)
  *   3. Main() propagation    – no RETURN / PROPAGATE in Main() (warning)
  *   4. Missing semicolon     – statement likely lacks `;` (hint)
  *   5. Deprecated XMLNS      – use XMLNSC in ACE 12 (warning)
@@ -20,13 +22,13 @@
  *
  * Check 1 emits two finding kinds (missing END MODULE, missing Main()), and
  * check 2 and 3 one each on both paths plus check 1's grammar-mode syntax
- * error, so clients see the eleven codes of `DiagnosticCode` in total.
+ * error, so clients see the twelve codes of `DiagnosticCode` in total.
  */
 
 import { Diagnostic, DiagnosticSeverity, Range } from 'vscode-languageserver';
 import { scan, findBeginToken, findEndToken } from './scanner';
 import { EsqlDiagnosticsSettings } from './settings';
-import { declarationsFromSource, bareTargetsFromSource, routinesFromSource, MODULE_RE, END_MODULE_RE } from './definitions';
+import { declarationsFromSource, bareTargetsFromSource, routinesFromSource, rangeContains, MODULE_RE, END_MODULE_RE } from './definitions';
 import { ESQL_FUNCTIONS, ESQL_KEYWORDS } from './data/esqlData';
 import { didYouMean } from './suggest';
 import type { DocAnalysis } from './parser';
@@ -146,7 +148,7 @@ export function analyze(
 ): Diagnostic[] {
   if (!settings.enabled) return [];
   const diagnostics: Diagnostic[] = [];
-  const { lines } = scan(source);
+  const { lines, rawLines } = scan(source);
 
   if (doc && settings.checkSyntaxErrors) {
     // E-7 (one diagnostic per root cause): an unclosed module makes the
@@ -182,6 +184,10 @@ export function analyze(
     if (doc) checkDeclaredVariablesFromTree(doc, diagnostics, workspaceSharedNames);
     else checkDeclaredVariables(source, diagnostics, workspaceSharedNames);
   }
+  if (settings.checkUndeclaredReads) {
+    if (doc) checkUndeclaredReadsFromTree(doc, lines, diagnostics, workspaceSharedNames);
+    else checkUndeclaredReadsFlat(source, lines, rawLines, diagnostics, workspaceSharedNames);
+  }
   if (settings.checkPropagation) {
     checkPropagateOrReturn(lines, diagnostics);
   }
@@ -212,6 +218,7 @@ export type DiagnosticCode =
   | 'module-no-main'
   | 'missing-end-module'
   | 'undeclared-variable'
+  | 'undeclared-read'
   | 'no-propagation'
   | 'unclosed-main'
   | 'deprecated-parser'
@@ -300,7 +307,7 @@ function checkDeclaredVariables(
 
     out.push(diag(
       target.range,
-      `Variable '${target.name}' is used in SET but never declared with DECLARE.`,
+      `Variable '${target.name}' is assigned here but never declared with DECLARE.`,
       DiagnosticSeverity.Warning,
       'undeclared-variable'
     ));
@@ -320,10 +327,179 @@ function checkDeclaredVariablesFromTree(
     if (RESERVED_SET_TARGETS.has(upper) || declared.has(upper)) continue;
     out.push(diag(
       target.range,
-      `Variable '${target.name}' is used in SET but never declared with DECLARE.`,
+      `Variable '${target.name}' is assigned here but never declared with DECLARE.`,
       DiagnosticSeverity.Warning,
       'undeclared-variable'
     ));
+  }
+}
+
+/**
+ * 2b. Reads of never-declared variables (CODE_REVIEW.md E-5), tree path.
+ * The tree hands over exactly the bare identifiers (`field_reference` with
+ * one identifier — message-tree paths never appear); names inside a
+ * `select_expression` are columns/tables/aliases, and a name sitting AT a
+ * setTarget position is a WRITE that check 2 owns — otherwise
+ * `SET nowhere = 1;` would be reported twice with contradicting roles.
+ *
+ * Declaredness is FILE-FLAT, not per scope, deliberately: a name declared
+ * somewhere stays silent even where this position cannot see it — a scope
+ * miss is a different (true) problem deserving its own message, while a
+ * fabricated scope error is the E-2 failure mode reborn. File-flat ⊆
+ * "nowhere in scope", and it is the notion both paths can agree on
+ * (the E-3/E-2b discipline: the fallback is a sold mode, not a degraded one).
+ */
+function checkUndeclaredReadsFromTree(
+  doc: DocAnalysis,
+  lines: string[],
+  out: Diagnostic[],
+  workspaceSharedNames?: ReadonlySet<string>
+): void {
+  const declared = new Map<string, string>(); // UPPER → as written (first wins)
+  const put = (n: string): void => {
+    const u = n.toUpperCase();
+    if (!declared.has(u)) declared.set(u, n);
+  };
+  for (const d of doc.declaredNames) put(d.name);
+  for (const d of doc.namespaceAliases) put(d.name);
+  for (const n of forBoundNames(lines)) put(n);
+  if (workspaceSharedNames) for (const n of workspaceSharedNames) put(n);
+  const writtenAt = new Set(
+    doc.setTargets.map((t) => `${t.name.toUpperCase()}@${t.range.start.line}:${t.range.start.character}`)
+  );
+  for (const ref of doc.references) {
+    if (ref.kind !== 'variable') continue;
+    const upper = ref.name.toUpperCase();
+    // An official keyword/datatype/built-in word is never a NAME to vouch
+    // for — the pages say do not use them as variable names, and a bare
+    // identifier shaped like one is error recovery's artifact (`DAYS` left
+    // over from `INTERVAL '1' DAYS` after the qualifier rule's repair), not
+    // a read of something the user wrote.
+    if (BUILTIN_CALL_WORDS.has(upper)) continue;
+    if (RESERVED_SET_TARGETS.has(upper) || declared.has(upper)) continue;
+    if (writtenAt.has(`${upper}@${ref.range.start.line}:${ref.range.start.character}`)) continue;
+    // Inside an ERROR region the parse invented the tree — references there
+    // are recovery artifacts (`SET a = Fn(` mid-typing flags 'Fn'). The
+    // syntax error already owns that line.
+    if (doc.errorRegions.some((r) => rangeContains(r, ref.range.start.line, ref.range.start.character)))
+      continue;
+    if (doc.selectExpressions.some((s) => rangeContains(s, ref.range.start.line, ref.range.start.character)))
+      continue;
+    // `Name(` is a CALL shape: `SET a = Fn(` mid-typing repairs to a
+    // variable read of 'Fn' with the `(` in an ERROR tail — but Fn may be a
+    // routine (E-4's territory) or a half-typed call. Never an E-5 read.
+    if ((lines[ref.range.start.line] ?? '').slice(ref.range.end.character).trimStart().startsWith('('))
+      continue;
+    const suggestion = didYouMean(ref.name, [...declared.values()]);
+    out.push(diag(
+      ref.range,
+      `Variable '${ref.name}' is read here but never declared.` +
+        (suggestion.length ? ` Did you mean '${suggestion[0]}'?` : ''),
+      DiagnosticSeverity.Warning,
+      'undeclared-read'
+    ));
+  }
+}
+
+/**
+ * 2b (fallback half). The flat scan has no tree to hide behind, so it is
+ * deliberately narrower than the grammar path — a SUBSET of its findings,
+ * never a contradiction: bare words at paren/brace depth 0 only (clause
+ * words and subquery innards hide at depth > 0 by construction), no
+ * CREATE/DECLARE header lines, no DB-expression lines, no word touching a
+ * `.`/`(`/`[`/`:` (paths, calls, labels). FILES THE SCANNER FINDS DAMAGED —
+ * unbalanced parens/braces once strings and comments are masked — skip the
+ * check entirely: mid-typing, every depth judgement is unreliable, and a
+ * false "never declared" on the line the user is writing is the worst
+ * diagnostic this server can ship.
+ */
+function checkUndeclaredReadsFlat(
+  source: string,
+  lines: string[],
+  rawLines: string[],
+  out: Diagnostic[],
+  workspaceSharedNames?: ReadonlySet<string>
+): void {
+  const declared = new Map<string, string>();
+  const put = (n: string): void => {
+    const u = n.toUpperCase();
+    if (!declared.has(u)) declared.set(u, n);
+  };
+  for (const d of declarationsFromSource(source)) put(d.name);
+  for (const n of forBoundNames(lines)) put(n);
+  if (workspaceSharedNames) for (const n of workspaceSharedNames) put(n);
+
+  let round = 0;
+  let curly = 0;
+  for (const line of lines) {
+    for (const ch of line) {
+      if (ch === '(') round++;
+      else if (ch === ')') round--;
+      else if (ch === '{') curly++;
+      else if (ch === '}') curly--;
+      if (round < 0 || curly < 0) return; // closes something never opened
+    }
+  }
+  if (round !== 0 || curly !== 0) return;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Adjacency reads the RAW line: masking blanks quotes, and offsets are
+    // preserved in place, so only the unmasked view can see `X'…` glue.
+    const raw = rawLines[i] ?? '';
+    if (/^\s*(CREATE|DECLARE)\b/i.test(line)) continue; // headers + declaration slots
+    if (/\b(SELECT|FROM|JOIN|WHERE)\b/i.test(line)) continue; // DB words: columns, tables, aliases
+    let depth = 0;
+    let prev = '';
+    READ_TOKEN_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = READ_TOKEN_RE.exec(line))) {
+      const tok = m[0];
+      if (tok === '(' || tok === '{' || tok === '[') {
+        depth++;
+        prev = tok;
+        continue;
+      }
+      if (tok === ')' || tok === '}' || tok === ']') {
+        depth--;
+        prev = tok;
+        continue;
+      }
+      const upper = tok.toUpperCase();
+      // Character adjacency, the flat view's only syntax: a word glued to a
+      // digit is part of a numeric literal (`1e10`, `0x1F`), glued to `'` a
+      // bit/string literal prefix (`X'FF00'`), glued to `)`/`]`/`:` the tail
+      // of a tree path (`Data.(.Attribute)Title`, `Data.*:Name2`), glued to
+      // `.` a field-path part. All are misses-by-design, never false flags.
+      const pc = m.index > 0 ? raw[m.index - 1] : '';
+      const next = raw.slice(m.index + tok.length).match(/^\s*(.)/)?.[1] ?? '';
+      const skip =
+        depth > 0 ||
+        pc === '.' ||
+        pc === ':' ||
+        pc === ')' ||
+        pc === ']' ||
+        /\d/.test(pc) ||
+        next === '.' ||
+        next === '(' ||
+        next === '[' ||
+        next === "'" ||
+        next === ':' ||
+        READ_AFTER_SKIP.has(prev) ||
+        READ_SKIP_WORDS.has(upper) ||
+        declared.has(upper);
+      if (!skip) {
+        const suggestion = didYouMean(tok, [...declared.values()]);
+        out.push(diag(
+          lineRange(i, line, m.index, m.index + tok.length),
+          `Variable '${tok}' is read here but never declared.` +
+            (suggestion.length ? ` Did you mean '${suggestion[0]}'?` : ''),
+          DiagnosticSeverity.Warning,
+          'undeclared-read'
+        ));
+      }
+      prev = upper;
+    }
   }
 }
 
@@ -403,6 +579,47 @@ const BUILTIN_CALL_WORDS = new Set<string>([
 ]);
 const CALL_RE = /\bCALL\s+([A-Za-z_]\w*)\b/gi;
 const FUNC_CALL_RE = /\b([A-Za-z_]\w*)\s*\(/g;
+
+/**
+ * E-5's flat read scan, depth-0 FP classes — words that sit OUTSIDE
+ * parens/braces (the depth rule already hides clause words like CCSID/FORMAT
+ * inside them) yet are never variable reads:
+ *  - INTERVAL qualifiers trailing their string literal (`+ INTERVAL '1' DAYS`);
+ *  - the LOG statement's bare trace words (`LOG USER TRACE TEXT …`);
+ *  - everything reserved, keyword, built-in or datatype (`RESERVED_SET_TARGETS`
+ *    ∪ the E-4 allow list).
+ * Words after SET/CALL/INTO/LEAVE/ITERATE/END are write targets, call names
+ * and labels — handled positionally (`READ_AFTER_SKIP`), not as words.
+ */
+const READ_SKIP_WORDS = new Set<string>([
+  ...RESERVED_SET_TARGETS,
+  ...BUILTIN_CALL_WORDS,
+  'DAY', 'DAYS', 'MONTH', 'MONTHS', 'HOUR', 'HOURS', 'MINUTE', 'MINUTES',
+  'SECOND', 'SECONDS', 'YEAR', 'YEARS',
+  'LOG', 'USER', 'TRACE', 'EVENT', 'TEXT',
+]);
+/** After these words the next bare word is a target, call name or label.
+ * WHILE/REPEAT/FOR cover the label slot of `END WHILE L1;` and the binding
+ * slot of `FOR i AS ...` — flat misses a read in an unparenthesised
+ * `WHILE x > 0` condition because of it, the accepted subset trade. */
+const READ_AFTER_SKIP = new Set(['SET', 'CALL', 'INTO', 'LEAVE', 'ITERATE', 'END', 'WHILE', 'REPEAT', 'FOR', 'SCHEMA']);
+
+/**
+ * Names a `FOR name AS ...` loop implicitly declares (a row-variable that
+ * owns the iteration). Flat-extracted from the masked lines and shared by
+ * BOTH E-5 paths — the tree marks the header slot but nothing downstream,
+ * so without this the loop body's reads of the loop name are false flags.
+ * A header split across lines is missed, like every flat extraction.
+ */
+function forBoundNames(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    const m = /^\s*FOR\s+([A-Za-z_]\w*)\b/i.exec(line);
+    if (m) out.push(m[1]);
+  }
+  return out;
+}
+const READ_TOKEN_RE = /[A-Za-z_]\w*|[(){}\[\]]/g;
 
 /** 5. Deprecated XMLNS parser, one finding per line. */
 function checkDeprecatedParsers(lines: string[], out: Diagnostic[]): void {

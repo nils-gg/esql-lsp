@@ -565,8 +565,12 @@ test('sibling routines and SHARED names join the general list (C-1/C-2)', () => 
   assert.equal(typedHelper!.sortText, '1:Helper', 'ranked with the user names (C-3)');
 
   // Shipping the whole general list per keystroke must stay bounded — this
-  // is the tripwire for future data-table growth (C-3 perf guard).
-  assert.ok(typed.length <= 300, `general list bounded (got ${typed.length})`);
+  // is the tripwire for future data-table growth (C-3 perf guard). Baseline
+  // moved 2026-10-26 when ESQL_KEYWORDS was backfilled from the two official
+  // keyword pages (122 → 194 words): the flat diagnostics take their allow
+  // list from that array, and every missing keyword was an `undeclared-read`
+  // or `unknown-routine` false positive waiting to happen.
+  assert.ok(typed.length <= 400, `general list bounded (got ${typed.length})`);
 });
 
 test('same-file names win over same-named workspace facts (C-2)', () => {

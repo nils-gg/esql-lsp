@@ -905,9 +905,12 @@ test('every diagnostic over the wire carries source and code', async () => {
     'module-no-main',
     'missing-end-module',
     'undeclared-variable',
+    'undeclared-read',
     'no-propagation',
     'unclosed-main',
     'deprecated-parser',
+    'deprecated-type',
+    'unknown-routine',
     'missing-semicolon',
     'output-root-properties',
   ];
@@ -1012,6 +1015,78 @@ test('legacy LOGICAL: hint over stdio, silenced by its own setting (E-3)', async
       position: { line: 3, character: 17 },
     });
     assert.match(hover.result?.contents?.value ?? '', /flag/, 'healthy session after the settings change');
+  } finally {
+    await client.close();
+  }
+});
+
+/**
+ * E-5 over a real stdio session: the read warning ships with its code and
+ * severity, and its own setting toggle removes exactly that code while the
+ * WRITE check's finding on the neighboring line survives — the E-5
+ * write/read split has to stay switchable apart. No skip guard: the flat
+ * half must behave identically for users without a C toolchain, and the
+ * fixture is clean ESQL in both modes.
+ */
+test('undeclared read over stdio, toggled off without touching the write check (E-5)', async () => {
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e/ReadsE5.esql';
+  const src = [
+    'CREATE COMPUTE MODULE ReadsE5E2E',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    '  DECLARE total INTEGER;',
+    '  SET total = Undeclared + 1;',
+    '  SET nowhere = 1;',
+    '  RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: src },
+    });
+    const first = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) =>
+        p.uri === uri &&
+        p.diagnostics.some((d: any) => d.code === 'undeclared-read') &&
+        p.diagnostics.some((d: any) => d.code === 'undeclared-variable'),
+      15000
+    );
+    const read = first.diagnostics.find((d: any) => d.code === 'undeclared-read');
+    assert.equal(read.severity, 2, 'Warning');
+    assert.equal(read.range.start.line, 4, 'the read line, not the write line');
+    assert.equal(read.range.start.character, 14, 'underlines the name itself');
+    assert.match(read.message, /Undeclared.*read here but never declared/);
+    const write = first.diagnostics.find((d: any) => d.code === 'undeclared-variable');
+    assert.match(write.message, /nowhere.*assigned here but never declared/, 'the reworded write message ships');
+    // Silence ONLY the read half…
+    client.notify('workspace/didChangeConfiguration', {
+      settings: { esql: { diagnostics: { checkUndeclaredReads: false } } },
+    });
+    const second = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) =>
+        p.uri === uri &&
+        p.diagnostics.every((d: any) => d.code !== 'undeclared-read') &&
+        p.diagnostics.some((d: any) => d.code === 'undeclared-variable')
+    );
+    assert.ok(second, 'the write finding survives the read toggle');
+    // …and the session stays healthy.
+    const hover = await client.request('textDocument/hover', {
+      textDocument: { uri },
+      position: { line: 3, character: 12 },
+    });
+    assert.match(hover.result?.contents?.value ?? '', /total/, 'healthy session after the settings change');
   } finally {
     await client.close();
   }

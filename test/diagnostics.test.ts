@@ -140,7 +140,7 @@ test('mined names quiet the undeclared check exactly where they should (E-2)', a
   const { warnings } = messages(src);
   assert.deepEqual(
     warnings,
-    ["Variable 'neverSeen' is used in SET but never declared with DECLARE."],
+    ["Variable 'neverSeen' is assigned here but never declared with DECLARE."],
     'heuristic mode: the one name with no DECLARE'
   );
   if (!(await skipWithoutGrammar(t))) return;
@@ -343,11 +343,12 @@ test('a namespace-declaration prefix is not the deprecated XMLNS parser', () => 
   // the real samples that used to warn (ISSUES.md I-8): the `xmlns` here is a
   // prefix NAME, not the ACE v9 `XMLNS` parser.
   const decls = [
+    "DECLARE tns NAMESPACE 'urn:sample';",
     'SET OutputRoot.XMLNSC.tns:SayHelloResponse.(XMLNSC.NamespaceDecl)xmlns:tns = tns;',
     "SET OutputRoot.XMLNSC.tns:R.(XMLNSC.NamespaceDecl)xmlns = 'urn:hl7-org:v2xml';",
     '',
   ].join('\n');
-  assert.deepEqual(messages(decls).warnings, []);
+  assert.deepEqual(messages(decls).warnings, [], 'the alias DECLARE binds tns in both modes (E-5)');
 
   // The real deprecation still warns, at the `XMLNS` word itself.
   const parser = 'SET OutputRoot.XMLNS.Root.Data = 1;\n';
@@ -605,6 +606,7 @@ test('diagnostics can be disabled via settings', () => {
     checkDeprecatedParsers: false,
     checkDeprecatedTypes: false,
     checkUnknownRoutines: false,
+    checkUndeclaredReads: false,
     checkOutputRootProperties: false,
   };
   assert.deepEqual(analyze(src, allOff), []);
@@ -802,4 +804,139 @@ test('DATABASEEVENT modules get the same structure checks (E-6)', () => {
     errors.some((e) => /missing its closing 'END MODULE'/.test(e)),
     `missing-end-module fires on DATABASEEVENT: ${JSON.stringify(errors)}`
   );
+});
+
+// ── E-5: reads of never-declared variables ──────────────────────────────────
+
+/**
+ * One clean fixture for the check proper: two genuine reads (6/7), and
+ * around them every binder that must satisfy a read — function parameters,
+ * namespace aliases (`DECLARE tns NAMESPACE`), FOR-loop row variables —
+ * plus a did-you-mean against the file's own names.
+ */
+const READS_MODULE = [
+  'BROKER SCHEMA com.test;',                            // 0
+  'CREATE COMPUTE MODULE ReadsE5',                      // 1
+  'CREATE FUNCTION Main() RETURNS BOOLEAN',             // 2
+  'BEGIN',                                              // 3
+  '  DECLARE total INTEGER;',                           // 4
+  "  DECLARE tns NAMESPACE 'urn:sample';",              // 5
+  '  SET total = Undeclared + 1;',                      // 6  read, no nearby name
+  '  SET total = totl + tns;',                          // 7  read -> did-you-mean total; alias read silent
+  '  FOR j AS InputRoot.Data.Item[*] DO',               // 8  FOR binds j
+  '    SET total = j.Value;',                           // 9
+  '  END FOR;',                                         // 10
+  '  RETURN TRUE;',                                     // 11
+  'END;',                                               // 12
+  'END MODULE;',                                        // 13
+  '',
+].join('\n');
+
+const E5_READS = (diags: ReturnType<typeof analyze>) =>
+  diags
+    .filter((d) => d.code === 'undeclared-read')
+    .map((d) => `${d.message}@${d.range.start.line}:${d.range.start.character}`);
+
+test('undeclared READS warn with did-you-mean; params, aliases and FOR vars satisfy (E-5)', () => {
+  const diags = analyze(READS_MODULE, D);
+  assert.deepEqual(E5_READS(diags), [
+    "Variable 'Undeclared' is read here but never declared.@6:14",
+    "Variable 'totl' is read here but never declared. Did you mean 'total'?@7:14",
+  ]);
+  assert.equal(
+    diags.find((d) => d.code === 'undeclared-read')!.severity,
+    DiagnosticSeverity.Warning
+  );
+});
+
+test('the grammar path flags the same reads at the same positions (E-5)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const doc = analyzeDocument(parse(READS_MODULE)!, READS_MODULE);
+  assert.deepEqual(doc.syntaxIssues, [], 'the fixture must be grammatically clean for this comparison');
+  assert.deepEqual(E5_READS(analyze(READS_MODULE, D, doc)), E5_READS(analyze(READS_MODULE, D)));
+  // the tree really did see the alias and the loop name — not a lucky subset
+  assert.deepEqual(
+    doc.namespaceAliases.map((a) => a.name),
+    ['tns'],
+    'namespace alias bindings live where E-5 can reach them'
+  );
+});
+
+test('workspace-SHARED names satisfy reads too (E-5/I-13 rule)', () => {
+  const diags = analyze(READS_MODULE, D, undefined, new Set(['UNDECLARED']));
+  assert.deepEqual(E5_READS(diags), [
+    "Variable 'totl' is read here but never declared. Did you mean 'total'?@7:14",
+  ]);
+});
+
+/**
+ * The flat scan's conservatism, in one file: bit/exponent literals, the
+ * plural interval qualifier, trace words and keyword clause words all sit
+ * at paren depth 0 where the naive scan would flag them. The grammar
+ * meanwhile rejects `INTERVAL '1' DAYS` and this `LOG … TEXT` outright
+ * (VERIFICATION.md gaps) — errors are fine there; the test is that NO
+ * undeclared name is ever invented for them, in either mode.
+ */
+const FLAT_QUIET = [
+  'CREATE COMPUTE MODULE QuietFlatE5',
+  'CREATE FUNCTION Main() RETURNS BOOLEAN',
+  'BEGIN',
+  '  DECLARE b BLOB;',
+  '  DECLARE n INTEGER;',
+  '  DECLARE d DATE;',
+  '  DECLARE s CHARACTER;',
+  "  SET b = X'FF00';",
+  '  SET n = 1e10 + 0x1F;',
+  "  SET d = CURRENT_DATE + INTERVAL '1' DAYS;",
+  '  SET s = UPPER(s);',
+  "  LOG USER TRACE TEXT 'hi';",
+  '  RETURN TRUE;',
+  'END;',
+  'END MODULE;',
+  '',
+].join('\n');
+
+test('the fallback scan names nothing undeclared where ESQL says keyword or literal (E-5)', () => {
+  assert.deepEqual(E5_READS(analyze(FLAT_QUIET, D)), [], 'flat mode stays silent');
+  assert.deepEqual(messages(FLAT_QUIET).warnings, []);
+});
+
+test('the grammar path is silent on the flat-quiet fixture even where it errors (E-5)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const doc = analyzeDocument(parse(FLAT_QUIET)!, FLAT_QUIET);
+  assert.ok(doc.syntaxIssues.length > 0, 'the grammar does reject the plural qualifier / LOG form');
+  assert.deepEqual(E5_READS(analyze(FLAT_QUIET, D, doc)), [], 'but recovers without inventing names');
+});
+
+test('damage silences the fallback entirely and the tree defers to the syntax error (E-5)', async (t) => {
+  const src = [
+    'CREATE COMPUTE MODULE DamagedE5',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    '  DECLARE a INTEGER;',
+    '  SET a = NoOneHere(;',
+    '  RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  // Unbalanced paren after masking: every depth judgement in the file is
+  // suspect, so the flat check walks away — the line the user is typing
+  // must never gain a false "never declared".
+  assert.deepEqual(E5_READS(analyze(src, D)), []);
+  if (!(await skipWithoutGrammar(t))) return;
+  const doc = analyzeDocument(parse(src)!, src);
+  assert.ok(
+    doc.syntaxIssues.some((i) => /SET statement/.test(i.message)),
+    'the syntax error owns the damaged line'
+  );
+  assert.deepEqual(E5_READS(analyze(src, D, doc)), [], '`NoOneHere(` is a call shape, not a read');
+});
+
+test('the read check answers to checkUndeclaredReads alone (E-5 toggle)', () => {
+  const on = analyze(READS_MODULE, D);
+  assert.equal(E5_READS(on).length, 2);
+  const off = analyze(READS_MODULE, { ...D, checkUndeclaredReads: false });
+  assert.deepEqual(E5_READS(off), []);
+  assert.equal(off.length, 0, 'the fixture is otherwise clean');
 });

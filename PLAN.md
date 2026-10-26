@@ -418,21 +418,52 @@ implement second, and record the decision either way in `VERIFICATION.md`
 
 ### 14. E-5 — undeclared reads  `[L]` → closes E-5
 
-- [ ] Grammar mode: walk `doc.references` (kind `variable`) — a read whose
+- [x] Grammar mode: walk `doc.references` (kind `variable`) — a read whose
       name is nowhere in scope, not reserved, not workspace-SHARED →
       `Variable 'UndeclaredRead' is read here but never declared.` with
       did-you-mean against names in scope.
-- [ ] Heuristic mode (required — checks work in both): conservative
+- [x] Heuristic mode (required — checks work in both): conservative
       occurrence-based pass — whole-word bare identifiers on masked code
       lines, excluding dotted-path parts, statement keywords, labels,
       routine names, and anything in `RESERVED_SET_TARGETS`/declared/workspace
       sets; suppress the whole check in files the scanner flags as damaged.
-- [ ] Reword the write-target message to distinguish the two roles ("assigned
+- [x] Reword the write-target message to distinguish the two roles ("assigned
       here" vs "read here") — today "used in SET" is a lie by omission.
-- [ ] Own settings flag `checkUndeclaredReads` (default on), code
+- [x] Own settings flag `checkUndeclaredReads` (default on), code
       `undeclared-read`, ground-rule test trio, and a false-positive sweep on
       the real 103-file corpus before defaulting on (the I-13 experience says
       measure, then decide).
+
+  *Landed as:* file-FLAT declaredness in both modes deliberately (a name
+  declared anywhere satisfies a read — a scope miss is a different true
+  problem; fabricating scope errors is the E-2 failure mode reborn, and
+  file-flat is the notion both paths can agree on). Tree path:
+  `doc.references` kind `variable` minus positions that are SET write
+  targets (check 2 owns those; `SET x = x` dedup), minus refs inside new
+  `doc.selectExpressions` (columns/tables/aliases), minus official-keyword
+  words and refs inside `doc.errorRegions` or before `(` (recovery artifacts
+  and call shapes — `SET a = Fn(` mid-typing must never read as "variable
+  'Fn' never declared"). Flat path: depth-0 tokens on masked lines only,
+  CREATE/DECLARE/SELECT-ish lines skipped, character-adjacency rule on the
+  RAW line (masking preserves offsets but blanks quotes — `X'FF00'` glue is
+  only visible unmasked); any whole-file paren/brace imbalance silences the
+  check. Contract tests: READS_MODULE asserted byte-identical between modes
+  after proving the fixture grammatically clean, and the corpus-wide subset
+  test (all 86 grammar cases + ws fixtures, ~200 honest findings) pins
+  flat-findings ⊆ tree-findings — flat may miss, never contradict.
+  Side fixes the FP sweep forced: `ESQL_KEYWORDS` was 122 curated words
+  missing INSERT/FULL/ESCAPE/NONE/DEFAULT/INF/NAN/SYMMETRIC/… — backfilled
+  to 194 from both official keyword pages (fetched verbatim 2026-10-26; it
+  is the E-4/E-5 allow list AND completion; C-3 bound 300→400); the tree
+  silently ignored the namespace-alias DECLARE (flat indexed it — a mode
+  split waiting), now collected into `doc.namespaceAliases` keeping the
+  G-5 outline stance; FOR-loop row variables are declared names (shared
+  `forBoundNames` for both paths); the `INTERVAL '1' DAYS` plural-qualifier
+  gap became a VERIFICATION.md row (recovery left `DAYS` as a fake
+  identifier). The 103-file corpus is gone from disk — the sweep ran over
+  the grammar corpus + rev-3 ws fixtures instead (zero false positives,
+  zero mode contradictions). Write message reworded to "is assigned here"
+  (README/demo patterns followed).
 
 ---
 

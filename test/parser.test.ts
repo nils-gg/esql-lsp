@@ -12,6 +12,8 @@ import {
 import { analyze } from '../src/diagnostics';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import { skipWithoutGrammar } from './grammarStatus';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 const FULL = [
   'BROKER SCHEMA .mft.S;',
@@ -789,4 +791,47 @@ test('declarations and SET targets are mined from inside the damaged region (I-6
     1,
     'damage nested inside the reported region adds no second `Syntax error.`'
   );
+});
+
+// ── E-5 false-positive sweep as a standing test ─────────────────────────────
+
+/**
+ * The grammar corpus is 86 hand-adjudicated shapes of real ESQL. Run the
+ * undeclared checks over every case in BOTH modes and assert the contract
+ * that makes the fallback a SOLD mode rather than a degraded one: every
+ * finding the flat scan makes must also be made by the tree at the same
+ * position and message (the tree may find more — flat is a deliberate
+ * subset — but a flat-only finding is a contradiction, and contradictions
+ * between modes are how E-3/E-4/E-5 false positives started. Honest
+ * findings are expected here (corpus snippets rarely DECLARE what they
+ * read); what is NOT expected is disagreement.
+ */
+test('flat undeclared findings are a subset of the tree findings, corpus-wide (E-5)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const dir = path.join(__dirname, '..', '..', 'tree-sitter-esql', 'test', 'corpus');
+  const settings = DEFAULT_SETTINGS.diagnostics;
+  const key = (d: { code?: string | number; message: string; range: { start: { line: number; character: number } } }) =>
+    `${d.code}@${d.range.start.line}:${d.range.start.character} ${d.message}`;
+  const pick = (ds: ReturnType<typeof analyze>) =>
+    ds.filter((d) => d.code === 'undeclared-read' || d.code === 'undeclared-variable');
+  let cases = 0;
+  const violations: string[] = [];
+  for (const file of fs.readdirSync(dir)) {
+    if (!file.endsWith('.txt')) continue;
+    // Corpus format: `===\nname\n===\n source \n---\n tree ` blocks back to back.
+    const parts = fs.readFileSync(path.join(dir, file), 'utf8').split(/^===\n/m);
+    for (let i = 1; i + 1 < parts.length; i += 2) {
+      const name = parts[i].trim();
+      const src = (parts[i + 1].split(/^===/m)[0] ?? '').replace(/\n---\n[\s\S]*$/, '\n').replace(/^\n+/, '');
+      cases++;
+      const flat = pick(analyze(src, settings));
+      const tree = pick(analyze(src, settings, analyzeDocument(parse(src)!, src)));
+      const treeKeys = new Set(tree.map(key));
+      for (const d of flat) {
+        if (!treeKeys.has(key(d))) violations.push(`${file}: ${name}: ${key(d)}`);
+      }
+    }
+  }
+  assert.ok(cases >= 80, `swept ${cases} corpus cases — expected the full grammar corpus`);
+  assert.deepEqual(violations, [], 'flat findings missing from the tree path');
 });

@@ -24,6 +24,9 @@ export interface EsqlDiagnosticsSettings {
   /** Warn on CALL/call targets no known routine answers (E-4; needs a
    * workspace root — silent without one). */
   checkUnknownRoutines: boolean;
+  /** Warn on variable reads no DECLARE answers (E-5; conservative by
+   * design — see checkUndeclaredReads). */
+  checkUndeclaredReads: boolean;
   /** Hint when building OutputRoot.JSON.Data without copying Properties. */
   checkOutputRootProperties: boolean;
 }
@@ -45,6 +48,7 @@ export const DEFAULT_SETTINGS: EsqlSettings = {
     checkDeprecatedParsers: true,
     checkDeprecatedTypes: true,
     checkUnknownRoutines: true,
+    checkUndeclaredReads: true,
     checkOutputRootProperties: true,
   },
   completion: {
@@ -94,6 +98,7 @@ export function mergeSettings(initOptions: unknown): EsqlSettings {
       checkDeprecatedParsers: bool(d, 'checkDeprecatedParsers', true),
       checkDeprecatedTypes: bool(d, 'checkDeprecatedTypes', true),
       checkUnknownRoutines: bool(d, 'checkUnknownRoutines', true),
+      checkUndeclaredReads: bool(d, 'checkUndeclaredReads', true),
       checkOutputRootProperties: bool(d, 'checkOutputRootProperties', true),
     },
     completion: {

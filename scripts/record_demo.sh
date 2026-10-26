@@ -98,14 +98,14 @@ if [ "${ESQL_LSP_NO_GRAMMAR:-}" = "1" ]; then NOG="ESQL_LSP_NO_GRAMMAR=1 "; fi
 S "cd '$WORK' && ESQL_LSP_BIN='$BIN' ${NOG}exec nvim -u '$DEMO_DIR/init.lua' -i NONE demo.esql" Enter
 
 echo "[1] open file; server attaches and publishes diagnostics"
-wait_pane "diagnostics published" "$MODE_PAT" "is used in SET" "Building OutputRoot.JSON.Data"
+wait_pane "diagnostics published" "$MODE_PAT" "is assigned here" "Building OutputRoot.JSON.Data"
 P 2.4
 
 echo "[2] fix the undeclared variable live: add the DECLARE, warning clears"
 L "/OrderCount"; S Enter; P 0.4
 S O
 T "DECLARE OrderCount INTEGER 0;"; S Escape
-wait_pane_not "warning cleared" "OrderCount' is used in SET"
+wait_pane_not "warning cleared" "OrderCount' is assigned here"
 P 1.0
 L ":w"; S Enter; P 0.6
 
@@ -165,11 +165,13 @@ wait_pane "typed SHARED use" "FailureCount + 1;"
 # dwell: the warning would have to appear here if cross-file resolution
 # were missing — the re-check lands well within this pause on any sane box
 P 2.5
-tmux capture-pane -p -t "$SESS" | grep -qF "FailureCount' is used in SET" \
+tmux capture-pane -p -t "$SESS" | grep -qF "FailureCount' is assigned here" \
   && { echo "FAIL: sibling SHARED did not resolve — warning appeared"; exit 1; }
+tmux capture-pane -p -t "$SESS" | grep -qF "FailureCount' is read here" \
+  && { echo "FAIL: sibling SHARED did not resolve the read half — warning appeared"; exit 1; }
 S o
 T "SET FailureConceal = 1;"; S Escape
-wait_pane "typo still flagged" "FailureConceal' is used in SET"
+wait_pane "typo still flagged" "FailureConceal' is assigned here"
 P 1.5
 
 echo "[9] close the module: type END MODULE, structure errors clear; quit"

@@ -144,6 +144,30 @@ export interface DocAnalysis {
   routines: RoutineInfo[];
   schemas: SchemaInfo[];
   references: Reference[];
+  /**
+   * The `DECLARE prefix NAMESPACE 'uri'` alias names — deliberately NOT in
+   * `declaredNames` (the G-5/C-7 stance: the outline and completion must not
+   * offer a path prefix as a variable), but they DO bind the name: ESQL
+   * reads them as implicitly constant CHARACTER values (DECLARE page, note
+   * 6), so the undeclared-READ check (E-5) must count them — the flat
+   * extractor already indexes them (detail `NAMESPACE`), and a mode split
+   * here is the E-3 failure all over again.
+   */
+  namespaceAliases: DeclaredName[];
+  /**
+   * Every `select_expression` range. Bare words inside a SELECT are column,
+   * table and alias names — never ESQL variables — so the undeclared-READ
+   * check (E-5) must not treat references there as variable reads.
+   */
+  selectExpressions: Range[];
+  /**
+   * Every outermost `ERROR` node's range — the same regions E-2b mines for
+   * declarations. The undeclared-READ check (E-5) refuses to vouch for a
+   * name inside damage: recovery invents or loses references there, and
+   * `SET x = Fn(` mid-typing must not read as "variable 'Fn' never
+   * declared" (it is a call, and it may be a routine).
+   */
+  errorRegions: Range[];
 }
 
 let runtimeParser: any = null;
@@ -656,6 +680,8 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
   const routines: RoutineInfo[] = [];
   const schemas: SchemaInfo[] = [];
   const references: Reference[] = [];
+  const selectExpressions: Range[] = [];
+  const namespaceAliases: DeclaredName[] = [];
 
   // The damaged-region namer clamps a named diagnostic to one line, which
   // needs the document text. The caller (server.ts) has it; tests may not,
@@ -1005,11 +1031,30 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
         // Its value is an implicitly constant CHARACTER (DECLARE page,
         // note 6) used as a path prefix — a different kind of thing from
         // a declared variable, so the outline and completion must not
-        // offer it as one. The NAME alias (`DECLARE Schema1 NAME 'Joe';`)
-        // keeps parsing as a NAME-typed variable (the grammar's reason is
-        // in the declare_statement comment): it is indexed as before, and
-        // telling alias from variable is analyzer territory, not the
-        // parser's.
+        // offer it as one. It DOES bind the name though, and the flat
+        // extractor indexes it too — so the names land in
+        // `namespaceAliases` for the checks that care about binding
+        // (E-5), not about offering variables. The NAME alias
+        // (`DECLARE Schema1 NAME 'Joe';`) keeps parsing as a NAME-typed
+        // variable (the grammar's reason is in the declare_statement
+        // comment): it is indexed as before, and telling alias from
+        // variable is analyzer territory, not the parser's.
+        if (kids.some((c) => c.type === 'kw_NAMESPACE')) {
+          for (const child of kids) {
+            if (child.type === 'identifier' || child.type === 'quoted_identifier') {
+              const quoted = child.type === 'quoted_identifier';
+              namespaceAliases.push({
+                name: quoted ? unquoteESQLName(child.text) : child.text,
+                detail: 'NAMESPACE',
+                range: quoted ? innerQuotedRange(child) : rangeOf(child),
+                kind: 'variable',
+                constant: true,
+                shared: false,
+                scope: scope.visible,
+              });
+            }
+          }
+        }
         break; // keep descending: a recovered missing ';' lives in here
       }
       case 'routine_parameter': {
@@ -1044,6 +1089,11 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
           }
         }
         break; // descend (harmless: SET contains no nested statements)
+      }
+      case 'select_expression': {
+        // Column/table/alias words inside are NOT variable reads (E-5).
+        selectExpressions.push(rangeOf(node));
+        break; // descend: the expressions there still hold real variable refs
       }
       case 'field_reference': {
         // A single-identifier field reference IS a variable use: ESQL parses
@@ -1200,6 +1250,9 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
     routines,
     schemas,
     references,
+    selectExpressions,
+    namespaceAliases,
+    errorRegions: damagedRegions.map(rangeOf),
   };
 }
 
