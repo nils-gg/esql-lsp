@@ -21,6 +21,9 @@ export interface EsqlDiagnosticsSettings {
   checkDeprecatedParsers: boolean;
   /** Hint on the legacy LOGICAL data type (CODE_REVIEW.md E-3). */
   checkDeprecatedTypes: boolean;
+  /** Warn on CALL/call targets no known routine answers (E-4; needs a
+   * workspace root — silent without one). */
+  checkUnknownRoutines: boolean;
   /** Hint when building OutputRoot.JSON.Data without copying Properties. */
   checkOutputRootProperties: boolean;
 }
@@ -41,6 +44,7 @@ export const DEFAULT_SETTINGS: EsqlSettings = {
     checkMissingSemicolon: true,
     checkDeprecatedParsers: true,
     checkDeprecatedTypes: true,
+    checkUnknownRoutines: true,
     checkOutputRootProperties: true,
   },
   completion: {
@@ -89,6 +93,7 @@ export function mergeSettings(initOptions: unknown): EsqlSettings {
       checkMissingSemicolon: bool(d, 'checkMissingSemicolon', true),
       checkDeprecatedParsers: bool(d, 'checkDeprecatedParsers', true),
       checkDeprecatedTypes: bool(d, 'checkDeprecatedTypes', true),
+      checkUnknownRoutines: bool(d, 'checkUnknownRoutines', true),
       checkOutputRootProperties: bool(d, 'checkOutputRootProperties', true),
     },
     completion: {

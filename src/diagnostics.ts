@@ -13,16 +13,22 @@
  *   3. Main() propagation    – no RETURN / PROPAGATE in Main() (warning)
  *   4. Missing semicolon     – statement likely lacks `;` (hint)
  *   5. Deprecated XMLNS      – use XMLNSC in ACE 12 (warning)
- *   6. OutputRoot JSON       – JSON.Data set without Properties copy (hint)
+ *   6. Deprecated LOGICAL    – legacy datatype; prefer BOOLEAN (hint)
+ *   7. OutputRoot JSON       – JSON.Data set without Properties copy (hint)
+ *   8. Unknown routine       – `CALL`/call of no known routine (warning;
+ *                              needs a workspace root — silent without one)
  *
- * Check 1 emits two finding kinds (missing END MODULE, missing Main()), so
- * clients see seven distinct diagnostic findings in total.
+ * Check 1 emits two finding kinds (missing END MODULE, missing Main()), and
+ * check 2 and 3 one each on both paths plus check 1's grammar-mode syntax
+ * error, so clients see the eleven codes of `DiagnosticCode` in total.
  */
 
 import { Diagnostic, DiagnosticSeverity, Range } from 'vscode-languageserver';
 import { scan, findBeginToken, findEndToken } from './scanner';
 import { EsqlDiagnosticsSettings } from './settings';
-import { declarationsFromSource, bareTargetsFromSource, MODULE_RE, END_MODULE_RE } from './definitions';
+import { declarationsFromSource, bareTargetsFromSource, routinesFromSource, MODULE_RE, END_MODULE_RE } from './definitions';
+import { ESQL_FUNCTIONS, ESQL_KEYWORDS } from './data/esqlData';
+import { didYouMean } from './suggest';
 import type { DocAnalysis } from './parser';
 
 // The module-boundary matchers are imported from definitions.ts, not re-typed
@@ -128,7 +134,15 @@ export function analyze(
    * the file's own declarations. Absent (no workspace root, or a unit test
    * that wants file-local semantics) means exactly today's behavior.
    */
-  workspaceSharedNames?: ReadonlySet<string>
+  workspaceSharedNames?: ReadonlySet<string>,
+  /**
+   * Routine names as written, declared anywhere in the workspace — live open
+   * buffers included (task-4 index lookup; CODE_REVIEW.md E-4). The allow
+   * list for the `unknown-routine` check. Absent (no workspace root, or the
+   * index skipped files) keeps the check silent: without the workspace, a
+   * CALL target outside this file is unverifiable, not wrong.
+   */
+  workspaceRoutineNames?: ReadonlySet<string>
 ): Diagnostic[] {
   if (!settings.enabled) return [];
   const diagnostics: Diagnostic[] = [];
@@ -177,6 +191,8 @@ export function analyze(
   // already — the hint would only add noise.
   if (settings.checkMissingSemicolon && !doc) checkMissingSemicolons(lines, diagnostics);
   if (settings.checkOutputRootProperties) checkOutputRootProperties(lines, diagnostics);
+  if (settings.checkUnknownRoutines)
+    checkUnknownRoutines(source, lines, doc, workspaceRoutineNames, diagnostics);
 
   return diagnostics;
 }
@@ -200,6 +216,7 @@ export type DiagnosticCode =
   | 'unclosed-main'
   | 'deprecated-parser'
   | 'deprecated-type'
+  | 'unknown-routine'
   | 'missing-semicolon'
   | 'output-root-properties';
 
@@ -208,7 +225,7 @@ export type DiagnosticCode =
  * Where the diagnostic codes are documented, sent as LSP `codeDescription.href`
  * on every diagnostic so a client can offer "explain this problem" without
  * matching message text. One anchor for the whole family: the README table
- * documents all ten codes and mirrors the setting names; per-code anchors
+ * documents all eleven codes and mirrors the setting names; per-code anchors
  * would rot the moment the table is reworded.
  */
 const DIAGNOSTIC_DOCS_HREF = 'https://github.com/nils-gg/esql-lsp#diagnostics';
@@ -367,6 +384,26 @@ function checkPropagateOrReturn(lines: string[], out: Diagnostic[]): void {
   }
 }
 
+// E-4: the flat call scan sees every `WORD(` — these words may legitimately
+// appear before `(` without being ESQL_KEYWORDS or documented functions:
+// datatype words in CAST/precision clauses (`CAST(s AS VARCHAR(20))`,
+// `DECIMAL(10,2)`, `CHARACTER VARYING(5)`). Flagging them is the flat scan's
+// main false-positive risk.
+const DATATYPE_SLOT_WORDS = [
+  'INT', 'VARCHAR', 'CHAR', 'NUMERIC', 'DEC', 'VARYING', 'UNSIGNED',
+  'NAMEVALUE', 'GMTTIME', 'GMTTIMESTAMP', 'LOGICAL', 'LIST',
+];
+/** Never an unknown-routine finding: documented ESQL functions (CAST and the
+ * clause forms included), every ESQL keyword (`IF (`, `IN (SELECT`, …) and
+ * the datatype words above. */
+const BUILTIN_CALL_WORDS = new Set<string>([
+  ...ESQL_FUNCTIONS.map((f) => f.name.toUpperCase()),
+  ...ESQL_KEYWORDS.map((k) => k.toUpperCase()),
+  ...DATATYPE_SLOT_WORDS,
+]);
+const CALL_RE = /\bCALL\s+([A-Za-z_]\w*)\b/gi;
+const FUNC_CALL_RE = /\b([A-Za-z_]\w*)\s*\(/g;
+
 /** 5. Deprecated XMLNS parser, one finding per line. */
 function checkDeprecatedParsers(lines: string[], out: Diagnostic[]): void {
   for (let i = 0; i < lines.length; i++) {
@@ -404,6 +441,86 @@ function checkDeprecatedTypes(lines: string[], out: Diagnostic[]): void {
       DiagnosticSeverity.Hint,
       'deprecated-type'
     ));
+  }
+}
+
+/**
+ * 8. Unknown routine (CODE_REVIEW.md E-4): a `CALL` target or expression call
+ * that is neither declared in the file, nor in the workspace, nor a built-in
+ * is a typo that otherwise only surfaces at deploy time.
+ *
+ * False-positive guards (the review's list, each named):
+ *  - Runs only with a workspace routine set (`workspaceRoutineNames`): no
+ *    workspace root → the workspace says nothing → silent, I-13 discipline.
+ *    The server also silences the check when the index SKIPPED files — a
+ *    routine may hide in one, silence beats a false flag.
+ *  - Qualified targets: `CALL Schema.R(...)` lives outside anything the file
+ *    set can verify — a name or qualified text containing `.` is skipped.
+ *    (Expression-level dotted calls are rejected by the grammar outright, and
+ *    the heuristic scan skips names preceded by `.`.)
+ *  - `EXTERNAL NAME` routines: the form requires a local CREATE header, which
+ *    both extractors index — the call hits the file allow list.
+ *  - Built-ins / keywords / datatype words: `BUILTIN_CALL_WORDS`.
+ *  - Qualified name parts of `Eval(`/`Route(` method-style paths never match
+ *    (the preceding `.` disqualifies them).
+ */
+function checkUnknownRoutines(
+  source: string,
+  lines: string[],
+  doc: DocAnalysis | undefined,
+  workspaceRoutineNames: ReadonlySet<string> | undefined,
+  out: Diagnostic[]
+): void {
+  if (!workspaceRoutineNames) return;
+  const fileRoutines = (doc ? doc.routines : routinesFromSource(source)).map((r) => r.name);
+  const known = new Set<string>(BUILTIN_CALL_WORDS);
+  for (const n of fileRoutines) known.add(n.toUpperCase());
+  for (const n of workspaceRoutineNames) known.add(n.toUpperCase());
+  // Suggestion candidates: routines first (didYouMean keeps candidate order
+  // on distance ties, and a sibling routine is what the reader usually
+  // meant), built-ins behind them, keywords never.
+  const candidates = [
+    ...new Set<string>([...fileRoutines, ...workspaceRoutineNames]),
+    ...ESQL_FUNCTIONS.map((f) => f.name),
+  ];
+  const seen = new Set<string>();
+  const flag = (name: string, range: Range): void => {
+    const key = `${name.toUpperCase()}@${range.start.line}:${range.start.character}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (known.has(name.toUpperCase())) return;
+    const suggestion = didYouMean(name, candidates);
+    out.push(diag(
+      range,
+      `Routine '${name}' is not defined in this file or workspace.` +
+        (suggestion.length ? ` Did you mean '${suggestion[0]}'?` : ''),
+      DiagnosticSeverity.Warning,
+      'unknown-routine'
+    ));
+  };
+
+  if (doc) {
+    // Grammar path: every routine-shaped reference, CALL and expression
+    // calls alike. Damage below a region can make a reference MISS (a missed
+    // check, never a false flag) — accepted: the tree is authoritative.
+    for (const ref of doc.references) {
+      if (ref.kind !== 'routine') continue;
+      if (ref.name.includes('.') || (ref.qualified ?? '').includes('.')) continue;
+      flag(ref.name, ref.range);
+    }
+    return;
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    for (const m of line.matchAll(CALL_RE)) {
+      if (line.slice(m.index + m[0].length).startsWith('.')) continue; // qualified
+      const col = m.index + m[0].lastIndexOf(m[1]);
+      flag(m[1], lineRange(i, line, col, col + m[1].length));
+    }
+    for (const m of line.matchAll(FUNC_CALL_RE)) {
+      if (line.slice(0, m.index).trimEnd().endsWith('.')) continue; // path part
+      flag(m[1], lineRange(i, line, m.index, m.index + m[1].length));
+    }
   }
 }
 

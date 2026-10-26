@@ -1018,6 +1018,141 @@ test('legacy LOGICAL: hint over stdio, silenced by its own setting (E-3)', async
 });
 
 /**
+ * E-4 over a real stdio session with a real workspace directory: after the
+ * post-`initialized` scan, the sibling file's routine resolves, the unknown
+ * CALL targets stay warned, and the typo one carries the sibling's name as
+ * its did-you-mean — proving suggestions come from the index, not just the
+ * open buffer. No skip guard: the check is a flat pass plus server wiring,
+ * due identically in both modes.
+ */
+test('unknown CALL targets are checked against the workspace over stdio (E-4)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-e4-e2e-'));
+  const libPath = path.join(dir, 'Helpers.esql');
+  const mainPath = path.join(dir, 'Main.esql');
+  const mainUri = pathToFileURL(mainPath).href;
+  const MAIN = [
+    'BROKER SCHEMA com.test.e4;',
+    'CREATE COMPUTE MODULE Caller',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    '  DECLARE x INTEGER;',
+    '  SET x = Helper(1);',
+    '  CALL DoesNotExist(2);',
+    '  CALL Helpr();',
+    '  RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  try {
+    fs.writeFileSync(
+      libPath,
+      ['CREATE FUNCTION Helper(p INTEGER) RETURNS INTEGER', 'BEGIN RETURN p; END;', ''].join('\n')
+    );
+    fs.writeFileSync(mainPath, MAIN);
+    const client = new LspClient();
+    try {
+      await client.request('initialize', {
+        processId: process.pid,
+        rootUri: pathToFileURL(dir).href,
+        workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'e4' }],
+        capabilities: {},
+        initializationOptions: {},
+      });
+      client.notify('initialized', {});
+      client.notify('textDocument/didOpen', {
+        textDocument: { uri: mainUri, languageId: 'esql', version: 1, text: MAIN },
+      });
+      // Pre-scan publishes may still call the sibling unknown; the post-scan
+      // state is exactly the two unknowns, the typo pointing at 'Helper'.
+      const published = await client.waitFor(
+        'textDocument/publishDiagnostics',
+        (p: any) =>
+          p.uri === mainUri &&
+          p.diagnostics.filter((d: any) => d.code === 'unknown-routine').length === 2 &&
+          p.diagnostics.some((d: any) => /^Routine 'DoesNotExist'/.test(d.message)) &&
+          p.diagnostics.some((d: any) => /Did you mean 'Helper'\?/.test(d.message)),
+        15000
+      );
+      const typo = published.diagnostics.find((d: any) => /Helpr/.test(d.message));
+      assert.equal(typo.severity, 2, 'Warning');
+      assert.equal(typo.range.start.line, 7, 'the CALL Helpr line');
+      // Toggle off: exactly this code leaves, the session stays usable.
+      client.notify('workspace/didChangeConfiguration', {
+        settings: { esql: { diagnostics: { checkUnknownRoutines: false } } },
+      });
+      await client.waitFor(
+        'textDocument/publishDiagnostics',
+        (p: any) => p.uri === mainUri && p.diagnostics.every((d: any) => d.code !== 'unknown-routine')
+      );
+      const syms = await client.request('workspace/symbol', { query: 'DoesNotExist' });
+      assert.deepEqual(syms.result, [], 'and the index really does not know the name');
+    } finally {
+      await client.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * E-4's overflow guard end to end: a 300 KB sibling trips the index's
+ * size limit, `skipped > 0` silences the check — a routine could be declared
+ * in the unread file, so even a definitely-unknown target goes unreported.
+ * Pre-scan publishes DO warn (nothing skipped yet), so a permanently quiet
+ * unknown-routine code can only come from the guard.
+ */
+test('a skipped index file silences the routine check — silence beats a false flag (E-4)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-e4-ovf-'));
+  const mainPath = path.join(dir, 'Main.esql');
+  const mainUri = pathToFileURL(mainPath).href;
+  const MAIN = [
+    'CREATE COMPUTE MODULE Caller',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    '  CALL DoesNotExist(1);',
+    '  RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'Oversized.esql'),
+      '-- padding past MAX_FILE_BYTES\nDECLARE big INTEGER;\n' + 'A'.repeat(300 * 1024)
+    );
+    fs.writeFileSync(mainPath, MAIN);
+    const client = new LspClient();
+    try {
+      await client.request('initialize', {
+        processId: process.pid,
+        rootUri: pathToFileURL(dir).href,
+        workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'e4-ovf' }],
+        capabilities: {},
+        initializationOptions: {},
+      });
+      client.notify('initialized', {});
+      client.notify('textDocument/didOpen', {
+        textDocument: { uri: mainUri, languageId: 'esql', version: 1, text: MAIN },
+      });
+      const published = await client.waitFor(
+        'textDocument/publishDiagnostics',
+        (p: any) => p.uri === mainUri && p.diagnostics.every((d: any) => d.code !== 'unknown-routine'),
+        15000
+      );
+      // The check that needs the index went quiet; a clean module then simply
+      // reports nothing — and nothing else, either (source field proves the
+      // publish is the server's, not a stray).
+      assert.ok(published.diagnostics.every((d: any) => d.source === 'esql'));
+    } finally {
+      await client.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
  * I-22: malformed requests. A client that sends `{}` (a proxy, a replay, a
  * plugin with a bug) used to get `-32603 InternalError` quoting V8 — "Cannot
  * read properties of undefined (reading 'uri')" — which some editors show the

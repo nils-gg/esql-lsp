@@ -254,6 +254,22 @@ function sharedNamesFromWorkspace(): ReadonlySet<string> | undefined {
   return new Set(facts.sharedVars.map((v) => v.name.toUpperCase()));
 }
 
+/**
+ * The workspace's routine names as written (live buffers first, then the
+ * on-disk index) — the allow list for the `unknown-routine` check
+ * (CODE_REVIEW.md E-4). Returns undefined when the workspace cannot answer
+ * honestly: no root (nothing to say, I-13's rule), or the index SKIPPED a
+ * file — a routine may be declared there, and a false "not defined" is
+ * exactly the deploy-time lie this check exists to prevent.
+ */
+function routineNamesFromWorkspace(): ReadonlySet<string> | undefined {
+  if (!workspaceIndex.rootPath()) return undefined;
+  if (workspaceIndex.stats().skipped > 0) return undefined;
+  const facts = workspaceFacts();
+  if (!facts) return undefined;
+  return new Set(facts.routines.map((s) => s.name));
+}
+
 /** The word under the cursor exactly as the extractors see it (masked, quoted-aware). */
 function cursorWord(text: string, line: number, character: number): string | null {
   const { lines, rawLines } = scan(text);
@@ -398,7 +414,13 @@ function publishDiagnosticsFor(uri: string): void {
   try {
     const text = doc.getText();
     const { analysis } = parsedDocument(uri, text);
-    diagnostics = analyze(text, settings.diagnostics, analysis ?? undefined, sharedNamesFromWorkspace());
+    diagnostics = analyze(
+      text,
+      settings.diagnostics,
+      analysis ?? undefined,
+      sharedNamesFromWorkspace(),
+      routineNamesFromWorkspace()
+    );
   } catch (err) {
     connection.console.error(`esql-lsp: analysis failed: ${String(err)}`);
   }

@@ -385,19 +385,36 @@ implement second, and record the decision either way in `VERIFICATION.md`
 
 ### 13. E-4 — unknown `CALL` target  `[M]` → closes E-4
 
-- [ ] New check in `src/diagnostics.ts`: bare `CALL <name>` / expression
+- [x] New check in `src/diagnostics.ts`: bare `CALL <name>` / expression
       function references whose name is not declared in file, not in the
       workspace index (task-4 lookup incl. open buffers), not a built-in —
       message: `Routine 'DoesNotExist' is not defined in this file or
       workspace. Did you mean 'Helper'?` (task-10 util).
-- [ ] New code `unknown-routine`; settings flag `checkUnknownRoutines`;
+- [x] New code `unknown-routine`; settings flag `checkUnknownRoutines`;
       README diagnostics table row; **only active with a workspace root**
       (no root → the workspace says nothing, stay silent, like I-13's rule).
-- [ ] False-positive guards (name them in code comments): dynamic/external
+- [x] False-positive guards (name them in code comments): dynamic/external
       routines (`EXTERNAL NAME`), index overflow files (skipped count > 0 →
       suppress or soften), built-in list from `esqlData`.
-- [ ] Ground-rule test trio incl. settings toggle + both modes + a no-root
+- [x] Ground-rule test trio incl. settings toggle + both modes + a no-root
       degradation case.
+
+  *Landed as:* flat check; grammar mode reads `doc.references` (kind
+  `routine`, CALL refs carry the qualified text), heuristic mode scans
+  masked lines (`CALL name` + `name(`). Guards, all in the function
+  comment: qualified targets skipped (name or qualified contains `.` —
+  expression-level dotted calls don't even parse); `EXTERNAL NAME`
+  routines carry a local CREATE header so the file set covers them
+  (probed); index `skipped > 0` → server sends no set → silent (proved
+  e2e with a 300 KB sibling past `MAX_FILE_BYTES`); allow list =
+  `ESQL_FUNCTIONS` ∪ `ESQL_KEYWORDS` ∪ datatype-slot words (`VARCHAR(10)`
+  in CAST, `VARYING(20)` — the flat scan's main FP risk, verified silent).
+  ASBITSTREAM was missing from `ESQL_FUNCTIONS` while the grammar names
+  it a clause function — added (completion offers it too now). Suggestions
+  prefer routine candidates over built-ins (didYouMean keeps order on
+  ties). No-root degradation = unit test; toggle = unit + e2e; both-modes
+  equality unit asserts the fixture is grammatically clean first, then
+  position-for-position agreement.
 
 ### 14. E-5 — undeclared reads  `[L]` → closes E-5
 

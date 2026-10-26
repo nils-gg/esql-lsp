@@ -512,6 +512,79 @@ test('LOGICAL: grammar mode never says MORE than the fallback (E-3 probe)', asyn
   assert.deepEqual(grammar, heur, 'both paths agree line-for-line on legacy ESQL');
 });
 
+// ── E-4: unknown CALL/call targets ──────────────────────────────────────────
+
+/**
+ * One fixture for the whole check: the two genuine unknowns (lines 12/13)
+ * plus everything the allow list must swallow — datatype precision words,
+ * a workspace sibling, a forward-declared file routine, a clause builtin, a
+ * qualified schema call, and keywords that precede `(`.
+ */
+const CALL_MODULE = [
+  'BROKER SCHEMA com.test.e4;',
+  'CREATE COMPUTE MODULE Caller',                        // 1
+  'CREATE FUNCTION Main() RETURNS BOOLEAN',              // 2
+  'BEGIN',                                               // 3
+  '  DECLARE x INTEGER;',                                // 4
+  '  DECLARE s CHARACTER VARYING(20);',                  // 5
+  '  SET s = CAST(1 AS VARCHAR(10));',                   // 6
+  '  SET x = Helper(1);',                                // 7  workspace sibling
+  '  SET x = localFn(2);',                               // 8  file routine, forward
+  '  CALL Helper(3);',                                   // 9
+  '  CALL com.acme.SchemaProc(4);',                      // 10 qualified: outside any file set
+  '  IF (x = 1) THEN SET x = 2; END IF;',                // 11
+  '  SET x = DoesNotExist(5);',                          // 12 unknown, no candidate nearby
+  '  CALL Helpr();',                                     // 13 typo → did-you-mean Helper
+  '  RETURN TRUE;',                                      // 14
+  'END;',                                                // 15
+  'END MODULE;',                                         // 16
+  '',                                                    // 17
+  'CREATE FUNCTION localFn(p INTEGER) RETURNS INTEGER',  // 18
+  'BEGIN RETURN p; END;',                                // 19
+  '',
+].join('\n');
+
+const E4_WS = new Set(['Helper', 'OtherThing']);
+const E4_UNKNOWN = (diags: ReturnType<typeof analyze>) =>
+  diags
+    .filter((d) => d.code === 'unknown-routine')
+    .map((d) => `${d.message}@${d.range.start.line}:${d.range.start.character}`);
+
+test('unknown CALL targets warn with did-you-mean; the allow list holds (E-4)', () => {
+  const diags = analyze(CALL_MODULE, D, undefined, undefined, E4_WS);
+  assert.deepEqual(E4_UNKNOWN(diags), [
+    "Routine 'DoesNotExist' is not defined in this file or workspace.@12:10",
+    "Routine 'Helpr' is not defined in this file or workspace. Did you mean 'Helper'?@13:7",
+  ]);
+  const typo = diags.find((d) => d.code === 'unknown-routine' && /Helpr/.test(d.message))!;
+  assert.equal(typo.severity, DiagnosticSeverity.Warning);
+});
+
+test('without a workspace root the routine check says nothing (E-4/I-13 rule)', () => {
+  // No workspace = no knowledge, NOT an error: the same text that warns with
+  // the set must be silent without it.
+  const bare = analyze(CALL_MODULE, D);
+  assert.deepEqual(E4_UNKNOWN(bare), [], JSON.stringify(bare.map((d) => d.code)));
+});
+
+test('the check answers to checkUnknownRoutines alone', () => {
+  const off = analyze(CALL_MODULE, { ...D, checkUnknownRoutines: false }, undefined, undefined, E4_WS);
+  assert.deepEqual(E4_UNKNOWN(off), []);
+  // the undeclared warning on `x` still… no: x IS declared; assert the
+  // OTHER checks survive instead — zero diagnostics here means the fixture
+  // is clean apart from the routine findings, which is the point.
+  assert.equal(off.length, 0, 'the fixture is otherwise clean');
+});
+
+test('E-4 flags agree position-for-position between modes', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const doc = analyzeDocument(parse(CALL_MODULE)!, CALL_MODULE);
+  assert.deepEqual(doc.syntaxIssues, [], 'the fixture must be grammatically clean for this comparison');
+  const grammar = analyze(CALL_MODULE, D, doc, undefined, E4_WS);
+  const heuristic = analyze(CALL_MODULE, D, undefined, undefined, E4_WS);
+  assert.deepEqual(E4_UNKNOWN(grammar), E4_UNKNOWN(heuristic));
+});
+
 test('diagnostics can be disabled via settings', () => {
   // Module structure (ungated) is satisfied: Main() present, END MODULE present.
   const src = [
@@ -531,6 +604,7 @@ test('diagnostics can be disabled via settings', () => {
     checkMissingSemicolon: false,
     checkDeprecatedParsers: false,
     checkDeprecatedTypes: false,
+    checkUnknownRoutines: false,
     checkOutputRootProperties: false,
   };
   assert.deepEqual(analyze(src, allOff), []);

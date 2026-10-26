@@ -313,6 +313,14 @@ export const ESQL_FUNCTIONS: EsqlFunctionDoc[] = [
     returnType: 'specified datatype',
   },
   {
+    name: 'ASBITSTREAM',
+    signature:
+      'ASBITSTREAM(tree CCSID c CHARACTER SET cs [BINARY|CHARACTER] [FORMAT f] [ENCODING e] [SET DOMAIN d] [PROPERTIES p])',
+    description:
+      'Serialises a message tree to a BLOB (the inverse of `BLOB AS BITSTREAM`). The grammar parses its clause form as a keyword call.',
+    returnType: 'BLOB',
+  },
+  {
     name: 'COALESCE',
     signature: 'COALESCE(value1, value2, ...)',
     description: 'Returns the first non-NULL value in the list.',
