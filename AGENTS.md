@@ -97,12 +97,20 @@ Never hand-edit `parser.c` / `node-types.json` / `grammar.json` — regenerate.
 - Unclosed module (the normal state of a buffer being typed): the fallback lets a
   module without `END MODULE` own everything to EOF; the tree path rebuilds the
   header from the ERROR region (`damagedModuleInfo()`). Keep the two paths in agreement.
-- Rename (`prepareRename`/`rename`) is server-side wiring over `referencesAt()` —
-  the same ranges find-references shows are the ranges the edit rewrites, in both
-  modes; that agreement is asserted literally (`RENAME_EXPECTED` in
-  `test/e2e.test.ts`), so a change to either path must re-verify both runs. Its
-  refusals are load-bearing: `SHARED` names and routines are refused while a
-  workspace root exists (a half-rename breaks siblings), and `Main()` always.
+- Rename (`prepareRename`/`rename`) is server-side wiring over `referencesAt()`
+  for the requesting file — the same ranges find-references shows are the
+  ranges the edit rewrites, in both modes; that agreement is asserted literally
+  (`RENAME_EXPECTED`, `WS_RENAME_EXPECTED` in `test/e2e.test.ts`), so a change
+  to either path must re-verify both runs. `SHARED` variables and routines
+  additionally sweep EVERY visible file via `workspaceOccurrences()` (live
+  buffers + disk files re-read at request time — never the stale snapshot),
+  identically in both modes because the cross-file half is `occurrences()`.
+  Refusals that remain are load-bearing: the new name colliding with a
+  sibling's SHARED/routine declaration, a workspace the bounded scan skipped
+  or could not read (never half-rename), and `Main()` always. Cross-file edits
+  say so (`window/showMessage` + a 3.16 `changeAnnotations` cast — the pinned
+  protocol typings predate it); the multi-file `wsShape()` labels and the
+  recorded messages pin that honesty.
 - Every diagnostic is switchable via `initializationOptions` /
   `didChangeConfiguration`; a new check needs a unit test + an e2e assertion over a
   real stdio session + a settings-toggle case (`test/e2e.test.ts`).

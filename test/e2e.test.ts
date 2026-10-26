@@ -62,6 +62,11 @@ class LspClient {
   private notifications: Array<{ method: string; params: any }> = [];
   /** Requests the SERVER sent to us (id + method), in arrival order. */
   readonly serverRequests: string[] = [];
+  private readonly serverRequestBodies: Array<{ method: string; params: any }> = [];
+  /** Params of the server→client requests sent for `method` (in order). */
+  serverRequestCalls(method: string): any[] {
+    return this.serverRequestBodies.filter((c) => c.method === method).map((c) => c.params);
+  }
   /** Set once the child process is gone, so a test can prove it did not die. */
   exited: { code: number | null; signal: string | null } | null = null;
   private waiters: Array<{
@@ -125,6 +130,7 @@ class LspClient {
     if (msg.id !== undefined && msg.method) {
       // A server→client request: answer like a real client would.
       this.serverRequests.push(msg.method);
+      this.serverRequestBodies.push({ method: msg.method, params: msg.params });
       if (this.onServerRequest === 'method-not-found') {
         this.write({
           jsonrpc: '2.0',
@@ -1972,17 +1978,443 @@ test('grammar mode answers the same renames at the same positions (N-1a)', async
   assert.deepEqual(await renameSession(), RENAME_EXPECTED);
 });
 
+// ── N-1b + G-4: workspace-wide rename (task 16) ────────────────────────────
+
 /**
- * The safety rule, over a session that HAS a sibling to break: a SHARED
- * variable is visible to every flow and a routine is callable from other
- * files, so rewriting only this file would leave the sibling broken — worse
- * than an unsupported rename. The refusal must answer at PREPARE too, so the
- * client grey the user out at F2 instead of after they typed a new name.
- * A local variable still renames: the refusal is about the name's reach,
- * not about rename being switched off.
+ * One three-file ACE application: `flowA.esql` DECLAREs both SHARED variables
+ * and is renamed FROM; `flowB.esql` is OPEN in the editor and its buffer
+ * deliberately LACKS a line that is still on its disk (proving the live text
+ * wins over the index snapshot); `flowC.esql` exists only on disk; `lib.esql`
+ * (also open) holds the routine every flow CALLs. Positions are load-bearing:
+ * the expectations below are recorded from a real session.
  */
-test('with a workspace root, SHARED names and routines refuse the half-rename (N-1a)', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-n1-e2e-'));
+const WS_A = [
+  'BROKER SCHEMA com.test.wide;',                    // 0
+  'CREATE COMPUTE MODULE FlowA',                     // 1
+  'DECLARE Counter SHARED INTEGER 0;',               // 2  decl, cursor 10
+  'DECLARE "shared name" SHARED CHARACTER;',         // 3  quoted decl, inner 9-20
+  'CREATE FUNCTION Main() RETURNS BOOLEAN',          // 4
+  'BEGIN',                                           // 5
+  '  SET Counter = Counter + 1;',                    // 6
+  '  SET "shared name" = \'a\';',                     // 7
+  '  CALL Helper(2);',                               // 8
+  '  RETURN TRUE;',                                  // 9
+  'END;',                                            // 10
+  'END MODULE;',                                     // 11
+  '',                                                // 12
+  'CREATE FUNCTION Local() RETURNS INTEGER',         // 13
+  'BEGIN DECLARE loc INTEGER; SET loc = 1; RETURN loc; END;', // 14
+  '',
+].join('\n');
+const WS_B_DISK = [
+  'CREATE FUNCTION CallerB() RETURNS BOOLEAN',       // 0
+  'BEGIN',                                           // 1
+  '  SET Counter = Counter + 10;',                   // 2
+  '  SET Counter = Counter + 20;',                   // 3  ONLY on disk — the buffer deleted it
+  '  SET "shared name" = \'b\';',                     // 4
+  '  CALL Helper(1);',                               // 5
+  '  RETURN TRUE;',                                  // 6
+  'END;',                                            // 7
+  '',
+].join('\n');
+const WS_B_OPEN = [
+  'CREATE FUNCTION CallerB() RETURNS BOOLEAN',       // 0
+  'BEGIN',                                           // 1
+  '  SET Counter = Counter + 10;',                   // 2
+  '  SET "shared name" = \'b\';',                     // 3
+  '  CALL Helper(1);',                               // 4
+  '  RETURN TRUE;',                                  // 5
+  'END;',                                            // 6
+  '',
+].join('\n');
+const WS_C = [
+  'CREATE FUNCTION CallerC() RETURNS BOOLEAN',       // 0
+  'BEGIN',                                           // 1
+  '  SET Counter = 3;',                              // 2
+  '  SET "shared name" = \'c\';',                     // 3
+  '  CALL Helper(3);',                               // 4
+  '  RETURN TRUE;',                                  // 5
+  'END;',                                            // 6
+  '',
+].join('\n');
+const WS_LIB = [
+  'CREATE FUNCTION Helper(p INTEGER) RETURNS INTEGER', // 0  routine name 16-22
+  'BEGIN RETURN p; END;',                              // 1
+  '',
+].join('\n');
+
+const baseName = (uri: string): string => uri.split('/').pop() as string;
+
+/**
+ * A workspace rename/ref answer, labelled by file whenever several files are
+ * touched (the multi-file split is exactly where the cross-file wiring lives,
+ * and which file an edit lands in is the assertion). documentChanges answers
+ * keep their versions: the per-file version is part of the honesty.
+ */
+function wsShape(r: any): string | string[] | Record<string, any> {
+  if (r.error) return 'ERR ' + r.error.message;
+  const res = r.result;
+  if (res?.documentChanges)
+    return {
+      kind: 'documentChanges',
+      edits: res.documentChanges.flatMap((dc: any) =>
+        dc.edits.map((e: any) =>
+          `${baseName(dc.textDocument.uri)} ${dc.textDocument.version} ${e.range.start.line}:${e.range.start.character}-${e.range.end.character}->${JSON.stringify(e.newText)}`
+        )
+      ),
+      annotations: Object.entries(res.changeAnnotations ?? {}).map(([id, a]: [string, any]) =>
+        `${id} needs=${a.needsConfirmation} ${JSON.stringify(a.label)}`
+      ),
+      ids: res.documentChanges.map((dc: any) => JSON.stringify(dc.annotationIds ?? [])),
+    };
+  if (res?.changes) {
+    const uris = Object.keys(res.changes);
+    const multi = uris.length > 1;
+    return uris.flatMap((u) =>
+      res.changes[u].map(
+        (e: any) =>
+          (multi ? baseName(u) + ' ' : '') +
+          `${e.range.start.line}:${e.range.start.character}-${e.range.end.character}->${JSON.stringify(e.newText)}`
+      )
+    );
+  }
+  if (res?.range)
+    return `prep ${res.range.start.line}:${res.range.start.character}-${res.range.end.character} ${JSON.stringify(res.placeholder)}`;
+  return 'null';
+}
+
+/** The whole rename conversation over the four-file workspace (open order is
+ * load-bearing: it fixes the file order inside multi-file answers). */
+async function wsRenameSession(env?: Record<string, string>, caps: any = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-n1b-'));
+  const fileA = path.join(dir, 'flowA.esql');
+  const fileB = path.join(dir, 'flowB.esql');
+  const fileC = path.join(dir, 'flowC.esql');
+  const fileL = path.join(dir, 'lib.esql');
+  const uriA = pathToFileURL(fileA).href;
+  const uriB = pathToFileURL(fileB).href;
+  const uriL = pathToFileURL(fileL).href;
+  const client = new LspClient(env ? { env } : {});
+  try {
+    fs.writeFileSync(fileA, WS_A);
+    fs.writeFileSync(fileB, WS_B_DISK);
+    fs.writeFileSync(fileC, WS_C);
+    fs.writeFileSync(fileL, WS_LIB);
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: pathToFileURL(dir).href,
+      workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'n1b' }],
+      capabilities: caps,
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri: uriA, languageId: 'esql', version: 1, text: WS_A },
+    });
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri: uriB, languageId: 'esql', version: 3, text: WS_B_OPEN },
+    });
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri: uriL, languageId: 'esql', version: 7, text: WS_LIB },
+    });
+    await client.waitFor('textDocument/publishDiagnostics', (p: any) => p.uri === uriB, 15000);
+    const ren = (uri: string, line: number, ch: number, newName: string) =>
+      client.request('textDocument/rename', {
+        textDocument: { uri },
+        position: { line, character: ch },
+        newName,
+      });
+    const prep = (uri: string, line: number, ch: number) =>
+      client.request('textDocument/prepareRename', {
+        textDocument: { uri },
+        position: { line, character: ch },
+      });
+    const refs = async (uri: string, line: number, ch: number) => {
+      const r = await client.request('textDocument/references', {
+        textDocument: { uri },
+        position: { line, character: ch },
+        context: { includeDeclaration: true },
+      });
+      return ((r.result ?? []) as any[]).map(
+        (l) => `${baseName(l.uri)} ${l.range.start.line}:${l.range.start.character}`
+      );
+    };
+    return {
+      // Task 15 refused these with a root; N-1b renames them across the workspace.
+      prepareShared: wsShape(await prep(uriA, 2, 10)),
+      sharedRename: wsShape(await ren(uriA, 2, 10, 'Total')),
+      quotedSharedRename: wsShape(await ren(uriA, 3, 13, 'renamed one')),
+      routineRename: wsShape(await ren(uriL, 0, 18, 'ComputeTwo')),
+      mainRename: wsShape(await ren(uriA, 4, 17, 'Start')),
+      localRename: wsShape(await ren(uriA, 14, 15, 'memo')),
+      // G-4's references half: from the DECLARING file, the sibling uses are
+      // listed too (the old engine only visited files that declared the name).
+      refsFromDecl: await refs(uriA, 2, 10),
+      refsRoutineFromDecl: await refs(uriL, 0, 18),
+      scopeNotes: client.serverRequestCalls('window/showMessageRequest').map((p) => p.message),
+    };
+  } finally {
+    await client.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Recorded from a real session; identical in both modes BY CONSTRUCTION —
+ * the cross-file half is the pattern occurrence finder — so both runs assert
+ * the same literal, and the fallback run carries no skip guard. */
+const WS_RENAME_EXPECTED = {
+  prepareShared: 'prep 2:8-15 "Counter"',
+  sharedRename: [
+    'flowA.esql 2:8-15->"Total"',
+    'flowA.esql 6:6-13->"Total"',
+    'flowA.esql 6:16-23->"Total"',
+    'flowB.esql 2:6-13->"Total"',
+    'flowB.esql 2:16-23->"Total"',
+    'flowC.esql 2:6-13->"Total"',
+  ],
+  quotedSharedRename: [
+    'flowA.esql 3:9-20->"renamed one"',
+    'flowA.esql 7:7-18->"renamed one"',
+    'flowB.esql 3:7-18->"renamed one"',
+    'flowC.esql 3:7-18->"renamed one"',
+  ],
+  routineRename: [
+    'lib.esql 0:16-22->"ComputeTwo"',
+    'flowA.esql 8:7-13->"ComputeTwo"',
+    'flowB.esql 4:7-13->"ComputeTwo"',
+    'flowC.esql 4:7-13->"ComputeTwo"',
+  ],
+  mainRename:
+    'ERR esql-lsp: cannot rename \'Main\' — ACE calls that routine by name in every compute module; renaming it makes the module unexecutable',
+  localRename: ['14:14-17->"memo"', '14:31-34->"memo"', '14:47-50->"memo"'],
+  refsFromDecl: [
+    'flowA.esql 2:8',
+    'flowA.esql 6:6',
+    'flowA.esql 6:16',
+    'flowB.esql 2:6',
+    'flowB.esql 2:16',
+    'flowC.esql 2:6',
+  ],
+  refsRoutineFromDecl: ['lib.esql 0:16', 'flowA.esql 8:7', 'flowB.esql 4:7', 'flowC.esql 4:7'],
+  scopeNotes: [
+    'esql-lsp: renamed \'Counter\' in 3 workspace files. ACE keeps SHARED variables visible application-wide — files outside this workspace may still use \'Counter\'.',
+    'esql-lsp: renamed \'shared name\' in 3 workspace files. ACE keeps SHARED variables visible application-wide — files outside this workspace may still use \'shared name\'.',
+    'esql-lsp: renamed \'Helper\' in 4 workspace files. The application may have files outside this workspace that still call \'Helper\'.',
+  ],
+};
+
+test('the fallback renames SHARED names and routines across the workspace (N-1b/G-4)', async () => {
+  // No skip guard: the cross-file scan is pattern-based, due in the mode a
+  // machine without a C toolchain lives in.
+  assert.deepEqual(await wsRenameSession({ ESQL_LSP_NO_GRAMMAR: '1' }), WS_RENAME_EXPECTED);
+});
+
+test('grammar mode renames the same files at the same positions (N-1b/G-4)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  assert.deepEqual(await wsRenameSession(), WS_RENAME_EXPECTED);
+});
+
+/**
+ * The stale-snapshot guard with its own session: a disk-only file is rewritten
+ * OUT OF BAND after the index settled (proved by the scan-dependent
+ * unknown-routine diagnostic clearing on the marker buffer), and the rename
+ * must edit the file's CURRENT text — ranges computed against the snapshot
+ * would rewrite the wrong lines.
+ */
+test('a disk file changed after the scan is renamed from its fresh text (N-1b)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-n1b-stale-'));
+  const fileA = path.join(dir, 'flowA.esql');
+  const fileM = path.join(dir, 'marker.esql');
+  const fileC = path.join(dir, 'flowC.esql');
+  const fileL = path.join(dir, 'lib.esql');
+  const uriA = pathToFileURL(fileA).href;
+  const uriM = pathToFileURL(fileM).href;
+  const client = new LspClient();
+  try {
+    fs.writeFileSync(fileA, WS_A);
+    fs.writeFileSync(
+      fileM,
+      ['CREATE FUNCTION Marker() RETURNS BOOLEAN', 'BEGIN', '  CALL LibR();', '  RETURN TRUE;', 'END;', ''].join('\n')
+    );
+    fs.writeFileSync(
+      fileL,
+      ['CREATE FUNCTION LibR() RETURNS BOOLEAN', 'BEGIN RETURN TRUE; END;', ''].join('\n')
+    );
+    // v1: no Counter at all. The rename below must not trust this snapshot.
+    fs.writeFileSync(
+      fileC,
+      ['CREATE FUNCTION CallerC() RETURNS BOOLEAN', 'BEGIN', '  SET other = 1;', '  RETURN TRUE;', 'END;', ''].join('\n')
+    );
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: pathToFileURL(dir).href,
+      workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'stale' }],
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    const markerText = [
+      'CREATE FUNCTION Marker() RETURNS BOOLEAN',
+      'BEGIN',
+      '  CALL LibR();',
+      '  RETURN TRUE;',
+      'END;',
+      '',
+    ].join('\n');
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri: uriM, languageId: 'esql', version: 1, text: markerText },
+    });
+    // Scan-settled marker: CALL LibR() stops being an unknown routine —
+    // LibR lives only in a DISK file, so this can only flip when the scan ran.
+    await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p: any) =>
+        p.uri === uriM && p.diagnostics.every((d: any) => d.code !== 'unknown-routine'),
+      15000
+    );
+    // Now the out-of-band change, after the snapshot exists.
+    const v2 = [
+      'CREATE FUNCTION CallerC() RETURNS BOOLEAN',
+      'BEGIN',
+      '  SET Counter = 3;',
+      '  SET Counter = Counter + 77;',
+      '  RETURN TRUE;',
+      'END;',
+      '',
+    ].join('\n');
+    fs.writeFileSync(fileC, v2);
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri: uriA, languageId: 'esql', version: 1, text: WS_A },
+    });
+    const r = await client.request('textDocument/rename', {
+      textDocument: { uri: uriA },
+      position: { line: 2, character: 10 },
+      newName: 'Total',
+    });
+    assert.deepEqual(wsShape(r), [
+      'flowA.esql 2:8-15->"Total"',
+      'flowA.esql 6:6-13->"Total"',
+      'flowA.esql 6:16-23->"Total"',
+      // The fresh-read lines. A rename computed against the snapshot would
+      // carry NO flowC entries at all (v1 had no Counter); one computed
+      // against v1 blindly would rewrite the wrong text.
+      'flowC.esql 2:6-13->"Total"',
+      'flowC.esql 3:6-13->"Total"',
+      'flowC.esql 3:16-23->"Total"',
+    ]);
+  } finally {
+    await client.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The bounds rule: the index SKIPPED a file (here, over its size cap), so a
+ * use of the name may hide in it — the workspace-wide rename REFUSES rather
+ * than half-do the job, at prepare as well. A file-local rename in the same
+ * session is untouched by the bounds: it never needed the scan.
+ */
+test('a workspace the scan skipped refuses the cross-file rename, prepare too (N-1b)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-n1b-bounds-'));
+  const fileA = path.join(dir, 'flowA.esql');
+  const uriA = pathToFileURL(fileA).href;
+  const client = new LspClient();
+  try {
+    fs.writeFileSync(fileA, WS_A);
+    fs.writeFileSync(path.join(dir, 'Big.esql'), '-- ' + 'x'.repeat(300 * 1024) + '\n'); // over the 256 KB cap
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: pathToFileURL(dir).href,
+      workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'bounds' }],
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri: uriA, languageId: 'esql', version: 1, text: WS_A },
+    });
+    const boundErr =
+      "ERR esql-lsp: cannot rename 'Counter' across the workspace — the bounded index scan " +
+      'skipped 1 file(s) (beyond its 500-file / 256 KB limits), so a use of this name may ' +
+      'live in a file rename cannot see. Rename inside those files yourself, or point the ' +
+      'workspace at a smaller folder.';
+    const ren = await client.request('textDocument/rename', {
+      textDocument: { uri: uriA },
+      position: { line: 2, character: 10 },
+      newName: 'Total',
+    });
+    assert.equal(wsShape(ren), boundErr);
+    const prep = await client.request('textDocument/prepareRename', {
+      textDocument: { uri: uriA },
+      position: { line: 2, character: 10 },
+    });
+    assert.equal(wsShape(prep), boundErr, 'prepare refuses too: the UI blocks before the user types');
+    assert.deepEqual(
+      wsShape(
+        await client.request('textDocument/rename', {
+          textDocument: { uri: uriA },
+          position: { line: 14, character: 15 },
+          newName: 'memo',
+        })
+      ),
+      ['14:14-17->"memo"', '14:31-34->"memo"', '14:47-50->"memo"'],
+      'the file-local half of rename is still fully available'
+    );
+    assert.deepEqual(
+      client.serverRequestCalls('window/showMessageRequest'),
+      [],
+      'the refused rename sent no scope message'
+    );
+  } finally {
+    await client.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A client that declared `documentChanges` gets the cross-file edit as
+ * per-file TextDocumentEdits — with the live buffer's version, null for a
+ * file the editor does not hold — each carrying the application-scope change
+ * annotation (LSP 3.16) so the approximation surfaces in the client preview.
+ * Without the declaration the same rename ships the `changes` map instead
+ * (covered by wsRenameSession), and the scope note then travels solely in
+ * the window/showMessage every client shows.
+ */
+test('a documentChanges client gets per-file edits with the scope annotation (N-1b)', async () => {
+  const shape = await wsRenameSession(undefined, {
+    workspace: { workspaceEdit: { documentChanges: true } },
+  });
+  assert.deepEqual((shape as any).sharedRename, {
+    kind: 'documentChanges',
+    edits: [
+      'flowA.esql 1 2:8-15->"Total"',
+      'flowA.esql 1 6:6-13->"Total"',
+      'flowA.esql 1 6:16-23->"Total"',
+      'flowB.esql 3 2:6-13->"Total"',
+      'flowB.esql 3 2:16-23->"Total"',
+      // version null: the editor holds no version of the disk-only file.
+      'flowC.esql null 2:6-13->"Total"',
+    ],
+    annotations: [
+      'esql-application-scope needs=false "esql-lsp: renamed \'Counter\' in 3 workspace files. ACE keeps SHARED variables visible application-wide — files outside this workspace may still use \'Counter\'."',
+    ],
+    ids: ['["esql-application-scope"]', '["esql-application-scope"]', '["esql-application-scope"]'],
+  });
+  // Routine + quoted renames annotate identically; the local one does not.
+  assert.equal((shape as any).localRename.length, 3, 'local rename stays a plain changes map');
+  assert.equal((shape as any).scopeNotes.length, 3, 'one scope note per cross-file rename');
+});
+
+/**
+ * The task-15 safety rule, superseded: with a workspace root, SHARED names
+ * and routines are no longer refused — the sibling that uses them is renamed
+ * TOO. What survives: `Main()` (the name belongs to the platform), the
+ * file-local rename exactly as recorded for task 15, and the workspace half
+ * of the collision rule (a SHARED rename may not create an application-level
+ * clash against a SIBLING's declaration the file-local check could not see).
+ */
+test('with a workspace root, the rename rewrites the sibling that uses the name (N-1b)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-n1b-rooted-'));
   const mainPath = path.join(dir, 'Main.esql');
   const mainUri = pathToFileURL(mainPath).href;
   const client = new LspClient();
@@ -1990,12 +2422,18 @@ test('with a workspace root, SHARED names and routines refuse the half-rename (N
     fs.writeFileSync(
       path.join(dir, 'Sibling.esql'),
       [
-        'CREATE FUNCTION Caller() RETURNS BOOLEAN',
-        'BEGIN',
-        '  SET sharedTotal = 1;',
-        '  CALL Helper(2);',
-        '  RETURN TRUE;',
-        'END;',
+        'CREATE FUNCTION Caller() RETURNS BOOLEAN', //                   0
+        'BEGIN',                                                      // 1
+        '  SET sharedTotal = 1;',                                     // 2  use of the SHARED name
+        '  CALL Helper(2);',                                          // 3  use of the routine
+        '  RETURN TRUE;',                                             // 4
+        'END;',                                                       // 5
+        '',                                                           // 6
+        'CREATE FUNCTION Other() RETURNS BOOLEAN',                    // 7
+        'BEGIN',                                                      // 8
+        '  DECLARE Counter SHARED INTEGER;',                          // 9  a SHARED name to collide with
+        '  RETURN TRUE;',                                             // 10
+        'END;',                                                       // 11
         '',
       ].join('\n')
     );
@@ -2003,7 +2441,7 @@ test('with a workspace root, SHARED names and routines refuse the half-rename (N
     await client.request('initialize', {
       processId: process.pid,
       rootUri: pathToFileURL(dir).href,
-      workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'n1' }],
+      workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'n1b' }],
       capabilities: {},
       initializationOptions: {},
     });
@@ -2011,41 +2449,54 @@ test('with a workspace root, SHARED names and routines refuse the half-rename (N
     client.notify('textDocument/didOpen', {
       textDocument: { uri: mainUri, languageId: 'esql', version: 1, text: RENAME_SRC },
     });
-    const prep = (line: number, character: number) =>
-      client.request('textDocument/prepareRename', { textDocument: { uri: mainUri }, position: { line, character } });
     const ren = (line: number, character: number, newName: string) =>
       client.request('textDocument/rename', {
         textDocument: { uri: mainUri },
         position: { line, character },
         newName,
       });
+    const prep = (line: number, character: number) =>
+      client.request('textDocument/prepareRename', {
+        textDocument: { uri: mainUri },
+        position: { line, character },
+      });
 
-    const sharedErr = 'ERR ' + (await ren(8, 12, 'sharedBackup')).error.message;
-    assert.match(sharedErr, /cannot rename 'sharedTotal' here — it is declared SHARED/);
-    assert.match(sharedErr, /cross-file rename arrives with the workspace pass/);
-    assert.equal(
-      renameShape(await prep(8, 12)),
-      sharedErr,
-      'prepareRename refuses too: the UI blocks before the user types'
+    assert.equal(wsShape(await prep(8, 12)), 'prep 8:10-21 "sharedTotal"', 'prepare now offers the SHARED name');
+    assert.deepEqual(wsShape(await ren(8, 12, 'sharedBackup')), [
+      'Main.esql 8:10-21->"sharedBackup"',
+      'Main.esql 12:6-17->"sharedBackup"',
+      'Main.esql 12:20-31->"sharedBackup"',
+      'Sibling.esql 2:6-17->"sharedBackup"',
+    ]);
+    assert.deepEqual(wsShape(await ren(17, 18, 'Help2')), [
+      'Main.esql 17:16-22->"Help2"',
+      'Sibling.esql 3:7-13->"Help2"',
+    ]);
+    assert.match(
+      wsShape(await ren(8, 12, 'Counter')) as string,
+      /ERR .*cannot rename to 'Counter' — file:\/\/.*Sibling\.esql already declares a SHARED variable with that name/,
+      'the workspace collision check protects the sibling SHARED name'
     );
-
-    const routineErr = 'ERR ' + (await ren(17, 18, 'Help2')).error.message;
-    assert.match(routineErr, /cannot rename 'Helper' here — a routine can be called from other files/);
-    assert.equal(renameShape(await prep(17, 18)), routineErr, 'and at F2 as well');
-
-    const mainErr = renameShape(await ren(2, 17, 'Start'));
+    const mainErr = wsShape(await ren(2, 17, 'Start'));
     assert.ok(
       typeof mainErr === 'string' && /ERR .*cannot rename 'Main' — ACE calls that routine by name/.test(mainErr),
-      `Main is refused with or without a root — the name comes from the platform (got ${JSON.stringify(mainErr)})`
+      `Main is still refused — the name comes from the platform (got ${JSON.stringify(mainErr)})`
     );
-
     assert.deepEqual(
-      renameShape(await ren(4, 12, 'sum')),
+      wsShape(await ren(4, 12, 'sum')),
       RENAME_EXPECTED.renameSum,
-      'a file-local rename still works in the same rooted session'
+      'a file-local rename in the same session keeps the task-15 shape (plain changes map)'
+    );
+    const notes = client.serverRequestCalls('window/showMessageRequest').map((p) => p.message);
+    assert.equal(notes.length, 2, 'one scope note per cross-file rename (the collision never renamed)');
+    assert.ok(
+      notes[0].includes("renamed 'sharedTotal' in 2 workspace files") &&
+        notes[0].includes('application-wide'),
+      `the SHARED note is honest about application scope (got ${JSON.stringify(notes[0])})`
     );
   } finally {
     await client.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+

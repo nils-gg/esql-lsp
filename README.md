@@ -19,8 +19,8 @@ and **OpenCode**.
 > [`tree-sitter-esql/`](tree-sitter-esql/) is integrated into the server —
 > grammar-backed syntax errors, exact declared-variable analysis, semantic
 > tokens, a parse-tree outline, go-to-definition, find-references and
-> same-file rename — with automatic fallback to heuristics when the native
-> grammar cannot load (see [Roadmap](#roadmap)).
+> workspace-wide rename — with automatic fallback to heuristics when the
+> native grammar cannot load (see [Roadmap](#roadmap)).
 
 ## Demo
 
@@ -146,32 +146,46 @@ nothing rather than to a guess. Available in both modes; the grammar-backed path
 keeps working while the file is still broken — a module whose `END MODULE` is
 still being typed still owns its routines and declarations.
 
-### Rename (same file)
+### Rename
 
 `prepareRename` + `rename` over the same `referencesAt` engine find-references
 uses, so what you saw under *references* is exactly what changes — quoted
 names included (`DECLARE "my var"` rewrites to `"other name"`, quotes kept).
 Renames a body/module variable, a routine parameter (ESQL calls are
 positional, so a parameter can never break a caller) or a routine, and fixes
-casing for free (`total` → `Total` rewrites every occurrence). Refusals come
-with a reason, and `prepareRename` answers them too, so a good client blocks
-at `F2` instead of after you type:
+casing for free (`total` → `Total` rewrites every occurrence).
+
+`SHARED` variables and routines reach other files, so with a workspace root
+their rename goes **workspace-wide**: every file the index can see is scanned
+at request time — open buffers from their live text, disk files re-read fresh
+(a file changed outside the editor since the scan is still renamed
+correctly) — and `CALL`s in sibling files follow the routine. A `SHARED`
+rename that touched other files says so out loud: `window/showMessage` states
+that ACE keeps `SHARED` scope *application*-wide and files outside the
+workspace may still use the old name, and clients that accept
+`documentChanges` get the same note as a change annotation in their edit
+preview. Without a root this file is the entire visible world, so the
+file-local rename is complete and allowed.
+
+Refusals come with a reason, and `prepareRename` answers them too, so a good
+client blocks at `F2` instead of after you type:
 
 - **not a renameable symbol here** (`Main()`, module names, `BROKER SCHEMA`,
   namespace aliases, path elements, comments, undeclared names) — silent
   `null`, the UI greys out;
-- **a name that reaches other files** (`DECLARE … SHARED`, or any routine)
-  while a workspace root exists — refusing beats rewriting one file and
-  leaving siblings broken; cross-file rename arrives with the workspace pass.
-  Without a root nothing else can reference these names, so the file-local
-  rename is complete and allowed;
 - **a bad new name** — not an identifier, an ESQL *reserved* keyword (the 12
   that "you cannot use for variable names"; non-reserved ones are only
   discouraged, so they stay allowed), a name the file already answers to
-  (ESQL is case-insensitive), or a `"` inside a quoted name.
+  (ESQL is case-insensitive), a `"` inside a quoted name, or — for a
+  workspace-wide rename — a `SHARED`/routine name a **sibling** already
+  declares (that would create the application-level clash);
+- **a workspace the rename cannot see completely** — the bounded scan skipped
+  a file (size/count limits) or a file became unreadable: a partial rename
+  would leave uses behind, so the refusal names the bound instead.
 
-Identical answers in both modes (asserted over a real stdio session, in
-grammar and in `ESQL_LSP_NO_GRAMMAR=1` mode).
+Identical answers in both modes (asserted over real stdio sessions, in
+grammar and in `ESQL_LSP_NO_GRAMMAR=1` mode — the cross-file half is
+pattern-based by construction).
 
 ### Workspace (cross-file)
 
@@ -180,7 +194,7 @@ ACE applications split across `.esql` files that share state through
 workspace root (`workspaceFolders`/`rootUri`), the server scans the tree for
 `.esql` files once after startup — bounded: ≤ 500 files, ≤ 256 KB each, junk
 directories skipped — and every open buffer's live text overrides its on-disk
-snapshot. Three things follow:
+snapshot. Four things follow:
 
 - the **undeclared-variable check** honours `DECLARE x SHARED …` from sibling
   files, so `FailureCount` declared in `Receiver.esql` is no longer reported
@@ -191,13 +205,19 @@ snapshot. Three things follow:
 - **cross-file navigation**: go-to-definition from a `CALL` target or a
   sibling-declared `SHARED` variable jumps into the declaring file, hover
   there shows the signature synthesized from the index, and find-references
-  sweeps every file that shares the name (a name the current file itself
-  declares stays file-local — the local shadow).
+  sweeps every visible file for the name — including files that merely USE
+  it. A routine name the current file itself declares while a sibling also
+  declares it stays file-local (the local shadow: ten `Main()`s are ten
+  routines);
+- **cross-file rename** for `SHARED` variables and routines, rewriting every
+  visible use — see [Rename](#rename).
 
 Two deliberate approximations: "workspace-wide" stands in for ACE's
-*application-wide* `SHARED` scope (an LSP has no application boundary), and
+*application-wide* `SHARED` scope (an LSP has no application boundary — a
+workspace-wide rename therefore *states* that limit instead of hiding it), and
 there is no file watcher — files changed outside the editor are picked up on
-the next server start. The scan uses the same extractors as heuristic mode,
+the next server start (rename still re-reads disk files at request time, so
+its cross-file edits never target stale text). The scan uses the same extractors as heuristic mode,
 so all of this works with or without the grammar addon. Without a root,
 `workspace/symbol` still answers from the open buffers.
 
@@ -376,12 +396,12 @@ feeds published diagnostics back to the agent as feedback while it edits.
   toolchain at `npm install` time) or was skipped (`--ignore-scripts`).
   Neovim: `:lua vim.lsp.log.set_level('info')`, then `:LspLog`.
 - **Rename refuses and shows a sentence instead of an input box.** That is
-  the answer, not a failure: either the name reaches other files (a `SHARED`
-  variable, a routine — the workspace root means siblings may use it, and
-  same-file rename would break them; cross-file rename arrives with the
-  workspace pass), or it is `Main()`/a module name/a schema, which name
-  things outside the file. Ordinary variables in the same file always
-  rename, with or without a root.
+  the answer, not a failure: the new name collides with one the file (or,
+  for `SHARED`/routine renames, a sibling) already answers to, or the
+  workspace rename cannot be done completely (the bounded scan skipped a
+  file), or it is `Main()` — ACE calls that routine by name. `SHARED` names
+  and routines themselves rename workspace-wide whenever a root exists;
+  ordinary variables always rename, with or without a root.
 - **A file with Windows (`\r\n`) or old-Mac (`\r`) line endings.** Fine in both
   modes: the server splits lines the way an LSP client does — `\r\n`, `\r` or
   `\n`, terminator excluded — so symbols, hover, diagnostics and semantic tokens
@@ -478,10 +498,9 @@ CONTRIBUTING.md        # dev setup, ground rules, PR guide
    `workspace/symbol`, SHARED-aware undeclared check, cross-file
    go-to-definition / find-references / hover, and SHARED-aware completion
    (`CALL` targets and `SHARED` variables offered with their declaring
-   file). Rename is the next consumer: same-file rename already ships (it
-   reuses the find-references engine and refuses `SHARED` names and routines
-   whenever a root makes siblings possible), cross-file rename is the part
-   that needs the index.
+   file), cross-file find-references across every visible file, and
+   workspace-wide rename of `SHARED` variables and routines (with the
+   application-scope approximation surfaced in the message, not hidden).
 - Longer term: optional integration with the ACE ESQL compiler for
   authoritative validation.
 

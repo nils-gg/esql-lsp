@@ -525,27 +525,67 @@ implement second, and record the decision either way in `VERIFICATION.md`
 
 ### 16. N-1b + G-4 — workspace-wide rename, third files included  `[L]` → closes N-1, G-4 (needs 4, 6, 15)
 
-- [ ] Generalize task 6's cross-file reference engine into
+- [x] Generalize task 6's cross-file reference engine into
       `workspaceReferences(name, kind)`: located facts (task-4 SHARED decls +
       routines) + per-file text scan (disk snapshot via index + live open
       documents; open text always wins) → `Location[]` across files.
-- [ ] `rename` now unions: current file (ranges from `referencesAt`), other
+- [x] `rename` now unions: current file (ranges from `referencesAt`), other
       open documents (ranges from the live text), disk files (re-read text,
       re-scan with the same occurrence finder at request time — stale-snapshot
       guard: if a disk file changed on disk since indexing, re-scan fresh).
-- [ ] SHARED semantics honesty: the change includes an annotation
+- [x] SHARED semantics honesty: the change includes an annotation
       (`WorkspaceEdit.changeAnnotation` or a `message` in the UI flow) that
       ACE SHARED scope is *application*-wide and this renamed everything the
       *workspace* could see (the documented approximation, surfaced where the
       user can act on it).
-- [ ] Bounds: respect the index caps (500 files / size limits); refuse with a
+- [x] Bounds: respect the index caps (500 files / size limits); refuse with a
       clear error when the workspace was skipped/truncated rather than a
       silent partial rename.
-- [ ] e2e: three-file fixture — rename a SHARED variable in file A, assert
+- [x] e2e: three-file fixture — rename a SHARED variable in file A, assert
       edits land in A (decl), B (uses), C (uses); routine rename rewrites a
       cross-file `CALL`; quoted-name SHARED rename; both modes.
-- [ ] README: rename documented as a feature; roadmap line flipped from
+- [x] README: rename documented as a feature; roadmap line flipped from
       "planned".
+
+  *Landed as:* the engine is `workspaceOccurrences(name, allowStale)` — it
+  scans EVERY visible file (open buffers live, disk files re-read at request
+  time, ENOENT-since-scan skipped), not just the files whose located facts
+  declare the name, which makes G-4's third-file uses work for references too
+  (`crossFileReferences` is now async, and a name THIS file declares SHARED —
+  or as its only routine — sweeps even with no sibling fact; the local-shadow
+  rule for routine names a sibling ALSO declares stays, `Main()` noise).
+  Rename keeps `referencesAt` as the requesting file's range engine and merges
+  the sweep's whole-file `occurrences` per file (quoted-aware, mode-identical:
+  the cross-file half is flat by construction). `allowStale` is the honesty
+  split: references tolerate what rename REFUSES — a scan that skipped files
+  or an unreadable disk file answers `ResponseError` at rename AND at prepare
+  (the refusal lives in `renameRefusal` so F2 blocks, and the scan bounds are
+  re-checked by the engine at edit-build time). Task 15's root-gated refusals
+  are GONE: SHARED/routines rename across files now; `Main()` and the silent
+  non-symbols stay refused; a NEW refusal: renaming to a SHARED/routine name a
+  SIBLING already declares (application-level clash, same-kind only, since
+  variables and routines resolve in different contexts). Honesty ships on two
+  vehicles: `window/showMessage` always (every client shows it, tests read it
+  as `window/showMessageRequest`), plus a 3.16 `changeAnnotations`
+  (`needsConfirmation: false`) on a `documentChanges`-shaped edit when the
+  client declared `workspaceEdit.documentChanges` — the pinned protocol
+  typings predate 3.16, so the cast is `as unknown as WorkspaceEdit` and the
+  e2e pins the shape (per-file versions: live buffers carry theirs, disk-only
+  files `null`). Handler awaits `whenSettled()` before trusting stats.
+  Tests: a four-file application (decl file, open buffer whose text LACKS a
+  line its disk still has — proves live-wins; disk-only file; open routine)
+  recorded once and asserted literally in BOTH modes (SHARED rename incl.
+  quoted name, CALL-rewriting routine rename, refused `Main()`, unlabeled
+  single-file local rename, refs-from-the-declaring-file listing all three
+  files, three scope messages); a stale-guard session that rewrites a
+  disk-only file AFTER the scan settled (marker: the scan-dependent
+  unknown-routine diagnostic clearing) and asserts the fresh-text edits; a
+  bounds session (300 KB file → skipped → refusal at rename AND prepare, local
+  rename untouched, no scope message sent); a rooted session that supersedes
+  task 15's refusal test (sibling uses + CALL rewritten, collision refusal vs
+  the sibling's SHARED name, `Main` still refused, `RENAME_EXPECTED.renameSum`
+  still the shape for file-local). README: Rename section rewritten, roadmap
+  Phase-3 line flipped, workspace section now "four things".
 
 ---
 

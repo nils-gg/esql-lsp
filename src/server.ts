@@ -81,6 +81,7 @@ import {
 } from './parser';
 import { linesOf, scan } from './scanner';
 import { WorkspaceIndex, extractFileFacts, WorkspaceSymbol, SharedVarFact } from './workspaceIndex';
+import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const DIAGNOSTICS_DEBOUNCE_MS = 300;
@@ -130,6 +131,9 @@ let clientWantsHierarchicalSymbols = false;
  * server ships de-placeholdered text that is valid ESQL as typed.
  */
 let clientWantsSnippets = false;
+/** Whether the client accepts `documentChanges` in a WorkspaceEdit (rename
+* needs it for per-edit change annotations; `changes` stays the fallback). */
+let clientSupportsDocumentChanges = false;
 
 /**
  * Pending validation timers, one per document. This MUST be keyed by URI: with
@@ -342,29 +346,102 @@ function sameRange(a: Range, b: Range): boolean {
 }
 
 /**
- * Cross-file references (CODE_REVIEW.md G-3). Two halves:
+ * Every whole-word occurrence of `name` in EVERY file the workspace can see —
+ * the engine behind cross-file references (G-3, widened by N-1b/G-4: files
+ * that merely USE the name belong to the answer, not only files that declare
+ * it) and behind cross-file rename. Visible = open buffers from live text
+ * (the live text always wins), plus indexed disk files RE-READ at request
+ * time — the snapshot can be stale, and edits computed against stale text
+ * rewrite the wrong ranges.
+ *
+ * `allowStale` splits what the two callers may assume: references tolerate a
+ * file they cannot read right now (snapshot fallback) and a scan that skipped
+ * files — an incomplete list is still an honest one; rename promises
+ * completeness, so both come back as a refusal it must not work around.
+ */
+async function workspaceOccurrences(
+  name: string,
+  allowStale: boolean
+): Promise<{ files: Map<string, Range[]>; refusal: ResponseError<void> | null }> {
+  const files = new Map<string, Range[]>();
+  // No root: the visible world is one file, and that file's features never
+  // ask (every caller gates on a SHARED/routine name, which needs the index).
+  if (!workspaceIndex.rootPath()) return { files, refusal: null };
+  await workspaceIndex.whenSettled();
+  const { skipped } = workspaceIndex.stats();
+  if (skipped > 0 && !allowStale) return { files, refusal: renameBoundRefusal(name, skipped) };
+  const add = (uri: string, text: string): void => {
+    const ranges = occurrences(text, name);
+    if (ranges.length) files.set(uri, ranges);
+  };
+  for (const doc of textDocuments.all()) add(doc.uri, doc.getText());
+  const openUris = new Set(textDocuments.keys());
+  for (const facts of workspaceIndex.factsFromDisk(openUris)) {
+    let text: string;
+    try {
+      text = fs.readFileSync(fileURLToPath(facts.uri), 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue; // deleted since the scan: nothing left to rename
+      if (allowStale) {
+        add(facts.uri, facts.text); // references tolerate one stale-read failure
+        continue;
+      }
+      return {
+        files: new Map(),
+        refusal: new ResponseError(
+          ErrorCodes.InvalidParams,
+          `esql-lsp: cannot rename '${name}' across the workspace — ${facts.uri} could not ` +
+            'be read at rename time, so a use of the name may live there unseen; a rename ' +
+            'that skips it would leave that file broken'
+        ),
+      };
+    }
+    add(facts.uri, text);
+  }
+  return { files, refusal: null };
+}
+
+/** The rename refusal for a workspace the bounded index could not fully read. */
+function renameBoundRefusal(name: string, skipped: number): ResponseError<void> {
+  return new ResponseError(
+    ErrorCodes.InvalidParams,
+    `esql-lsp: cannot rename '${name}' across the workspace — the bounded index scan ` +
+      `skipped ${skipped} file(s) (beyond its 500-file / 256 KB limits), so a use of this ` +
+      'name may live in a file rename cannot see. Rename inside those files yourself, or ' +
+      'point the workspace at a smaller folder.'
+  );
+}
+
+/**
+ * Cross-file references (CODE_REVIEW.md G-3, third files by N-1b/G-4). Two halves:
  *  - in-file: a SHARED name declared in a SIBLING has no local declaration,
  *    so `referencesAt` answered zero — the current file's own occurrences are
  *    then reported through the same whole-word finder the in-file path uses.
- *  - cross-file: every file that shares the name (declares it, by the located
- *    facts) is scanned — open buffers from live text, disk files from the
- *    snapshot text. Workspace ≈ application is the documented approximation
- *    (review N-2). A ROUTINE name that resolves inside the current file keeps
- *    its answer file-local (`Main` in ten files means ten different
- *    routines); SHARED names are application-wide by definition, so they
- *    always get the full sweep.
+ *  - cross-file: EVERY visible file is scanned (live buffers first, disk
+ *    files re-read fresh), not just the files whose located facts declare the
+ *    name — a third file that only USES the name belongs to the answer too
+ *    (workspace ≈ application is the documented approximation, review N-2).
+ * A ROUTINE name that resolves inside the current file while a SIBLING also
+ * declares it keeps its answer file-local (`Main` in ten files means ten
+ * different routines, and sweeping one would drown the other nine); a SHARED
+ * name is application-wide by definition and always gets the full sweep, as
+ * does a name only THIS file declares SHARED (or as its sole routine) — the
+ * G-4 half: the uses out in the application exist whether or not any sibling
+ * re-declares the name.
  */
-function crossFileReferences(
+async function crossFileReferences(
   word: string,
   fromUri: string,
   localRanges: Range[],
-  includeDeclaration: boolean
-): Location[] {
+  includeDeclaration: boolean,
+  hereSharedOrRoutine: boolean
+): Promise<Location[]> {
   const vars = lookupSharedVar(word).filter((v) => v.uri !== fromUri);
   const routines = lookupRoutine(word).filter((r) => r.uri !== fromUri);
-  if (vars.length === 0 && routines.length === 0) return [];
-  // A ROUTINE answered by the file itself stays file-local (local shadow,
-  // same rule as definition); a SHARED name always sweeps the workspace.
+  if (vars.length === 0 && routines.length === 0 && !hereSharedOrRoutine) return [];
+  // A ROUTINE answered by the file itself (while a sibling ALSO declares it)
+  // stays file-local (local shadow, same rule as definition); a SHARED name
+  // always sweeps the workspace.
   const localRoutineAnswer = routines.length > 0 && vars.length === 0 && localRanges.length > 0;
   if (localRoutineAnswer) return [];
 
@@ -379,23 +456,11 @@ function crossFileReferences(
     }
   };
 
-  // The current file's own occurrences — its half of G-3 when the name is
-  // declared in a sibling and referencesAt had nothing to resolve.
-  const here = textDocuments.get(fromUri);
-  if (here) add(fromUri, occurrences(here.getText(), word));
-
-  for (const doc of textDocuments.all()) {
-    if (doc.uri === fromUri) continue;
-    const sharedHere =
-      vars.some((v) => v.uri === doc.uri) || routines.some((r) => r.uri === doc.uri);
-    if (sharedHere) add(doc.uri, occurrences(doc.getText(), word));
-  }
-  const openUris = new Set(textDocuments.keys());
-  for (const facts of workspaceIndex.factsFromDisk(openUris)) {
-    const sharedHere =
-      vars.some((v) => v.uri === facts.uri) || routines.some((r) => r.uri === facts.uri);
-    if (sharedHere) add(facts.uri, occurrences(facts.text, word));
-  }
+  // Every visible file — including `fromUri`, whose live text is scanned by
+  // the engine exactly as the old code scanned it here (the engine answers
+  // from live text for open buffers, fresh disk reads for the rest).
+  const scan = await workspaceOccurrences(word, true);
+  for (const [uri, ranges] of scan.files) add(uri, ranges);
   if (includeDeclaration) {
     // The declaration NAME itself: inside scan-able text it is already among
     // the occurrences; this also catches names the word finder cannot spell
@@ -508,6 +573,8 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
     params.capabilities?.textDocument?.documentSymbol?.hierarchicalDocumentSymbolSupport === true;
   clientWantsSnippets =
     params.capabilities?.textDocument?.completion?.completionItem?.snippetSupport === true;
+  clientSupportsDocumentChanges =
+    params.capabilities?.workspace?.workspaceEdit?.documentChanges === true;
   // Workspace root for the I-13 index: `workspaceFolders` is the modern field,
   // `rootUri` the deprecated one — clients that send both agree, so whichever
   // arrives wins. Non-`file:` schemes (a VFS workspace) get no index; every
@@ -825,27 +892,39 @@ connection.onDefinition((params: DefinitionParams): Location[] | null => {
   return cross.length ? cross : null;
 });
 
-connection.onReferences((params: ReferenceParams): Location[] | null => {
+connection.onReferences(async (params: ReferenceParams): Promise<Location[] | null> => {
   const doc = documentFor(params);
   if (!doc) return null;
   const position = viewPosition(doc, params.position);
   if (!position) return null;
   const text = doc.getText();
   const includeDeclaration = params.context?.includeDeclaration !== false;
+  const analysis = parsedDocument(doc.uri, text).analysis ?? undefined;
   const ranges = referencesAt(
     text,
     position.line,
     position.character,
     includeDeclaration,
-    parsedDocument(doc.uri, text).analysis ?? undefined
+    analysis
   );
   const out = ranges.map((range) => Location.create(doc.uri, range));
   // G-3: merge the workspace half (no-op unless the name is SHARED or a
-  // routine that lives elsewhere, see crossFileReferences).
+  // routine, see crossFileReferences). `hereSharedOrRoutine` asks the rename
+  // resolver whether the word under the cursor is THIS file's SHARED variable
+  // or routine — the G-4 case where the declaring file holds the only located
+  // fact and sibling uses would otherwise go unlisted.
   const word = cursorWord(text, position.line, position.character);
   if (word) {
+    const here = renameTargetAt(text, position, analysis);
+    const hereSharedOrRoutine = !!here && (here.shared || here.kind === 'routine');
     const local = new Set(out.map((l) => `${l.range.start.line}:${l.range.start.character}`));
-    for (const loc of crossFileReferences(word, doc.uri, ranges, includeDeclaration)) {
+    for (const loc of await crossFileReferences(
+      word,
+      doc.uri,
+      ranges,
+      includeDeclaration,
+      hereSharedOrRoutine
+    )) {
       const key = `${loc.range.start.line}:${loc.range.start.character}`;
       if (loc.uri !== doc.uri || !local.has(key)) out.push(loc);
     }
@@ -970,101 +1049,170 @@ type PrepareRenameAnswer =
   | ResponseError<void>
   | null;
 
-connection.onPrepareRename((params: PrepareRenameParams): PrepareRenameAnswer => {
-  const doc = documentFor(params);
-  if (!doc) return null;
-  const position = viewPosition(doc, params.position);
-  if (!position) return null;
-  const text = doc.getText();
-  const target = renameTargetAt(text, position, parsedDocument(doc.uri, text).analysis ?? undefined);
-  if (!target) return null; // the cursor is not on a declared name — greyed out, no error dialog
-  const refusal = renameRefusal(target);
-  if (refusal) return refusal;
-  // Placeholder = the BARE name (quoted declarations record their name
-  // unquoted in both paths), so the client's input box prefills a name the
-  // validator will accept again.
-  return { range: target.range, placeholder: target.name };
-});
+connection.onPrepareRename(
+  async (params: PrepareRenameParams): Promise<PrepareRenameAnswer> => {
+    const doc = documentFor(params);
+    if (!doc) return null;
+    const position = viewPosition(doc, params.position);
+    if (!position) return null;
+    const text = doc.getText();
+    const target = renameTargetAt(text, position, parsedDocument(doc.uri, text).analysis ?? undefined);
+    if (!target) return null; // the cursor is not on a declared name — greyed out, no error dialog
+    const refusal = await renameRefusal(target);
+    if (refusal) return refusal;
+    // Placeholder = the BARE name (quoted declarations record their name
+    // unquoted in both paths), so the client's input box prefills a name the
+    // validator will accept again.
+    return { range: target.range, placeholder: target.name }
+  });
 
-connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null | ResponseError<void> => {
-  const doc = documentFor(params);
-  if (!doc) return null;
-  const position = viewPosition(doc, params.position);
-  if (!position) return null;
-  const text = doc.getText();
-  const analysis = parsedDocument(doc.uri, text).analysis ?? undefined;
-  const target = renameTargetAt(text, position, analysis);
-  if (!target) {
-    return new ResponseError(
-      ErrorCodes.InvalidParams,
-      'esql-lsp: nothing to rename here — the cursor is not on a declared variable, ' +
-        'parameter or routine name'
-    );
-  }
-  const refusal = renameRefusal(target);
-  if (refusal) return refusal;
+connection.onRenameRequest(
+  async (params: RenameParams): Promise<WorkspaceEdit | null | ResponseError<void>> => {
+    const doc = documentFor(params);
+    if (!doc) return null;
+    const position = viewPosition(doc, params.position);
+    if (!position) return null;
+    const text = doc.getText();
+    const analysis = parsedDocument(doc.uri, text).analysis ?? undefined;
+    const target = renameTargetAt(text, position, analysis);
+    if (!target) {
+      return new ResponseError(
+        ErrorCodes.InvalidParams,
+        'esql-lsp: nothing to rename here — the cursor is not on a declared variable, ' +
+          'parameter or routine name'
+      );
+    }
+    const refusal = await renameRefusal(target);
+    if (refusal) return refusal;
 
-  // New-name validation, against the SAME name universe the rename edits:
-  // declarations, routines, modules, schemas and namespace aliases of this
-  // file (ESQL is case-insensitive, so is the collision check).
-  const declarations = analysis ? analysis.declaredNames : declarationsFromSource(text);
-  const decl = declarations.find((d) => d.name.toUpperCase() === target.name.toUpperCase());
-  const quoted = decl ? declarationIsQuoted(text, decl.range) : false;
-  const bad = invalidNewName(params.newName, quoted);
-  if (bad) return new ResponseError(ErrorCodes.InvalidParams, `esql-lsp: cannot rename to '${params.newName}' — ${bad}`);
-  const takenHere = new Set<string>();
-  for (const d of declarations) takenHere.add(d.name.toUpperCase());
-  if (analysis) {
-    for (const r of analysis.routines) takenHere.add(r.name.toUpperCase());
-    for (const m of analysis.modules) takenHere.add(m.name.toUpperCase());
-    for (const s of analysis.schemas) takenHere.add(s.name.toUpperCase());
-    for (const a of analysis.namespaceAliases) takenHere.add(a.name.toUpperCase());
-  } else {
-    for (const r of routinesFromSource(text)) takenHere.add(r.name.toUpperCase());
-    for (const m of modulesFromSource(text)) takenHere.add(m.name.toUpperCase());
-    const schema = schemaFromSource(text);
-    if (schema) takenHere.add(schema.name.toUpperCase());
-  }
-  const upper = params.newName.toUpperCase();
-  // The target's own name is not a collision: `total` → `Total` is a case
-  // fix, and the edits below rewrite every occurrence to the new spelling.
-  // Anything else the file already answers to is — a rename that leaves two
-  // declarations ESQL reads as one name is worse than no rename.
-  if (upper !== target.name.toUpperCase() && takenHere.has(upper)) {
-    return new ResponseError(
-      ErrorCodes.InvalidParams,
-      `esql-lsp: cannot rename to '${params.newName}' — the file already has a name that reads the same (ESQL names are case-insensitive)`
-    );
-  }
+    // New-name validation, against the SAME name universe the rename edits:
+    // declarations, routines, modules, schemas and namespace aliases of this
+    // file (ESQL is case-insensitive, so is the collision check).
+    const declarations = analysis ? analysis.declaredNames : declarationsFromSource(text);
+    const decl = declarations.find((d) => d.name.toUpperCase() === target.name.toUpperCase());
+    const quoted = decl ? declarationIsQuoted(text, decl.range) : false;
+    const bad = invalidNewName(params.newName, quoted);
+    if (bad) return new ResponseError(ErrorCodes.InvalidParams, `esql-lsp: cannot rename to '${params.newName}' — ${bad}`);
+    const takenHere = new Set<string>();
+    for (const d of declarations) takenHere.add(d.name.toUpperCase());
+    if (analysis) {
+      for (const r of analysis.routines) takenHere.add(r.name.toUpperCase());
+      for (const m of analysis.modules) takenHere.add(m.name.toUpperCase());
+      for (const s of analysis.schemas) takenHere.add(s.name.toUpperCase());
+      for (const a of analysis.namespaceAliases) takenHere.add(a.name.toUpperCase());
+    } else {
+      for (const r of routinesFromSource(text)) takenHere.add(r.name.toUpperCase());
+      for (const m of modulesFromSource(text)) takenHere.add(m.name.toUpperCase());
+      const schema = schemaFromSource(text);
+      if (schema) takenHere.add(schema.name.toUpperCase());
+    }
+    const upper = params.newName.toUpperCase();
+    // The target's own name is not a collision: `total` → `Total` is a case
+    // fix, and the edits below rewrite every occurrence to the new spelling.
+    // Anything else the file already answers to is — a rename that leaves two
+    // declarations ESQL reads as one name is worse than no rename.
+    if (upper !== target.name.toUpperCase() && takenHere.has(upper)) {
+      return new ResponseError(
+        ErrorCodes.InvalidParams,
+        `esql-lsp: cannot rename to '${params.newName}' — the file already has a name that reads the same (ESQL names are case-insensitive)`
+      );
+    }
 
-  // referencesAt(includeDeclaration = true) is the range engine: same
-  // quoted-aware occurrence matching find-references uses, so what the
-  // user saw under "find references" is exactly what changes.
-  const ranges = referencesAt(text, position.line, position.character, true, analysis);
-  const changes = new Map<string, { range: Range; newText: string }[]>();
-  const seen = new Set<string>();
-  for (const r of ranges) {
-    const key = `${r.start.line}:${r.start.character}|${r.end.line}:${r.end.character}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const list = changes.get(doc.uri) ?? [];
-    list.push({ range: r, newText: params.newName });
-    changes.set(doc.uri, list);
-  }
-  if (!seen.size) return null;
-  return { changes: Object.fromEntries(changes) };
-});
+    // Names that reach past this file (SHARED variable, routine) are renamed
+    // across the whole workspace — `sweeping` is what `renameRefusal` already
+    // decided (a root exists; without one this file is the entire visible
+    // world, so the file-local edit is complete — task 15's rule, kept).
+    const sweeping =
+      workspaceIndex.rootPath() !== undefined && (target.shared || target.kind === 'routine');
+    if (sweeping && upper !== target.name.toUpperCase()) {
+      // The workspace half of the collision rule: SHARED `Counter` renamed to a
+      // name a SIBLING declares SHARED (or a routine name a sibling declares)
+      // creates the application-level clash ESQL can only resolve by shadowing
+      // or error. Same-kind only: variables and routines live in different
+      // resolution contexts, exactly like `CALL` vs `SET` in E-4.
+      const rivals =
+        target.kind === 'routine' ? lookupRoutine(params.newName) : lookupSharedVar(params.newName);
+      const rival = rivals.find((c) => c.uri !== doc.uri);
+      if (rival) {
+        return new ResponseError(
+          ErrorCodes.InvalidParams,
+          `esql-lsp: cannot rename to '${params.newName}' — ${rival.uri} already declares a ` +
+            `${target.kind === 'routine' ? 'routine' : 'SHARED variable'} with that name ` +
+            '(ESQL names are case-insensitive)'
+        );
+      }
+    }
+
+    // referencesAt(includeDeclaration = true) is the range engine: same
+    // quoted-aware occurrence matching find-references uses, so what the
+    // user saw under "find references" is exactly what changes.
+    const ranges = referencesAt(text, position.line, position.character, true, analysis);
+    const changes = new Map<string, { range: Range; newText: string }[]>();
+    const seen = new Set<string>();
+    for (const r of ranges) {
+      const key = `${r.start.line}:${r.start.character}|${r.end.line}:${r.end.character}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const list = changes.get(doc.uri) ?? [];
+      list.push({ range: r, newText: params.newName });
+      changes.set(doc.uri, list);
+    }
+    if (!seen.size) return null;
+
+    // N-1b + G-4: a name the workspace can see in OTHER files gets those
+    // rewritten too, with the same whole-word finder find-references used — so
+    // the cross-file edit list is the cross-file reference list, both modes
+    // (the scan is pattern-based by construction). This file keeps
+    // referencesAt's scope-aware ranges from above.
+    const crossFiles: string[] = [];
+    if (sweeping) {
+      const scan = await workspaceOccurrences(target.name, false);
+      if (scan.refusal) return scan.refusal;
+      for (const [uri, at] of scan.files) {
+        if (uri === doc.uri) continue; // this file's ranges are the referencesAt ones
+        changes.set(uri, at.map((r) => ({ range: r, newText: params.newName })));
+        crossFiles.push(uri);
+      }
+    }
+    if (!crossFiles.length) return { changes: Object.fromEntries(changes) };
+
+    // SHARED-scope honesty (task 16): ACE keeps SHARED variables visible
+    // application-wide and routines callable from anywhere in the application;
+    // the workspace is the DOCUMENTED approximation of "the application", and
+    // the approximation gets surfaced where the user can act on it — a
+    // window/showMessage every client shows, plus a 3.16 change annotation for
+    // clients that render one in their edit preview.
+    const scopeNote = target.shared
+      ? `esql-lsp: renamed '${target.name}' in ${crossFiles.length + 1} workspace files. ACE ` +
+        `keeps SHARED variables visible application-wide — files outside this workspace ` +
+        `may still use '${target.name}'.`
+      : `esql-lsp: renamed '${target.name}' in ${crossFiles.length + 1} workspace files. The ` +
+        `application may have files outside this workspace that still call '${target.name}'.`;
+    connection.window.showInformationMessage(scopeNote);
+    if (!clientSupportsDocumentChanges) return { changes: Object.fromEntries(changes) };
+    return {
+      documentChanges: [doc.uri, ...crossFiles].map((uri) => ({
+        textDocument: { uri, version: textDocuments.get(uri)?.version ?? null },
+        edits: (changes.get(uri) ?? []).map((e) => ({ range: e.range, newText: e.newText })),
+        annotationIds: [APPLICATION_SCOPE_ANNOTATION],
+      })),
+      changeAnnotations: {
+        [APPLICATION_SCOPE_ANNOTATION]: { label: scopeNote, needsConfirmation: false },
+      },
+      // LSP 3.16 fields: the pinned protocol typings predate changeAnnotations.
+    } as unknown as WorkspaceEdit
+  });
 
 /**
- * The half-renames this server refuses until the workspace pass (task 16).
- * A SHARED variable is visible to every flow of the application and a
- * routine is callable from sibling files — rewriting ONLY this file breaks
- * those siblings, and a broken sibling is worse than an unsupported
- * rename. The refusal needs the workspace root (the index is what knows
- * about siblings): without one, nothing else can reference these names,
- * so the file-local rename is complete and honest, and allowed.
+ * Which rename refusals answer at `prepareRename` too, so a well-behaved
+ * client blocks at F2 instead of after the user typed (N-1a). What is NOT
+ * here anymore (N-1b): SHARED variables and routines with a workspace root —
+ * those are now RENAMED workspace-wide (task 16), and the refusal only
+ * guards the renames the workspace cannot do completely. Excluded by absence
+ * from `renameTargetAt` instead: modules, schemas, namespace aliases,
+ * undeclared names, built-ins, path elements.
  */
-function renameRefusal(target: RenameTarget): ResponseError<void> | null {
+async function renameRefusal(target: RenameTarget): Promise<ResponseError<void> | null> {
   // `Main()` is not a user-chosen name: the ACE runtime calls exactly that
   // routine in every compute module (12.0.x: a module "must contain a
   // Main() function"). Renaming it is never what the user wants, in any
@@ -1076,23 +1224,22 @@ function renameRefusal(target: RenameTarget): ResponseError<void> | null {
         'compute module; renaming it makes the module unexecutable'
     );
   }
+  // Without a root this file is the whole visible world: even a SHARED
+  // rename is complete here (task 15's rule, kept). A file-scope variable
+  // never reaches a second file in either world.
   if (!workspaceIndex.rootPath()) return null;
-  if (target.kind === 'variable' && target.shared) {
-    return new ResponseError(
-      ErrorCodes.InvalidParams,
-      `esql-lsp: cannot rename '${target.name}' here — it is declared SHARED, so other ` +
-        'files may use it; cross-file rename arrives with the workspace pass'
-    );
-  }
-  if (target.kind === 'routine') {
-    return new ResponseError(
-      ErrorCodes.InvalidParams,
-      `esql-lsp: cannot rename '${target.name}' here — a routine can be called from ` +
-        'other files; cross-file rename arrives with the workspace pass'
-    );
-  }
+  if (target.kind === 'variable' && !target.shared) return null;
+  // SHARED / routine with a root: the edit goes workspace-wide, so the
+  // scan's bounds are the rename's bounds. A scan that SKIPPED files could
+  // hide a use — half a rename, which is exactly what the refusal exists for.
+  await workspaceIndex.whenSettled();
+  const { skipped } = workspaceIndex.stats();
+  if (skipped > 0) return renameBoundRefusal(target.name, skipped);
   return null;
 }
+
+/** The `changeAnnotations` id of the cross-file scope note (LSP 3.16). */
+const APPLICATION_SCOPE_ANNOTATION = 'esql-application-scope';
 
 connection.languages.semanticTokens.on((params) => {
   const doc = documentFor(params);
