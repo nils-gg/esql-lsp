@@ -16,7 +16,7 @@
  */
 
 import { Range } from 'vscode-languageserver';
-import { linesOf } from './scanner';
+import { linesOf, unquoteESQLName } from './scanner';
 
 /** Minimal structural view of a tree-sitter node (avoids pulling the
  *  runtime's types into the server's compile). */
@@ -277,6 +277,21 @@ function rangeOf(node: SyntaxNode): Range {
     node.startPosition.column,
     node.endPosition.row,
     node.endPosition.column
+  );
+}
+
+/**
+ * The quoted_identifier token WITHOUT its quotes, positions included — the
+ * range a cursor in the name agrees with, and what QUOTED_DECLARE_RE
+ * records on the pattern path (G-5 parity).
+ */
+function innerQuotedRange(node: SyntaxNode): Range {
+  const r = rangeOf(node);
+  return Range.create(
+    r.start.line,
+    r.start.character + 1,
+    r.end.line,
+    Math.max(r.start.character + 1, r.end.character - 1)
   );
 }
 
@@ -743,20 +758,31 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
         // `DECLARE a, b TYPE` declares every one of them. Handlers are a
         // separate node type (declare_handler_statement) and never land
         // here. The REFERENCE TO target is a field_reference child, not an
-        // identifier, so it is not mistaken for a declaration. Quoted names
-        // (`DECLARE "script-encoded-hostname" …`) are grammar-only: the
-        // pattern path indexes plain identifiers too, so both paths stay
-        // silent about them together.
+        // identifier, so it is not mistaken for a declaration.
+        // Quoted names (`DECLARE "script-encoded-hostname" …`) ARE indexed —
+        // here and in the pattern path (QUOTED_DECLARE_RE), not silently
+        // dropped (G-5; the comment here used to claim the inverse of what
+        // either path does). Name and range are recorded WITHOUT the quotes,
+        // the way QUOTED_DECLARE_RE records them (and how wordAtPosition
+        // reports the word under a cursor inside quotes), so cursor↔
+        // declaration ranges and both extraction paths agree. Doubled `""`
+        // inside the name is one escaped quote in both paths.
+        // The grammar emits quoted_identifier in other places too — the
+        // EXTERNAL NAME/ASSEMBLY/APPDOMAIN/… clauses (a CLR class name and
+        // friends: VALUES, not declarations) and field_reference (a USE).
+        // Deliberately nothing else in the walk indexes names: only the
+        // DECLARE name slots declare (audited for G-5).
         const typeNode = childOf(kids, 'datatype');
         if (typeNode) {
           const constant = kids.some((c) => c.type === 'kw_CONSTANT');
           const detail = (constant ? 'CONSTANT ' : '') + typeNode.text.toUpperCase();
           for (const child of kids) {
-            if (child.type === 'identifier') {
+            if (child.type === 'identifier' || child.type === 'quoted_identifier') {
+              const quoted = child.type === 'quoted_identifier';
               declaredNames.push({
-                name: child.text,
+                name: quoted ? unquoteESQLName(child.text) : child.text,
                 detail,
-                range: rangeOf(child),
+                range: quoted ? innerQuotedRange(child) : rangeOf(child),
                 kind: 'variable',
                 constant,
                 shared: kids.some((c) => c.type === 'kw_SHARED'),

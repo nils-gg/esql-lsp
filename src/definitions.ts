@@ -14,7 +14,7 @@
  */
 
 import { Range } from 'vscode-languageserver';
-import { scan, wordAt, findBeginToken, findEndToken } from './scanner';
+import { scan, wordAt, findBeginToken, findEndToken, unquoteESQLName } from './scanner';
 import type { DocAnalysis, DeclaredName, RoutineInfo } from './parser';
 
 /**
@@ -60,9 +60,12 @@ const DECLARE_RE =
  * — the form used for names bound to configured/script values. Matched against
  * the RAW line (the masked view blanks the name away), but only after the same
  * position is confirmed to be live code, so a comment cannot declare anything.
+ * A doubled `""` inside the name is one escaped quote (the scanner's own
+ * convention); the stored name is the unescaped one, same as the tree path
+ * (G-5 parity).
  */
 const QUOTED_DECLARE_RE =
-  /^\s*DECLARE\s+"([^"]+)"\s+(?:(SHARED|EXTERNAL|CONSTANT)\s+)*(?:([A-Za-z]+))?/i;
+  /^\s*DECLARE\s+"((?:[^"]|"")+)"\s+(?:(SHARED|EXTERNAL|CONSTANT)\s+)*(?:([A-Za-z]+))?/i;
 
 /** One `[IN|OUT|INOUT] name [CONSTANT] TYPE` inside a parameter list. */
 const PARAM_PART_RE =
@@ -407,10 +410,11 @@ export function declarationsFromSource(source: string): DeclaredName[] {
     // without the quotes, so it matches what the cursor lookup finds.
     const rawQuoted = QUOTED_DECLARE_RE.exec(rawLines[i] ?? '');
     if (rawQuoted && /\bDECLARE\b/i.test(line)) {
-      const name = rawQuoted[1];
+      const escaped = rawQuoted[1]; // still "" -escaped, as it sits in the file
+      const name = unquoteESQLName(escaped);
       const type = rawQuoted[3];
       const raw = rawLines[i] ?? '';
-      const col = raw.indexOf(`"${name}"`) + 1;
+      const col = raw.indexOf(`"${escaped}"`) + 1;
       out.push({
         name,
         detail: type ? type.toUpperCase() : 'declared',

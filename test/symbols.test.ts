@@ -43,19 +43,20 @@ const VALID_SAMPLE = [
   'CREATE COMPUTE MODULE OrderProcessing',                   // 2
   'DECLARE orderRef REFERENCE InputRoot.JSON.Data;',         // 3
   'DECLARE a, b, c INTEGER 1;',                              // 4
-  '',                                                        // 5
-  'CREATE PROCEDURE ValidateOrder(IN orderId INTEGER)',      // 6
-  'BEGIN',                                                   // 7
-  'DECLARE isValid BOOLEAN;',                                // 8
-  'SET isValid = TRUE;',                                     // 9
-  'END;',                                                    // 10
-  '',                                                        // 11
-  'CREATE FUNCTION Main() RETURNS BOOLEAN',                  // 12
-  'BEGIN',                                                   // 13
-  'SET orderRef = InputRoot.JSON.Data;',                     // 14
-  "PROPAGATE TO TERMINAL 'out';",                            // 15
-  'END;',                                                    // 16
-  'END MODULE;',                                             // 17
+  'DECLARE "quoted-integration-id" CHARACTER;',              // 5  (G-5/T-2)
+  '',                                                        // 6
+  'CREATE PROCEDURE ValidateOrder(IN orderId INTEGER)',      // 7
+  'BEGIN',                                                   // 8
+  'DECLARE isValid BOOLEAN;',                                // 9
+  'SET isValid = TRUE;',                                     // 10
+  'END;',                                                    // 11
+  '',                                                        // 12
+  'CREATE FUNCTION Main() RETURNS BOOLEAN',                  // 13
+  'BEGIN',                                                   // 14
+  'SET orderRef = InputRoot.JSON.Data;',                     // 15
+  "PROPAGATE TO TERMINAL 'out';",                            // 16
+  'END;',                                                    // 17
+  'END MODULE;',                                             // 18
   '',
 ].join('\n');
 
@@ -153,11 +154,27 @@ test('the parse tree nests routines and declarations inside the module', async (
     '  13:a [INTEGER]',
     '  13:b [INTEGER]',
     '  13:c [INTEGER]',
+    '  13:quoted-integration-id [CHARACTER]',
     '  12:ValidateOrder [PROCEDURE(IN orderId INTEGER)]',
     '    13:orderId [parameter INTEGER]',
     '    13:isValid [BOOLEAN]',
     '  12:Main [FUNCTION() RETURNS BOOLEAN]',
   ]);
+});
+
+/**
+ * T-2/G-5: the quoted name used to vanish from the grammar outline entirely —
+ * the tree walk indexed only plain identifiers. Asserted on BOTH paths, so
+ * neither can quietly drop it again.
+ */
+test('a quoted declaration appears in the outline in both modes', async () => {
+  assert.ok(
+    outline(documentSymbols(VALID_SAMPLE)).includes('  13:quoted-integration-id [CHARACTER]'),
+    'fallback indexes it'
+  );
+  const fromTree = await treeOutline(VALID_SAMPLE);
+  if (!fromTree) return; // heuristic-only environment: fallback half already asserted
+  assert.ok(fromTree.includes('  13:quoted-integration-id [CHARACTER]'), 'tree indexes it too');
 });
 
 test('a module-level DECLARE is visible to (and nested in) the module only', async () => {
@@ -169,7 +186,7 @@ test('a module-level DECLARE is visible to (and nested in) the module only', asy
   const doc = analyzeDocument(tree);
   const orderRef = doc.declaredNames.find((d) => d.name === 'orderRef')!;
   assert.equal(orderRef.scope.start.line, 2, 'visible from the module header');
-  assert.equal(orderRef.scope.end.line, 17, 'to END MODULE');
+  assert.equal(orderRef.scope.end.line, 18, 'to END MODULE');
 });
 
 test('an unclosed module still owns the routines below it', async () => {

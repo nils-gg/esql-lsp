@@ -153,6 +153,17 @@ export interface WordMatch {
 }
 
 /**
+ * The name inside a quoted ESQL identifier: outer quotes removed, doubled
+ * quotes collapsed to one (`"a""b"` → `a"b`) — the same escape convention
+ * the string scanner above applies to `''`/`""`. Used by both extraction
+ * paths so a quoted DECLARE produces the same name everywhere (G-5).
+ */
+export function unquoteESQLName(raw: string): string {
+  const inner = raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+  return inner.replace(/""/g, '"');
+}
+
+/**
  * The ESQL identifier under `character` in a (masked) line, or null. The
  * position just past the end of a word still counts, which is what LSP
  * clients report when the cursor sits at the end of a name.

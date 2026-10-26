@@ -291,10 +291,11 @@ test('the fallback reads parameters and RETURNS from the lines a header spans', 
 // ── Quoted declare names (ISSUES.md I-10) ────────────────────────────────────
 
 test('a quoted EXTERNAL declare declares the name, not the keyword', () => {
-  // The grammar rejects this form today (ISSUES.md I-3/H), so only the
-  // heuristic path is asserted — but it must not invent a symbol named
-  // `EXTERNAL`, which is what the old DECLARE pattern produced in four real
-  // files: a name that hovers, navigates and renames, yet is not in the file.
+  // The grammar accepts this form (quoted_identifier in the DECLARE name
+  // slot) and BOTH analyzer paths index it — but the pattern path must not
+  // invent a symbol named `EXTERNAL`, which is what the old DECLARE pattern
+  // produced in four real files: a name that hovers, navigates and renames,
+  // yet is not in the file. The grammar-mode twin is the next test (G-5/T-2).
   const src = [
     'DECLARE "script-encoded-hostname" EXTERNAL CHARACTER;', //            0
     '', //                                                                 1
@@ -331,6 +332,42 @@ test('a quoted EXTERNAL declare declares the name, not the keyword', () => {
   // trusted where the masked view agrees the DECLARE is live code.
   const commented = ['-- DECLARE "fake" EXTERNAL CHARACTER;', ''].join('\n');
   assert.deepEqual(declarationsFromSource(commented), []);
+});
+
+/**
+ * G-5/T-2 twin: the same quoted-name fixture must resolve identically when
+ * the real DocAnalysis is passed. (Both this fixture's quoted declare AND its
+ * quoted use-site live inside a string the mask blanks — the cursor lookup's
+ * quoted handling and the declaration range are what make the paths agree.)
+ */
+test('quoted names resolve the same in grammar mode (G-5/T-2)', async (t) => {
+  const src = [
+    'DECLARE "script-encoded-hostname" EXTERNAL CHARACTER;', //             0
+    '', //                                                                  1
+    'CREATE COMPUTE MODULE CorrelId', //                                    2
+    '\tCREATE FUNCTION Main() RETURNS BOOLEAN', //                          3
+    '\tBEGIN', //                                                           4
+    "\t\tSET OutputRoot.JSON.Data.host = \"script-encoded-hostname\";", //    5
+    '\t\tRETURN TRUE;', //                                                 6
+    '\tEND;', //                                                            7
+    'END MODULE;', //                                                       8
+    '',
+  ].join('\n');
+  const useLine = src.split('\n')[5];
+  const onDecl = (doc?: DocAnalysis) => definitionAt(src, 0, src.indexOf('script-encoded'), doc);
+  const onUse = (doc?: DocAnalysis) => referencesAt(src, 5, useLine.indexOf('script-encoded'), true, doc);
+  const want = ['0:9-0:32', '5:35-5:58'];
+
+  assert.deepEqual(format(onDecl(undefined)), ['0:9-0:32'], 'definition (heuristic)');
+  assert.deepEqual(format(onUse(undefined)), want, 'references (heuristic)');
+
+  if (!(await initGrammar())) {
+    t.skip('tree-sitter addon unavailable — no DocAnalysis to feed');
+    return;
+  }
+  const doc = analyzeDocument(parse(src)!, src); // THIS source — bothModes' cached tree() is for SRC
+  assert.deepEqual(format(onDecl(doc)), ['0:9-0:32'], 'definition (grammar)');
+  assert.deepEqual(format(onUse(doc)), want, 'references (grammar)');
 });
 
 /**

@@ -112,18 +112,23 @@ Independent of tasks 4–7; do it while the parser code is fresh. The grammar
 emits `quoted_identifier`; `analyzeDocument()` only indexes `identifier`
 children.
 
-- [ ] `src/parser.ts` declare-statement walk: also index
+- [x] `src/parser.ts` declare-statement walk: also index
       `child.type === 'quoted_identifier'` (name = text without the quotes,
       range = inner text, matching `wordAtPosition`'s quoted handling so
       cursor↔declaration ranges agree).
-- [ ] Fix the wrong comment at `src/parser.ts:747` — it states the inverse of
+- [x] Fix the wrong comment at `src/parser.ts:747` — it states the inverse of
       reality.
-- [ ] Check the same walk for other `quoted_identifier` sites (routine
+- [x] Check the same walk for other `quoted_identifier` sites (routine
       `EXTERNAL NAME`, `NAME 'alias'` clauses) — index or document.
-- [ ] T-2: give every quoted-name expectation in `test/definitions.test.ts` a
+- [x] T-2: give every quoted-name expectation in `test/definitions.test.ts` a
       grammar-mode twin (pass the real `DocAnalysis`, not `undefined`); add a
       quoted name to the fixture `test/symbols.test.ts` compares across modes —
       it must appear in the grammar outline (currently vanishes: measured).
+
+  *Also landed:* both paths now treat `""` inside a quoted name as one
+  escaped quote (`unquoteESQLName` in scanner.ts is the single convention;
+  `QUOTED_DECLARE_RE` widened to `(?:[^"]|"")+`), keeping the modes bit-equal
+  on escaped names too.
 
 ### 6. G-1 + G-2 + G-3 + G-4(partial) + T-3 — cross-file navigation  `[L]` → closes G-1, G-2, G-3, T-3 (needs 4)
 
