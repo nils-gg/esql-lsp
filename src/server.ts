@@ -48,6 +48,9 @@ import {
   WorkspaceEdit,
   Diagnostic,
   Range,
+  CodeAction,
+  CodeActionKind,
+  CodeActionParams,
   Position,
   ResponseError,
   ErrorCodes,
@@ -56,6 +59,7 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import { analyze } from './diagnostics';
+import { buildCodeActions } from './codeActions';
 import { buildCompletionItems, detectCompletionContext } from './completion';
 import { hoverAt } from './hover';
 import { documentSymbols, documentSymbolsFromTree } from './symbols';
@@ -476,6 +480,40 @@ async function crossFileReferences(
   );
 }
 
+/**
+ * Quick fixes (E-9): the client echoes the findings it has in
+ * `context.diagnostics`; the fixes themselves are recomputed from the
+ * CURRENT text (an echo can be stale; an edit anchored in old text rewrites
+ * the wrong characters), with the same workspace facts the publishing run
+ * used — so a `Did you mean` action always offers what the message names,
+ * in both modes. Fixes obey their check's toggle even for an echoed
+ * diagnostic whose check is off now. See src/codeActions.ts.
+ */
+connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
+  const doc = documentFor(params);
+  if (!doc) return [];
+  const text = doc.getText();
+  const { analysis } = parsedDocument(doc.uri, text);
+  try {
+    return buildCodeActions(
+      doc.uri,
+      text,
+      params.context?.diagnostics ?? [],
+      settings.diagnostics,
+      {
+        analysis: analysis ?? undefined,
+        workspaceSharedNames: sharedNamesFromWorkspace(),
+        workspaceRoutineNames: routineNamesFromWorkspace(),
+      }
+    );
+  } catch (err) {
+    // A broken fix must never take the request down — no actions beats an
+    // error popup on every keystroke the client re-asks about.
+    connection.console.error(`esql-lsp: code action failed: ${String(err)}`);
+    return [];
+  }
+});
+
 /** Compute and publish diagnostics for one document, right now. */
 function publishDiagnosticsFor(uri: string): void {
   const doc = textDocuments.get(uri);
@@ -608,6 +646,11 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       documentSymbolProvider: true,
       definitionProvider: true,
       referencesProvider: true,
+      // Quick fixes over the published diagnostics (E-9, task 17). Quickfix
+      // kind only: every action maps one published finding to its edit — no
+      // refactor-family source operations are implemented, and advertising
+      // kinds we never answer would light up client UI that stays empty.
+      codeActionProvider: { codeActionKinds: [CodeActionKind.QuickFix] },
       // Same-file rename (N-1a, task 15). `prepareProvider` lets the client
       // grey out the UI before typing a new name; the refusal rules (SHARED
       // names, routines) answer through it, so they fire at F2, not after

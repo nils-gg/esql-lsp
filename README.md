@@ -18,9 +18,9 @@ and **OpenCode**.
 > Phase 2 (landed): the **tree-sitter grammar** in
 > [`tree-sitter-esql/`](tree-sitter-esql/) is integrated into the server —
 > grammar-backed syntax errors, exact declared-variable analysis, semantic
-> tokens, a parse-tree outline, go-to-definition, find-references and
-> workspace-wide rename — with automatic fallback to heuristics when the
-> native grammar cannot load (see [Roadmap](#roadmap)).
+> tokens, a parse-tree outline, go-to-definition, find-references,
+> workspace-wide rename and quick fixes — with automatic fallback to
+> heuristics when the native grammar cannot load (see [Roadmap](#roadmap)).
 
 ## Demo
 
@@ -71,6 +71,9 @@ errors come from the parse tree (exact ranges, multi-line aware); intact
 statements inside a broken region are still analysed. Given a workspace root,
 the undeclared check also counts `DECLARE … SHARED` names from sibling files
 as declarations (see *Workspace* below); without one it stays file-local.
+
+Most findings come with a one-keystroke repair — see
+[Quick fixes](#quick-fixes) below.
 
 Every diagnostic also carries `source: "esql"`, a stable `code`, and a
 `codeDescription` link to the section below, so a client can group by owner,
@@ -186,6 +189,38 @@ client blocks at `F2` instead of after you type:
 Identical answers in both modes (asserted over real stdio sessions, in
 grammar and in `ESQL_LSP_NO_GRAMMAR=1` mode — the cross-file half is
 pattern-based by construction).
+
+### Quick fixes
+
+`codeActionProvider` (quickfix kind): every published diagnostic that has a
+mechanical repair offers it where the squiggle is — `Ctrl-.` in VS Code,
+`:CodeActionMenu`-style pickers in Neovim. The fixes:
+
+| Diagnostic | Fix |
+|---|---|
+| `deprecated-parser` | `XMLNS` → `XMLNSC` in place |
+| `deprecated-type` | `LOGICAL` → `BOOLEAN` in place |
+| `missing-end-module` | `END MODULE;` appended at EOF, indented like the module header |
+| `no-propagation` | `RETURN TRUE;` as Main's last body statement |
+| `output-root-properties` | `SET OutputRoot.Properties = InputRoot.Properties;` inserted at the routine head |
+| `undeclared-variable` / `undeclared-read` | `DECLARE <name> CHARACTER;` skeleton at the routine head — with a `DECLARE … <TYPE>` variant first when the flagged line itself says `CAST(… AS <TYPE>)` (the type is never invented); plus *use the declared name* replacements for the did-you-mean candidates, up to three, nearest first |
+| `unknown-routine` | *call this instead* replacements for the did-you-mean candidates, up to three |
+| `missing-semicolon`, and any `syntax-error` whose message names `';'` | `;` at the slot the message points at |
+
+What has no fix is also deliberate: `module-no-main` and `unclosed-main`
+describe a missing routine and a missing `END` no skeleton could honestly
+write, and other `syntax-error` messages carry no single-edit repair.
+
+The contract: fixes are recomputed from the document's **current** text, so
+a client echoing stale diagnostics never gets an edit anchored in old
+positions; each fix obeys the toggle of the check that owns it (check off,
+fix off — echo included); inserting fixes land where ESQL wants them
+(declarations before statements, at the routine head), not beside the
+flagged line; and every action points back at the diagnostic it clears.
+Both analysis modes answer the same actions at the same ranges — asserted
+literally over stdio in grammar and heuristic mode, with every transform
+unit-tested by *applying* it and re-running the checks: the finding must be
+gone.
 
 ### Workspace (cross-file)
 

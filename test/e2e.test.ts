@@ -2500,3 +2500,227 @@ test('with a workspace root, the rename rewrites the sibling that uses the name 
   }
 });
 
+
+// ── E-9: code actions over stdio (task 17) ─────────────────────────────────
+
+/**
+ * One file carrying one diagnostic for every fix family that works without a
+ * workspace: replace-a-word (parser + type), did-you-mean replacement plus
+ * DECLARE skeleton (read), DECLARE skeleton (write), semicolons are owned by
+ * the unit file (their over-stdio shape adds nothing the unit transform does
+ * not already pin). The numbers below are RECORDS of real sessions (flat and
+ * grammar answer them IDENTICALLY — asserted literally in both runs), not
+ * hand-typed wishes.
+ */
+const CA_SRC = [
+  'BROKER SCHEMA com.test;', //                          0
+  'CREATE COMPUTE MODULE FixFlow', //                    1
+  'DECLARE flag LOGICAL;', //                            2  deprecated-type
+  'CREATE FUNCTION Main() RETURNS BOOLEAN', //           3
+  'BEGIN', //                                            4  skeletons insert below
+  '  DECLARE Counter INTEGER;', //                       5
+  '  SET Counter = Countr + 1;', //                      6  undeclared-read
+  '  SET x = InputRoot.XMLNS.Name;', //                  7  undeclared-variable + deprecated-parser
+  '  RETURN TRUE;', //                                   8
+  'END;', //                                             9
+  'END MODULE;', //                                      10
+  '',
+].join('\n');
+
+/** The server's answer for one codeAction request, condensed the same way
+ * the rename tests condense WorkspaceEdits. */
+function caShape(r: any): Array<Record<string, any>> {
+  return (r.result ?? []).map((a: any) => ({
+    title: a.title,
+    kind: a.kind,
+    edits: (a.edit?.changes?.[CA_URI] ?? []).map(
+      (e: any) =>
+        `${e.range.start.line}:${e.range.start.character}-${e.range.end.character}->${JSON.stringify(e.newText)}`
+    ),
+    pointsAt: (a.diagnostics ?? []).map((d: any) => d.code),
+  }));
+}
+
+const CA_URI = 'file:///tmp/esql-e2e-t17/FixFlow.esql';
+
+/** One full quick-fix conversation: capability, published codes, per-code
+ * answers, a combined context, and the apply of the first read-fix followed
+ * by the re-publish it earns. */
+async function caSession(env?: Record<string, string>, options: any = {}) {
+  const client = new LspClient(env ? { env } : {});
+  try {
+    const init = await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+      initializationOptions: options,
+    });
+    const caCap = init.result.capabilities.codeActionProvider;
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri: CA_URI, languageId: 'esql', version: 1, text: CA_SRC },
+    });
+    const pub = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === CA_URI && p.diagnostics.length > 0,
+      15000
+    );
+    const byCode: Record<string, any[]> = {};
+    for (const d of pub.diagnostics) (byCode[d.code] ??= []).push(d);
+    const ask = (diags: any[]) =>
+      client.request('textDocument/codeAction', {
+        textDocument: { uri: CA_URI },
+        range: diags[0]?.range ?? { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+        context: { diagnostics: diags },
+      });
+    const codes = ['undeclared-read', 'deprecated-type', 'undeclared-variable', 'deprecated-parser'];
+    const perCode: Record<string, any> = {};
+    for (const code of codes) perCode[code] = caShape(await ask(byCode[code] ?? []));
+    const combined = caShape(
+      await ask(codes.map((c) => byCode[c]?.[0]).filter((d) => d !== undefined))
+    );
+    const out: any = {
+      caCap,
+      codes: pub.diagnostics.map((d: any) => d.code),
+      perCode,
+      combinedTitles: combined.map((a) => a.title),
+    };
+    // Apply the first undeclared-read fix for real: edits -> new text ->
+    // didChange -> the re-publish must show the finding it fixed is gone.
+    const readDiag = byCode['undeclared-read']?.[0];
+    if (readDiag) {
+      const first = (await ask([readDiag])).result[0];
+      let fixed = CA_SRC;
+      const offset = (pos: { line: number; character: number }) =>
+        fixed.split('\n').slice(0, pos.line).reduce((n, l) => n + l.length + 1, 0) + pos.character;
+      for (const e of first.edit.changes[CA_URI])
+        fixed = fixed.slice(0, offset(e.range.start)) + e.newText + fixed.slice(offset(e.range.end));
+      out.applied = fixed.split('\n')[6];
+      client.notify('textDocument/didChange', {
+        textDocument: { uri: CA_URI, version: 2 },
+        contentChanges: [{ text: fixed }],
+      });
+      const after = await client.waitFor(
+        'textDocument/publishDiagnostics',
+        (p) => p.uri === CA_URI && p.diagnostics.every((d: any) => d.code !== 'undeclared-read'),
+        15000
+      );
+      out.afterApplyCodes = after.diagnostics.map((d: any) => d.code);
+    }
+    return out;
+  } finally {
+    await client.close();
+  }
+}
+
+/** Recorded from a real session (probe17); the grammar run answers the same. */
+const CA_EXPECTED = {
+  caCap: { codeActionKinds: ['quickfix'] },
+  codes: ['undeclared-variable', 'undeclared-read', 'deprecated-parser', 'deprecated-type'],
+  perCode: {
+    'undeclared-read': [
+      {
+        title: "Use declared 'Counter'",
+        kind: 'quickfix',
+        edits: ['6:16-22->"Counter"'],
+        pointsAt: ['undeclared-read'],
+      },
+      {
+        title: "Declare 'Countr' as CHARACTER",
+        kind: 'quickfix',
+        edits: ['4:5-5->"\\n  DECLARE Countr CHARACTER;"'],
+        pointsAt: ['undeclared-read'],
+      },
+    ],
+    'deprecated-type': [
+      {
+        title: "Use 'BOOLEAN' instead of 'LOGICAL'",
+        kind: 'quickfix',
+        edits: ['2:13-20->"BOOLEAN"'],
+        pointsAt: ['deprecated-type'],
+      },
+    ],
+    'undeclared-variable': [
+      {
+        title: "Declare 'x' as CHARACTER",
+        kind: 'quickfix',
+        edits: ['4:5-5->"\\n  DECLARE x CHARACTER;"'],
+        pointsAt: ['undeclared-variable'],
+      },
+    ],
+    'deprecated-parser': [
+      {
+        title: "Use 'XMLNSC' instead of 'XMLNS'",
+        kind: 'quickfix',
+        edits: ['7:20-25->"XMLNSC"'],
+        pointsAt: ['deprecated-parser'],
+      },
+    ],
+  },
+  combinedTitles: [
+    "Use declared 'Counter'",
+    "Declare 'Countr' as CHARACTER",
+    "Use 'BOOLEAN' instead of 'LOGICAL'",
+    "Declare 'x' as CHARACTER",
+    "Use 'XMLNSC' instead of 'XMLNS'",
+  ],
+  applied: '  SET Counter = Counter + 1;',
+  afterApplyCodes: ['undeclared-variable', 'deprecated-parser', 'deprecated-type'],
+};
+
+test('the fallback answers the full quick-fix contract over stdio (E-9)', async () => {
+  // No skip guard: every fix in this fixture is the pattern path's answer.
+  assert.deepEqual(await caSession({ ESQL_LSP_NO_GRAMMAR: '1' }), CA_EXPECTED);
+});
+
+test('grammar mode answers identical quick fixes (E-9)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  assert.deepEqual(await caSession(), CA_EXPECTED);
+});
+
+/**
+ * The PLAN's toggle rule has TWO halves, both over stdio: a check that is
+ * off publishes nothing (so a normal client never sees the fix), and an
+ * echoed diagnostic of a switched-off check gets NO action — the fix obeys
+ * the setting, not the echo. Untouched checks keep their fixes in the very
+ * same session.
+ */
+test('switched-off checks hand out no fixes, even to an echo (E-9)', async () => {
+  const s = await caSession(undefined, {
+    diagnostics: { checkDeprecatedTypes: false, checkDeprecatedParsers: false },
+  });
+  assert.deepEqual(s.codes, ['undeclared-variable', 'undeclared-read'], 'the two checks went silent');
+  assert.deepEqual(s.perCode['deprecated-type'], []);
+  assert.deepEqual(s.perCode['deprecated-parser'], []);
+  assert.equal(s.perCode['undeclared-read'].length, 2, 'untouched checks keep both fixes');
+
+  // The echo half: hand the server back exactly what it used to publish.
+  const client = new LspClient();
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+      initializationOptions: { diagnostics: { checkDeprecatedTypes: false } },
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri: CA_URI, languageId: 'esql', version: 1, text: CA_SRC },
+    });
+    const echo = {
+      range: { start: { line: 2, character: 13 }, end: { line: 2, character: 20 } },
+      message: "Data type 'LOGICAL' is legacy ESQL and deprecated. Use 'BOOLEAN' in ACE 12.",
+      severity: 2,
+      code: 'deprecated-type',
+      source: 'esql',
+    };
+    const r = await client.request('textDocument/codeAction', {
+      textDocument: { uri: CA_URI },
+      range: echo.range,
+      context: { diagnostics: [echo] },
+    });
+    assert.deepEqual(caShape(r), [], 'the check is off, so its fix is off too — echo or not');
+  } finally {
+    await client.close();
+  }
+});

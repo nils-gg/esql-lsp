@@ -185,7 +185,7 @@ export function analyze(
     else checkDeclaredVariables(source, diagnostics, workspaceSharedNames);
   }
   if (settings.checkUndeclaredReads) {
-    if (doc) checkUndeclaredReadsFromTree(doc, lines, diagnostics, workspaceSharedNames);
+    if (doc) checkUndeclaredReadsFromTree(source, doc, lines, diagnostics, workspaceSharedNames);
     else checkUndeclaredReadsFlat(source, lines, rawLines, diagnostics, workspaceSharedNames);
   }
   if (settings.checkPropagation) {
@@ -349,21 +349,57 @@ function checkDeclaredVariablesFromTree(
  * "nowhere in scope", and it is the notion both paths can agree on
  * (the E-3/E-2b discipline: the fallback is a sold mode, not a degraded one).
  */
-function checkUndeclaredReadsFromTree(
-  doc: DocAnalysis,
+/**
+ * The UPPER → as-written name map the `undeclared-read` check answers from —
+ * membership test AND did-you-mean candidates in one construction, checks
+ * and quick fixes fed by ONE extractor (the E-6 discipline). The tree view
+ * additionally vouches for namespace aliases it can see; the flat view
+ * cannot tell one from a plain name and misses it — a missing candidate,
+ * never a fabricated one.
+ */
+function readDeclaredSpellings(
+  source: string,
   lines: string[],
-  out: Diagnostic[],
+  doc?: DocAnalysis,
   workspaceSharedNames?: ReadonlySet<string>
-): void {
+): Map<string, string> {
   const declared = new Map<string, string>(); // UPPER → as written (first wins)
   const put = (n: string): void => {
     const u = n.toUpperCase();
     if (!declared.has(u)) declared.set(u, n);
   };
-  for (const d of doc.declaredNames) put(d.name);
-  for (const d of doc.namespaceAliases) put(d.name);
+  if (doc) {
+    for (const d of doc.declaredNames) put(d.name);
+    for (const d of doc.namespaceAliases) put(d.name);
+  } else {
+    for (const d of declarationsFromSource(source)) put(d.name);
+  }
   for (const n of forBoundNames(lines)) put(n);
   if (workspaceSharedNames) for (const n of workspaceSharedNames) put(n);
+  return declared;
+}
+
+/**
+ * The `undeclared-read` did-you-mean candidate list, as written — the exact
+ * list the check suggests from, exported so the quick fix's replace-actions
+ * agree with the published message in both modes (E-9).
+ */
+export function readCandidateNames(
+  source: string,
+  doc?: DocAnalysis,
+  workspaceSharedNames?: ReadonlySet<string>
+): string[] {
+  return [...readDeclaredSpellings(source, scan(source).lines, doc, workspaceSharedNames).values()];
+}
+
+function checkUndeclaredReadsFromTree(
+  source: string,
+  doc: DocAnalysis,
+  lines: string[],
+  out: Diagnostic[],
+  workspaceSharedNames?: ReadonlySet<string>
+): void {
+  const declared = readDeclaredSpellings(source, lines, doc, workspaceSharedNames);
   const writtenAt = new Set(
     doc.setTargets.map((t) => `${t.name.toUpperCase()}@${t.range.start.line}:${t.range.start.character}`)
   );
@@ -420,14 +456,7 @@ function checkUndeclaredReadsFlat(
   out: Diagnostic[],
   workspaceSharedNames?: ReadonlySet<string>
 ): void {
-  const declared = new Map<string, string>();
-  const put = (n: string): void => {
-    const u = n.toUpperCase();
-    if (!declared.has(u)) declared.set(u, n);
-  };
-  for (const d of declarationsFromSource(source)) put(d.name);
-  for (const n of forBoundNames(lines)) put(n);
-  if (workspaceSharedNames) for (const n of workspaceSharedNames) put(n);
+  const declared = readDeclaredSpellings(source, lines, undefined, workspaceSharedNames);
 
   let round = 0;
   let curly = 0;
@@ -662,6 +691,27 @@ function checkDeprecatedTypes(lines: string[], out: Diagnostic[]): void {
 }
 
 /**
+ * The `unknown-routine` did-you-mean candidate list: routines first (didYouMean
+ * keeps candidate order on distance ties, and a sibling routine is what the
+ * reader usually meant), built-ins behind them, keywords never. Empty without
+ * a workspace routine set — exactly when the check itself is silent, so a
+ * quick fix can never offer a replacement the check would not have suggested
+ * (E-9; check and fix agree BY CONSTRUCTION, one extractor).
+ */
+export function routineCandidateNames(
+  source: string,
+  doc?: DocAnalysis,
+  workspaceRoutineNames?: ReadonlySet<string>
+): string[] {
+  if (!workspaceRoutineNames) return [];
+  const fileRoutines = (doc ? doc.routines : routinesFromSource(source)).map((r) => r.name);
+  return [
+    ...new Set<string>([...fileRoutines, ...workspaceRoutineNames]),
+    ...ESQL_FUNCTIONS.map((f) => f.name),
+  ];
+}
+
+/**
  * 8. Unknown routine (CODE_REVIEW.md E-4): a `CALL` target or expression call
  * that is neither declared in the file, nor in the workspace, nor a built-in
  * is a typo that otherwise only surfaces at deploy time.
@@ -693,13 +743,7 @@ function checkUnknownRoutines(
   const known = new Set<string>(BUILTIN_CALL_WORDS);
   for (const n of fileRoutines) known.add(n.toUpperCase());
   for (const n of workspaceRoutineNames) known.add(n.toUpperCase());
-  // Suggestion candidates: routines first (didYouMean keeps candidate order
-  // on distance ties, and a sibling routine is what the reader usually
-  // meant), built-ins behind them, keywords never.
-  const candidates = [
-    ...new Set<string>([...fileRoutines, ...workspaceRoutineNames]),
-    ...ESQL_FUNCTIONS.map((f) => f.name),
-  ];
+  const candidates = routineCandidateNames(source, doc, workspaceRoutineNames);
   const seen = new Set<string>();
   const flag = (name: string, range: Range): void => {
     const key = `${name.toUpperCase()}@${range.start.line}:${range.start.character}`;
@@ -803,7 +847,7 @@ function parenDelta(line: string): number {
  * the whole file when there is none) is one file-level scope. Every line lands
  * in exactly one scope.
  */
-function hintScopes(lines: string[]): Array<{ start: number; end: number }> {
+export function hintScopes(lines: string[]): Array<{ start: number; end: number }> {
   const headers: number[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (ROUTINE_RE.test(lines[i])) headers.push(i);

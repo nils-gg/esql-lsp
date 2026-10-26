@@ -593,9 +593,9 @@ implement second, and record the decision either way in `VERIFICATION.md`
 
 ### 17. E-9 — `codeActionProvider` + fix set  `[L]` → closes E-9 (needs phases 3–4 stable)
 
-- [ ] Advertise `codeActionProvider` (quickfix kind only); match published
+- [x] Advertise `codeActionProvider` (quickfix kind only); match published
       diagnostics by `code` — every code names its fix.
-- [ ] Fixes, in order of message-implies-edit clarity:
+- [x] Fixes, in order of message-implies-edit clarity:
       1. `deprecated-parser` → rewrite `XMLNS` → `XMLNSC` (range is exact);
       2. `missing-end-module` → insert `END MODULE;` at EOF (indent-matched);
       3. `no-propagation` → insert `RETURN TRUE;` in Main's `END;`;
@@ -608,9 +608,54 @@ implement second, and record the decision either way in `VERIFICATION.md`
          insert `;` at the anchor;
       7. `did-you-mean` variants → replace-with-suggestion, one action per
          candidate, max 3.
-- [ ] Each fix is a `WorkspaceEdit`; unit-test each transform, e2e asserts the
+- [x] Each fix is a `WorkspaceEdit`; unit-test each transform, e2e asserts the
       action list for a published diagnostic and applying one over stdio.
-- [ ] Settings: fixes obey the owning check's toggle.
+- [x] Settings: fixes obey the owning check's toggle.
+
+  *Landed as:* capability is `{ codeActionKinds: ['quickfix'] }` and the
+  engine is `buildCodeActions(uri, text, contextDiagnostics, settings, facts)`
+  in `src/codeActions.ts` — a PURE function of its inputs; fixes are
+  recomputed from the CURRENT text, so the echo contributes only `code`,
+  `range` and message (the semicolon family is recognized by the message
+  naming `';'`). Supersedes the survey's `data`-payload idea: recomputation
+  kills the staleness contract entirely and leaves `diagnostics.ts`
+  publishing byte-for-byte what it published before. Did-you-mean agreement
+  with the message holds BY CONSTRUCTION: the exported
+  `readCandidateNames`/`routineCandidateNames` share their name maps with the
+  checks (the read-map construction was extracted to `readDeclaredSpellings`
+  — one construction for membership + suggestion + fixes, the E-6 discipline).
+  Placement deviations recorded: the DECLARE skeleton and the Properties copy
+  go at the ROUTINE HEAD (first BEGIN of the enclosing `hintScopes` scope,
+  inline-after-BEGIN / before-END when the body shares those lines) because
+  ACE rejects declarations after statements — the survey's "above the flagged
+  line" survives only as the fallback when no clean routine head exists
+  (damaged or module-level code), and a DECLARE additionally refuses the
+  inline placements rather than sit illegally. `no-propagation` walks the
+  SAME BEGIN/END depth logic as `checkPropagateOrReturn` (the fix must
+  believe exactly what the warning believed) and indents `RETURN TRUE;` by
+  the body's first statement. Semicolon anchors: flat hint → `range.end`;
+  both grammar phrasings (`Missing syntax: expected ';' here.` zero-width
+  insertions, E-8 "not terminated" slot ranges) → `range.start`; a stale echo
+  whose anchor already holds `;` gets nothing. Deliberate ADDITION to the
+  fix list: `deprecated-type` LOGICAL→BOOLEAN — omitted by the PLAN list but
+  the identical message-implies-edit class as `deprecated-parser` ("Use
+  'BOOLEAN'"), and leaving it out would break "every code names its fix".
+  Deliberate NONES: `module-no-main`, `unclosed-main`, non-semicolon
+  `syntax-error`; foreign-source echoes ignored; no `isPreferred` (guessing
+  which fix a user wants is not ours). Actions carry `diagnostics: [d]` back
+  and live under the owning toggle — check off, fix off, echo included
+  (second session in the e2e hand-builds the echo).
+  Tests: 23 unit (`test/codeActions.test.ts` — every transform plus the
+  honest round trip: apply the TextEdits, re-run `analyze`, the code must be
+  gone; the 3-candidate cap and distance ordering; quoted-name skeleton
+  quoting; toggle/master-switch/foreign/fixless refusals; the grammar-only
+  cases skip via `skipWithoutGrammar`), 3 e2e (`CA_EXPECTED` recorded from a
+  real session and asserted LITERALLY in both modes — per-code action lists,
+  combined-context order, the first read-fix applied client-side, didChange'd
+  back, and the re-publish losing exactly the finding it fixed; plus the
+  toggle session proving no-publish + no-fix-on-echo). The e2e probe caught a
+  real LSP fact worth remembering: `PublishDiagnosticsParams` has NO
+  `version` field — settle markers must key on diagnostic content.
 
 ---
 

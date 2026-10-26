@@ -83,7 +83,7 @@ Never hand-edit `parser.c` / `node-types.json` / `grammar.json` — regenerate.
 ## Architecture pins
 
 - Protocol wiring lives only in `src/server.ts`; analysis in the feature modules
-  (`diagnostics.ts`, `completion.ts`, `hover.ts`, `symbols.ts`, `definitions.ts`);
+  (`diagnostics.ts`, `completion.ts`, `hover.ts`, `symbols.ts`, `definitions.ts`, `codeActions.ts`);
   ESQL reference data in `src/data/`. `parser.ts` is the only tree-sitter consumer
   and must degrade to the Phase 1 heuristics (`scanner.ts` + regex checks).
 - Every grammar-backed feature needs a heuristic fallback **and a test for it**.
@@ -111,6 +111,20 @@ Never hand-edit `parser.c` / `node-types.json` / `grammar.json` — regenerate.
   say so (`window/showMessage` + a 3.16 `changeAnnotations` cast — the pinned
   protocol typings predate it); the multi-file `wsShape()` labels and the
   recorded messages pin that honesty.
+- Quick fixes (`src/codeActions.ts`, E-9) are a pure function of (uri, text,
+  echoed diagnostics, settings, workspace facts): they NEVER trust the echo
+  beyond `code`/`range`/message and recompute everything — no `data` payload
+  on diagnostics, so there is no staleness contract to keep. The candidate
+  lists must agree with the published `Did you mean` messages BY CONSTRUCTION:
+  they come from the same exported builders (`readCandidateNames` /
+  `routineCandidateNames` in `diagnostics.ts`, which share their name maps
+  with the checks). Insertion placement uses the flat `hintScopes` + the
+  scanner's BEGIN/END tokens — identical in both modes; a `DECLARE` skeleton
+  goes at the ROUTINE HEAD (ACE legality), falling back to above-the-line
+  only when no clean routine head exists. Fixes obey the owning check's
+  toggle even for echoed diagnostics (`test/codeActions.test.ts` pins the
+  transform + apply-and-re-analyze round trip; `test/e2e.test.ts` the literal
+  both-modes answers and the toggle over stdio).
 - Every diagnostic is switchable via `initializationOptions` /
   `didChangeConfiguration`; a new check needs a unit test + an e2e assertion over a
   real stdio session + a settings-toggle case (`test/e2e.test.ts`).
