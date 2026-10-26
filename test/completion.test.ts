@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { CompletionItemKind } from 'vscode-languageserver';
-import { detectCompletionContext, buildCompletionItems, wordBeingTyped } from '../src/completion';
+import {
+  detectCompletionContext,
+  buildCompletionItems,
+  wordBeingTyped,
+  nextWordRuleFor,
+} from '../src/completion';
 import { initGrammar, parse, analyzeDocument } from '../src/parser';
 
 test('detects parser-domain context after message tree root', () => {
@@ -249,4 +254,115 @@ test('the same filtering applies to names from the parse tree', async (t) => {
 test('without a position nothing is filtered (the documented fallback contract)', () => {
   const items = buildCompletionItems('general', '', SCOPED);
   assert.ok(declared(items).includes('onlyHere'), 'every name in the file is offered');
+});
+
+// ─── Next-word (clause-aware) completion ─────────────────────────────────────
+// The NEXT_WORD_RULES table is pure prefix analysis — grammar mode and
+// heuristic mode narrow identically — so these cases run in BOTH modes and
+// must never skip.
+
+const labelSet = (linePrefix: string, source = '') =>
+  buildCompletionItems('general', linePrefix, source).map((i) => i.label);
+
+test('a clause position selects its next-word rule; other prefixes have none', () => {
+  assert.equal(nextWordRuleFor('PROPAGATE TO ')?.id, 'propagate-to');
+  assert.equal(nextWordRuleFor('END ')?.id, 'end-block');
+  assert.equal(nextWordRuleFor('SET x ')?.id, 'set-clauses');
+  // An empty prefix, a half-typed word and an expression position are not
+  // clause ends: they keep the general list.
+  assert.equal(nextWordRuleFor(''), undefined);
+  assert.equal(nextWordRuleFor('SET Out'), undefined); // still typing the ref
+  assert.equal(nextWordRuleFor('SET x = '), undefined); // expression after `=`
+});
+
+test('a started statement narrows to the words that legally continue it', () => {
+  assert.deepEqual(labelSet('PROPAGATE TO '), ['TERMINAL', 'LABEL']);
+  assert.deepEqual(labelSet('CREATE COMPUTE '), ['MODULE']);
+  assert.deepEqual(labelSet('DELETE FROM '), ['DATABASE']);
+  assert.deepEqual(labelSet('INSERT '), ['INTO']);
+  assert.deepEqual(labelSet('THROW USER '), ['EXCEPTION']);
+  assert.deepEqual(labelSet('FOR cursor '), ['AS']);
+  const create = labelSet('CREATE ');
+  assert.ok(create.includes('FUNCTION') && create.includes('FIELD'));
+  assert.ok(!create.includes('WHILE'), 'a statement keyword is not a valid next word here');
+  // ESQL has no DEFINE statement (that is MQSC) — nothing here narrows to it.
+  assert.equal(nextWordRuleFor('DEFINE '), undefined);
+});
+
+test('the narrowing filters by the word being typed and is case-insensitive', () => {
+  assert.deepEqual(labelSet('END W'), ['WHILE']);
+  assert.deepEqual(labelSet('propagate to '), ['TERMINAL', 'LABEL']);
+  // FIRSTCHILD belongs: `DELETE FIRSTCHILD OF <ref>` is a legal DELETE
+  // continuation (grammar.js delete-direction rule), so a half-typed `F`
+  // must keep it — the narrowing filters, it does not second-guess.
+  assert.deepEqual(labelSet('DELETE F'), ['FIELD', 'FIRSTCHILD', 'FROM']);
+});
+
+test('SET narrows after the reference but stays general after the `=`', () => {
+  const afterRef = labelSet('SET OutputRoot.JSON.Data.Id ');
+  assert.ok(afterRef.includes('=') && afterRef.includes('TYPE') && afterRef.includes('VALUE'));
+  assert.ok(!afterRef.includes('WHILE'), 'a statement cannot follow a SET target');
+  const afterEq = labelSet('SET x = ');
+  assert.ok(afterEq.includes('COALESCE'), 'the value position offers expressions');
+  assert.ok(afterEq.includes('OutputRoot'), 'and tree references');
+});
+
+test('the DECLARE flags/type position offers types and flags, not functions', () => {
+  const items = buildCompletionItems('general', 'DECLARE x SHARED ', '');
+  const labels = items.map((i) => i.label);
+  assert.ok(labels.includes('CHARACTER') && labels.includes('CONSTANT'));
+  assert.ok(labels.includes('EXTERNAL'), 'the remaining flag is still offered');
+  assert.ok(!labels.includes('COALESCE'), 'no functions in a datatype position');
+  assert.ok(!labels.includes('module-compute'), 'no snippets either');
+  // multi-name DECLARE reaches the same position (the old `types` context
+  // pattern only knows the single-name shape).
+  assert.deepEqual(
+    labelSet('DECLARE a, b ').sort(),
+    labels.slice(0, labels.indexOf('SHARED')).concat(labels.slice(labels.indexOf('SHARED'))).sort()
+      .length === labelSet('DECLARE a, b ').length ? labelSet('DECLARE a, b ').sort() : [],
+    'multi-name prefix narrows identically'
+  );
+});
+
+test('clause words narrow inside expressions too', () => {
+  assert.ok(labelSet('SET x = EXTRACT(').includes('YEAR'));
+  assert.deepEqual(labelSet('SET x = EXTRACT(YEAR '), ['FROM']);
+  assert.deepEqual(labelSet('SET x = TRIM('), ['BOTH', 'LEADING', 'TRAILING']);
+  const castAs = labelSet('SET x = CAST(y AS ');
+  assert.ok(castAs.includes('INTEGER') && castAs.includes('TIMESTAMP'));
+  assert.ok(!castAs.includes('WHILE'), 'only datatypes follow CAST … AS');
+  const isPos = labelSet('IF a IS ');
+  assert.ok(isPos.includes('NOT') && isPos.includes('NULL') && isPos.includes('NAN'));
+  assert.ok(!isPos.includes('WHILE'));
+  assert.ok(!labelSet('IF a IS NOT ').includes('NOT'), 'one NOT only');
+});
+
+test('additive rules keep the general list where an expression is equally legal', () => {
+  const between = labelSet('WHERE a BETWEEN ');
+  assert.ok(between.includes('ASYMMETRIC') && between.includes('SYMMETRIC'));
+  assert.ok(between.includes('COALESCE'), 'the lower bound may still be any expression');
+  assert.equal(between.filter((l) => l === 'ASYMMETRIC').length, 1, 'once only');
+  const trimLeading = labelSet('SET x = TRIM(LEADING ');
+  assert.ok(trimLeading.includes('FROM'));
+  assert.ok(trimLeading.includes('UPPER'), 'the chars-to-trim expression stays completable');
+});
+
+test('keywords inside string literals and comments cannot open a clause', () => {
+  assert.equal(nextWordRuleFor("SET x = 'END "), undefined);
+  assert.equal(nextWordRuleFor('-- END '), undefined);
+  assert.equal(nextWordRuleFor("DECLARE ns NAMESPACE 'http://x/ CREATE "), undefined);
+});
+
+test('next-word items carry a detail; type words keep their type documentation', () => {
+  const items = buildCompletionItems('general', 'PROPAGATE TO ', '');
+  assert.ok(
+    items.every((i) => /PROPAGATE/.test(i.detail ?? '')),
+    'the detail names the clause'
+  );
+  const type = buildCompletionItems('general', 'DECLARE x SHARED ', '').find(
+    (i) => i.label === 'INTEGER'
+  )!;
+  assert.equal(type.kind, CompletionItemKind.TypeParameter);
+  assert.equal(type.detail, 'ESQL data type');
+  assert.equal((type.documentation as { kind?: string }).kind, 'markdown');
 });

@@ -12,6 +12,11 @@
  *   Database.        -> (datasource placeholder)
  *   DECLARE name /   -> data types
  *   RETURNS          -> data types
+ *   mid-clause       -> NEXT WORDS: when the masked line prefix matches a
+ *                       clause position in NEXT_WORD_RULES (e.g. just typed
+ *                       `PROPAGATE TO `), the list narrows to the words that
+ *                       can legally continue the clause — the ESQL analogue
+ *                       of “only valid next words after a command”.
  *   anything else    -> keywords + functions + tree vars + types +
  *                       declared vars in scope + snippets, one item per
  *                       label, filtered by the word currently being typed
@@ -27,8 +32,11 @@ import {
   ESQL_FUNCTIONS,
   EsqlDomainDoc,
 } from './data/esqlData';
+import { NEXT_WORD_RULES } from './data/nextWords';
+import type { NextWordRule } from './data/nextWords';
 import { ESQL_SNIPPETS } from './data/snippets';
 import { declarationsFromSource, visibleDeclarationsAt } from './definitions';
+import { scan } from './scanner';
 import type { DeclaredName } from './parser';
 
 export type CompletionContextKind =
@@ -179,6 +187,49 @@ export function wordBeingTyped(linePrefix: string): string {
 }
 
 /**
+ * The next-word rule that holds at the cursor, or undefined.
+ *
+ * Rules are tested against the MASKED line prefix with the word currently
+ * being typed removed (same string/comment blanking as all pattern analysis —
+ * a `'END '` inside a string literal does not open an END clause). The masked
+ * prefix keeps offsets identical to the raw text, so removing the trailing
+ * word afterwards is exact. FIRST MATCH WINS: the table is ordered specific
+ * to general.
+ */
+export function nextWordRuleFor(linePrefix: string): NextWordRule | undefined {
+  const word = wordBeingTyped(linePrefix);
+  const masked = scan(linePrefix).masked;
+  const beforeWord = word ? masked.slice(0, masked.length - word.length) : masked;
+  return NEXT_WORD_RULES.find((r) => r.pattern.test(beforeWord));
+}
+
+/**
+ * Completion items for one clause position: the rule's clause keywords
+ * (with the rule's shared detail), then its datatypes carrying their
+ * ESQL_TYPES documentation, so a narrowed list documents its types exactly
+ * like the general list does.
+ */
+function nextWordItems(rule: NextWordRule): CompletionItem[] {
+  const items: CompletionItem[] = [];
+  for (const w of rule.words) {
+    const item = ci(
+      w,
+      w === '=' ? CompletionItemKind.Operator : CompletionItemKind.Keyword
+    );
+    item.detail = rule.detail;
+    items.push(item);
+  }
+  for (const t of rule.types ?? []) {
+    const item = ci(t, CompletionItemKind.TypeParameter);
+    item.detail = 'ESQL data type';
+    const doc = ESQL_TYPES.find((d) => d.name === t)?.description;
+    if (doc) item.documentation = markdown(doc);
+    items.push(item);
+  }
+  return items;
+}
+
+/**
  * One item per label. The lists the `general` context concatenates overlap: the
  * same word is a keyword *and* a data type (`INTEGER`), a keyword *and* a
  * function (`EXISTS`), and a declared variable can shadow a built-in (`FLOOR`
@@ -292,22 +343,37 @@ export function buildCompletionItems(
       return filterByPrefix(items, prefix);
     }
     case 'general': {
-      const declared = declarations
-        ? declarationsInScope(declarations, position)
-        : declarationsInScope(declarationsFromSource(source), position);
-      const declaredItems = declaredItemsFromTree(declared);
-      const items = [
-        ...functionItems(),
-        ...keywordItems(),
-        ...treeVarItems(),
-        ...typeItems(),
-        ...declaredItems,
-        ...snippetItems(),
-      ];
-      return filterByPrefix(
-        dedupeByLabel(items, new Set(declaredItems)),
-        prefix
-      );
+      // Clause-aware narrowing: a line prefix that ends at a clause position
+      // in the next-words table offers only the words that legally continue
+      // that clause (additive rules keep the general list alongside them).
+      // The table is pure prefix analysis, so both parse modes narrow alike.
+      const rule = nextWordRuleFor(linePrefix);
+      const generalItems = (): CompletionItem[] => {
+        const declared = declarations
+          ? declarationsInScope(declarations, position)
+          : declarationsInScope(declarationsFromSource(source), position);
+        const declaredItems = declaredItemsFromTree(declared);
+        return dedupeByLabel(
+          [
+            ...functionItems(),
+            ...keywordItems(),
+            ...treeVarItems(),
+            ...typeItems(),
+            ...declaredItems,
+            ...snippetItems(),
+          ],
+          new Set(declaredItems)
+        );
+      };
+      if (rule) {
+        const narrowed = nextWordItems(rule);
+        if (!rule.additive) return filterByPrefix(narrowed, prefix);
+        return filterByPrefix(
+          dedupeByLabel([...narrowed, ...generalItems()], new Set(narrowed)),
+          prefix
+        );
+      }
+      return filterByPrefix(generalItems(), prefix);
     }
   }
 }
