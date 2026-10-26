@@ -88,6 +88,13 @@ problem". The codes mirror the setting names below: `syntax-error`,
   `DECLARE a, b, c` included), **in scope at the cursor only** — a name
   declared in another routine is not offered, and one declared outside the
   module is not offered past `END MODULE`
+- The file's own `CREATE FUNCTION|PROCEDURE` names, signature and all — a
+  `CALL` target is a completion, not just the built-in table; with a
+  workspace root, sibling routines and `SHARED` variables join too and name
+  their file (`in helper.esql · FUNCTION Helper() RETURNS BOOLEAN`,
+  `SHARED, declared in helper.esql`). Same-file names win the dedupe, and
+  these names never leak into a clause-narrowed list (`=`, types, VALUE
+  lists stay closed)
 - 43 snippets (module skeletons, IF/CASE/WHILE, THROW, PASSTHRU, JSON
   responses, …) — triggered like `module-compute`, `throw`, `trycatch`
 - Filtered by the word you are typing; one item per label, so a word that is
@@ -423,10 +430,10 @@ CONTRIBUTING.md        # dev setup, ground rules, PR guide
    Deciding each one needs the reference, not the test suite.
  - **Phase 3 — model-driven features.** MRM/XSD schema import for message-tree
    field completion, formatting. The workspace index now exists and is used:
-   `workspace/symbol`, SHARED-aware undeclared check, and cross-file
-   go-to-definition / find-references / hover for `CALL` targets and `SHARED`
-   names. The next consumers are SHARED-aware completion details and rename
-   across files.
+   `workspace/symbol`, SHARED-aware undeclared check, cross-file
+   go-to-definition / find-references / hover, and SHARED-aware completion
+   (`CALL` targets and `SHARED` variables offered with their declaring
+   file). The next consumer is rename across files.
 - Longer term: optional integration with the ACE ESQL compiler for
   authoritative validation.
 

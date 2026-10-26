@@ -1390,6 +1390,39 @@ test('cross-file definition, references and hover over stdio (G-1/G-2/G-3)', asy
       assert.match(value, /FUNCTION Helper\(\) RETURNS BOOLEAN/, 'signature block');
       assert.match(value, /defined in helper\.esql/, 'cross-file provenance line');
       assert.match(value, /workspace/, 'the path taken is marked');
+
+      // C-1/C-2: completion over the same two-file workspace. Half-type the
+      // CALL and ask — the sibling routine answers, naming its file.
+      const PARTIAL = CALLER.replace('  CALL Helper();', '  CALL Hel');
+      client.notify('textDocument/didChange', {
+        textDocument: { uri: callerUri, version: 2 },
+        contentChanges: [{ text: PARTIAL }],
+      });
+      const comp = await client.request('textDocument/completion', {
+        textDocument: { uri: callerUri },
+        position: { line: 4, character: 10 }, // just after `Hel`
+      });
+      const items = (comp.result ?? []) as any[];
+      const helperItem = items.find((i) => i.label === 'Helper');
+      assert.ok(helperItem, `the sibling CALL target completes: ${items.map((i) => i.label).join(',')}`);
+      assert.equal(helperItem.kind, 3, 'CompletionItemKind.Function');
+      assert.match(helperItem.detail, /in helper\.esql/, 'the detail names the file');
+      assert.ok(!items.some((i) => i.label === 'Main'), 'the prefix still filters the rest');
+
+      // The unfiltered general list carries the file's own routine (signature
+      // detail) and the sibling SHARED variable (declaring file in detail).
+      const general = ((
+        await client.request('textDocument/completion', {
+          textDocument: { uri: callerUri },
+          position: { line: 7, character: 0 }, // start of `END;` — empty prefix
+        })
+      ).result ?? []) as any[];
+      const main = general.find((i) => i.label === 'Main');
+      assert.ok(main, 'own routine listed');
+      assert.match(main.detail, /FUNCTION Main\(\) RETURNS BOOLEAN/, 'with its signature');
+      const counter = general.find((i) => i.label === 'Counter');
+      assert.ok(counter, 'sibling SHARED variable listed');
+      assert.match(counter.detail, /SHARED, declared in helper\.esql/, 'with its provenance');
     } finally {
       await client.close();
     }

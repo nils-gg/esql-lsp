@@ -56,7 +56,14 @@ import { analyze } from './diagnostics';
 import { buildCompletionItems, detectCompletionContext } from './completion';
 import { hoverAt } from './hover';
 import { documentSymbols, documentSymbolsFromTree } from './symbols';
-import { definitionAt, referencesAt, declarationsFromSource, occurrences, wordAtPosition } from './definitions';
+import {
+  definitionAt,
+  referencesAt,
+  declarationsFromSource,
+  routinesFromSource,
+  occurrences,
+  wordAtPosition,
+} from './definitions';
 import { mergeSettings, unwrapSettings, EsqlSettings, DEFAULT_SETTINGS } from './settings';
 import {
   initGrammar,
@@ -176,6 +183,34 @@ function parsedDocument(uri: string, text: string): ParsedDocument {
  * lookups (task 6) and rename (task 16) all read the same view, so they can
  * never disagree about what the workspace declares.
  */
+/**
+ * `extractFileFacts` for an OPEN document, memoized by text identity the way
+ * `parsedDocument` memoizes parses (ISSUES.md I-20's lesson). Without this,
+ * every completion keystroke would re-scan every open buffer: validation was
+ * debounced, completion is not. Cleared with the parse cache on `didClose`.
+ */
+const liveFactsCache = new Map<string, { text: string; facts: ReturnType<typeof extractFileFacts> }>();
+
+function liveFacts(doc: TextDocument): ReturnType<typeof extractFileFacts> {
+  const text = doc.getText();
+  const hit = liveFactsCache.get(doc.uri);
+  if (hit && hit.text === text) return hit.facts;
+  const facts = extractFileFacts(text, doc.uri);
+  liveFactsCache.set(doc.uri, { text, facts });
+  return facts;
+}
+
+/**
+ * An index symbol's stored detail (`'FUNCTION RETURNS BOOLEAN'`, `'PROCEDURE'`)
+ * rendered as a readable signature. Shared by cross-file hover and completion
+ * so both spell a sibling routine identically.
+ */
+function workspaceRoutineSig(s: WorkspaceSymbol): string {
+  return s.detail.startsWith('FUNCTION')
+    ? s.detail.replace(/^FUNCTION\b/, `FUNCTION ${s.name}()`)
+    : `${s.detail} ${s.name}()`;
+}
+
 function workspaceFacts(): { sharedVars: SharedVarFact[]; routines: WorkspaceSymbol[] } | undefined {
   if (!workspaceIndex.rootPath()) return undefined;
   const sharedVars: SharedVarFact[] = [];
@@ -183,7 +218,7 @@ function workspaceFacts(): { sharedVars: SharedVarFact[]; routines: WorkspaceSym
   const openUris = new Set<string>();
   for (const doc of textDocuments.all()) {
     openUris.add(doc.uri);
-    const facts = extractFileFacts(doc.getText(), doc.uri);
+    const facts = liveFacts(doc);
     sharedVars.push(...facts.sharedVars);
     for (const s of facts.symbols) if (s.kind === 'routine') routines.push(s);
   }
@@ -263,10 +298,10 @@ function workspaceHover(word: string, fromUri: string): Hover | null {
   });
   for (const r of lookupRoutine(word)) {
     if (r.uri === fromUri) continue;
-    const sig = r.detail.startsWith('FUNCTION')
-      ? r.detail.replace(/^FUNCTION\b/, `FUNCTION ${r.name}()`)
-      : `${r.detail} ${r.name}()`;
-    return md(sig, `defined in ${baseName(r.uri)}${r.container ? ` (module ${r.container})` : ''}`);
+    return md(
+      workspaceRoutineSig(r),
+      `defined in ${baseName(r.uri)}${r.container ? ` (module ${r.container})` : ''}`
+    );
   }
   for (const v of lookupSharedVar(word)) {
     if (v.uri === fromUri) continue;
@@ -571,6 +606,7 @@ connection.onWorkspaceSymbol((params): SymbolInformation[] => {
 });
 textDocuments.onDidClose((e) => {
   parseCache.delete(e.document.uri); // the entry's text would never be asked for again
+  liveFactsCache.delete(e.document.uri);
   cancelScheduledDiagnostics(e.document.uri);
   connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] });
 });
@@ -685,11 +721,25 @@ connection.onCompletion((params: CompletionParams): CompletionItem[] => {
   const text = doc.getText();
   const analysis = parsedDocument(doc.uri, text).analysis;
   const declarations = analysis ? analysis.declaredNames : declarationsFromSource(text);
+  // C-1/C-2: the file's own routines plus the workspace's sibling routines and
+  // SHARED names. The current file's entries are EXCLUDED — its own
+  // declarations are already in the list (and win the dedupe) — and every
+  // sibling name carries its file's base name for the detail line.
+  const ws = workspaceFacts();
+  const completionFacts = {
+    routines: analysis ? analysis.routines : routinesFromSource(text),
+    sharedVars: (ws?.sharedVars ?? [])
+      .filter((v) => v.uri !== doc.uri)
+      .map((v) => ({ name: v.name, detail: v.detail, file: baseName(v.uri) })),
+    workspaceRoutines: (ws?.routines ?? [])
+      .filter((r) => r.uri !== doc.uri)
+      .map((r) => ({ name: r.name, detail: workspaceRoutineSig(r), file: baseName(r.uri) })),
+  };
   // The cursor position is what makes the declared-name list scope-correct.
   return buildCompletionItems(context, linePrefix, text, declarations, {
     line: pos.line,
     character: pos.character,
-  }, clientWantsSnippets);
+  }, clientWantsSnippets, completionFacts);
 });
 
 connection.onHover((params: HoverParams): Hover | null => {

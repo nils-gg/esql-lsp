@@ -183,19 +183,30 @@ One coherent change: the feature modules gain a *workspace lookup* parameter;
 
 ### 8. C-1 + C-2 — routines and workspace SHARED names in the list  `[M]` → closes C-1, C-2 (needs 4)
 
-- [ ] Feed routines to `buildCompletionItems`: own file's
+- [x] Feed routines to `buildCompletionItems`: own file's
       `analysis.routines` (both modes: `routinesFromSource` is already shared)
       as `Function`-kind items with signature detail; workspace routines via
       task-4 lookup, detail `in <file> · <signature>`.
-- [ ] SHARED variables from task 4 lookup as `Variable` items, detail
+- [x] SHARED variables from task 4 lookup as `Variable` items, detail
       `SHARED, declared in <file>`.
-- [ ] Keep them *out* of clause-narrowed lists (the `=` `TYPE` `VALUE` lists
+- [x] Keep them *out* of clause-narrowed lists (the `=` `TYPE` `VALUE` lists
       must stay closed); additive/general only. Dedupe by label still applies;
       same-file wins over same-named workspace fact.
-- [ ] Position-sensitivity: routine items appear in general lists everywhere
+- [x] Position-sensitivity: routine items appear in general lists everywhere
       (they are valid in expressions too), not only after `CALL`.
-- [ ] Unit + e2e (both modes): `CALL Hel` → `Helper`; general list contains
+- [x] Unit + e2e (both modes): `CALL Hel` → `Helper`; general list contains
       `Main` and `FailureCount`; narrowed `SET x ` list unchanged (still 5).
+
+  *Landed as:* the 7th `buildCompletionItems` param `facts?: CompletionFacts`
+  (own routines default to `routinesFromSource(source)`; the server excludes
+  the current file from the ws lists and pre-renders signatures). Closedness
+  is asserted against the non-additive `DELETE ` rule (snippets absent →
+  only clause words); the `SET x ` count stays asserted by the pre-existing
+  test (untouched, and green). New per-keystroke path got a text-identity
+  cache (`liveFactsCache`) — completion is not debounced, so
+  `workspaceFacts()` must not re-scan open buffers; cleared on didClose.
+  The dedupe stays exact-label (the graveyard's case-folded merge stays
+  dead); own declared AND routine names join the `preferred` set.
 
 ### 9. C-3 — let the client do fuzzy matching  `[S/M]` → closes C-3 (touches 8's output)
 

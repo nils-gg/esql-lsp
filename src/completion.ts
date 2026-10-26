@@ -35,9 +35,9 @@ import {
 import { NEXT_WORD_RULES } from './data/nextWords';
 import type { NextWordRule } from './data/nextWords';
 import { ESQL_SNIPPETS } from './data/snippets';
-import { declarationsFromSource, visibleDeclarationsAt } from './definitions';
+import { declarationsFromSource, routinesFromSource, visibleDeclarationsAt } from './definitions';
 import { scan } from './scanner';
-import type { DeclaredName } from './parser';
+import type { DeclaredName, RoutineInfo } from './parser';
 
 export type CompletionContextKind =
   | 'domains'
@@ -206,6 +206,89 @@ function declaredItemsFromTree(declarations: DeclaredName[]): CompletionItem[] {
   return items;
 }
 
+/**
+ * A name the workspace knows from ANOTHER file (CODE_REVIEW.md C-1/C-2),
+ * already reduced to what a completion detail needs. `server.ts` excludes the
+ * current document's own entries — those are offered as the file's own
+ * declarations/routines — and pre-renders `detail` (variable type, or the
+ * routine's full signature).
+ */
+export interface WorkspaceNamedFact {
+  /** Declared spelling (ESQL names are case-insensitive; keep the original). */
+  name: string;
+  /** Human-readable kind: the variable's type, or the routine's signature. */
+  detail: string;
+  /** Base name of the declaring file, for display. */
+  file: string;
+}
+
+/** What the general list may offer beyond built-ins and declared names. */
+export interface CompletionFacts {
+  /** The current file's own routines; default: `routinesFromSource(source)`. */
+  routines?: RoutineInfo[];
+  /** `DECLARE … SHARED` variables declared in sibling files (C-2). */
+  sharedVars?: WorkspaceNamedFact[];
+  /** Routines declared in sibling files, the `CALL` targets (C-1). */
+  workspaceRoutines?: WorkspaceNamedFact[];
+}
+
+/** `FUNCTION Main() RETURNS BOOLEAN` / `PROCEDURE CopyHeader(IN amount INTEGER)`. */
+function routineSignature(r: RoutineInfo): string {
+  const params = r.params.replace(/\s+/g, ' ').trim();
+  const head = `${r.kind} ${r.name}(${params})`;
+  return r.kind === 'FUNCTION' && r.returnType ? `${head} RETURNS ${r.returnType}` : head;
+}
+
+/**
+ * The current file's own `CREATE FUNCTION|PROCEDURE` names (C-1): a `CALL`
+ * target is a completion, and until now the general list only knew the
+ * built-in function table. Unlike declared names these are NOT scope-filtered
+ * — a routine is callable from anywhere in the file (and from sibling files,
+ * where they arrive through `workspaceRoutines` instead).
+ */
+function routineItems(routines: RoutineInfo[]): CompletionItem[] {
+  const seen = new Set<string>();
+  const items: CompletionItem[] = [];
+  for (const r of routines) {
+    const upper = r.name.toUpperCase();
+    if (seen.has(upper)) continue; // a re-creation declares the name once
+    seen.add(upper);
+    const item = ci(r.name, CompletionItemKind.Function);
+    item.detail = routineSignature(r);
+    items.push(item);
+  }
+  return items;
+}
+
+/**
+ * Sibling-file routines and SHARED variables (C-1/C-2), from the server's one
+ * merged workspace view. `in <file> · <signature>` / `SHARED, declared in
+ * <file>` marks the provenance the same way cross-file hover does — the
+ * client shows where the name really lives.
+ */
+function workspaceFactItems(facts: CompletionFacts): CompletionItem[] {
+  const items: CompletionItem[] = [];
+  const seen = new Set<string>();
+  for (const r of facts.workspaceRoutines ?? []) {
+    const key = `R|${r.name.toUpperCase()}`;
+    if (seen.has(key)) continue; // one row per name; the first (live-first merge) wins
+    seen.add(key);
+    const item = ci(r.name, CompletionItemKind.Function);
+    item.detail = `in ${r.file} · ${r.detail}`;
+    items.push(item);
+  }
+  for (const v of facts.sharedVars ?? []) {
+    const key = `V|${v.name.toUpperCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const item = ci(v.name, CompletionItemKind.Variable);
+    item.detail = `SHARED, declared in ${v.file}`;
+    if (v.detail) item.documentation = markdown(`Type: ${v.detail}`);
+    items.push(item);
+  }
+  return items;
+}
+
 function filterByPrefix(items: CompletionItem[], prefix: string): CompletionItem[] {
   if (!prefix) return items;
   const p = prefix.toLowerCase();
@@ -336,7 +419,10 @@ export function buildCompletionItems(
   /** Whether the client declared `completionItem.snippetSupport`. Default
    * true (what direct callers and tests expect); `server.ts` passes the real
    * capability so snippetless clients get de-placeholdered PlainText. */
-  snippetSupport = true
+  snippetSupport = true,
+  /** The file's own routines and the workspace's SHARED names for the
+   * GENERAL list (C-1/C-2). They never enter a clause-narrowed list. */
+  facts?: CompletionFacts
 ): CompletionItem[] {
   const prefix = wordBeingTyped(linePrefix);
 
@@ -389,6 +475,12 @@ export function buildCompletionItems(
           ? declarationsInScope(declarations, position)
           : declarationsInScope(declarationsFromSource(source), position);
         const declaredItems = declaredItemsFromTree(declared);
+        // C-1/C-2: the file's own routines and the workspace's SHARED names
+        // join the GENERAL list only — the closed clause lists (`= `, TYPE,
+        // VALUE…) stay closed, and additive rules carry them alongside the
+        // narrowed words exactly like every other general item.
+        const ownRoutines = routineItems(facts?.routines ?? routinesFromSource(source));
+        const wsItems = facts ? workspaceFactItems(facts) : [];
         return dedupeByLabel(
           [
             ...functionItems(),
@@ -396,9 +488,14 @@ export function buildCompletionItems(
             ...treeVarItems(),
             ...typeItems(),
             ...declaredItems,
+            ...ownRoutines,
+            ...wsItems,
             ...snippetItems(snippetSupport),
           ],
-          new Set(declaredItems)
+          // This document's own names — declared OR routine — beat any
+          // built-in and any same-named workspace fact: a file that declares
+          // `Counter` itself completes its own type, not a sibling's.
+          new Set([...declaredItems, ...ownRoutines])
         );
       };
       if (rule) {

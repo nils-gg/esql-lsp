@@ -470,3 +470,109 @@ test('the buffer being typed parses the same in both paths (C-7)', async (t) => 
   );
   assert.equal(treeItems.length, patItems.length, 'the two paths offer equal-length lists');
 });
+
+// ── C-1/C-2: routines and workspace SHARED names in the general list ────────
+
+const C12_SOURCE = [
+  'CREATE COMPUTE MODULE M', //                          0
+  'CREATE FUNCTION Main() RETURNS BOOLEAN', //           1
+  'BEGIN', //                                            2
+  'DECLARE local, Counter CHARACTER;', //                3  shadows the SHARED Counter
+  'END;', //                                             4
+  'CREATE PROCEDURE CopyHeader(IN amount INTEGER)', //   5
+  'BEGIN', //                                            6
+  'END;', //                                             7
+  'END MODULE;', //                                      8
+  '',
+].join('\n');
+
+/** What the server would pass for a sibling `helper.esql` (C-1/C-2 facts). */
+const C12_FACTS = {
+  sharedVars: [
+    { name: 'Counter', detail: 'INTEGER', file: 'helper.esql' },
+    { name: 'FailureCount', detail: 'INTEGER', file: 'helper.esql' },
+  ],
+  workspaceRoutines: [{ name: 'Helper', detail: 'FUNCTION Helper() RETURNS BOOLEAN', file: 'helper.esql' }],
+};
+
+test('the file\'s own routines are completion items (C-1)', () => {
+  // No facts passed at all: routines fall back out of `source` itself, so
+  // this holds in both parse modes and for every direct caller.
+  const items = buildCompletionItems('general', '', C12_SOURCE);
+  const main = items.find((i) => i.label === 'Main');
+  assert.ok(main, 'Main is offered');
+  assert.equal(main!.kind, CompletionItemKind.Function);
+  assert.equal(main!.detail, 'FUNCTION Main() RETURNS BOOLEAN', 'signature as detail');
+  const copy = items.find((i) => i.label === 'CopyHeader')!;
+  assert.equal(copy.detail, 'PROCEDURE CopyHeader(IN amount INTEGER)');
+
+  // Routines ignore the scope filter — CALL reaches file-wide (unlike declared
+  // names, which I-16 narrows to what the cursor can see).
+  const inside = buildCompletionItems(
+    'general',
+    '',
+    C12_SOURCE,
+    declarationsFromSource(C12_SOURCE),
+    { line: 6, character: 0 }
+  );
+  assert.ok(inside.some((i) => i.label === 'Main'), 'callable from inside another routine');
+
+  // Prefix filtering applies to them like anything else.
+  const typed = buildCompletionItems('general', '  CALL Mai', C12_SOURCE);
+  assert.deepEqual(typed.map((i) => i.label), ['Main'], 'CALL Mai completes Main');
+});
+
+test('sibling routines and SHARED names join the general list (C-1/C-2)', () => {
+  const items = buildCompletionItems('general', '', C12_SOURCE, undefined, undefined, true, C12_FACTS);
+  const helper = items.find((i) => i.label === 'Helper');
+  assert.ok(helper, 'the sibling CALL target is offered');
+  assert.equal(helper!.kind, CompletionItemKind.Function);
+  assert.equal(helper!.detail, 'in helper.esql · FUNCTION Helper() RETURNS BOOLEAN');
+
+  const fc = items.find((i) => i.label === 'FailureCount');
+  assert.ok(fc, 'the sibling SHARED variable is offered');
+  assert.equal(fc!.kind, CompletionItemKind.Variable);
+  assert.equal(fc!.detail, 'SHARED, declared in helper.esql');
+  assert.match((fc!.documentation as { value: string }).value, /INTEGER/, 'its type survives');
+
+  const typed = buildCompletionItems(
+    'general',
+    '  CALL Hel',
+    C12_SOURCE,
+    undefined,
+    undefined,
+    true,
+    C12_FACTS
+  );
+  assert.deepEqual(typed.map((i) => i.label), ['Helper'], 'CALL Hel completes the sibling');
+});
+
+test('same-file names win over same-named workspace facts (C-2)', () => {
+  const items = buildCompletionItems('general', '', C12_SOURCE, undefined, undefined, true, {
+    ...C12_FACTS,
+    workspaceRoutines: [
+      ...C12_FACTS.workspaceRoutines,
+      { name: 'Main', detail: 'FUNCTION Main() RETURNS BOOLEAN', file: 'other.esql' },
+    ],
+  });
+  // `Counter` is declared CHARACTER here AND SHARED INTEGER in helper.esql:
+  // the local shadow keeps the local type and loses the provenance line.
+  const counters = items.filter((i) => i.label === 'Counter');
+  assert.equal(counters.length, 1, 'exactly one Counter row');
+  assert.equal(counters[0].detail, 'Declared: CHARACTER');
+  // Same rule for routines: the file's own Main beats a same-named sibling's.
+  const mains = items.filter((i) => i.label === 'Main');
+  assert.equal(mains.length, 1, 'exactly one Main row');
+  assert.ok(!/other\.esql/.test(mains[0].detail!), 'the own signature, not the foreign one');
+});
+
+test('closed clause lists stay closed to names (C-1/C-2)', () => {
+  // `DELETE ` matches a NON-additive next-word rule: only the clause words
+  // may appear — no routines, no SHARED names, not even the general list's
+  // own snippets. Names are additive/general-position items only.
+  const items = buildCompletionItems('general', 'DELETE ', '', [], undefined, true, C12_FACTS);
+  assert.ok(items.length > 0, 'the narrowed list still answers');
+  assert.ok(!items.some((i) => i.label === 'Helper'), 'no sibling routine');
+  assert.ok(!items.some((i) => i.label === 'FailureCount'), 'no SHARED name');
+  assert.ok(!items.some((i) => i.kind === CompletionItemKind.Snippet), 'still just the clause words');
+});
