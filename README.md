@@ -88,8 +88,9 @@ problem". The codes mirror the setting names below: `syntax-error`,
 - ~70 built-in ESQL functions with signature + markdown documentation
 - Keywords, data types, message tree variables (`InputRoot`, `Environment`, …)
 - Context-sensitive: parser domains after `InputRoot.`/`OutputRoot.`,
-  `Data` after `.JSON.`, common `LocalEnvironment` fields, types after
-  `DECLARE <name>` / `RETURNS`
+  `Data` plus a Properties copy-hint after `.JSON.`, common
+  `LocalEnvironment` fields, an honest datasource placeholder after
+  `Database.`, types after `DECLARE <name>` / `RETURNS`
 - Variables declared in the current document (each name of a multi-name
   `DECLARE a, b, c` included), **in scope at the cursor only** — a name
   declared in another routine is not offered, and one declared outside the
@@ -103,6 +104,13 @@ problem". The codes mirror the setting names below: `syntax-error`,
   lists stay closed)
 - 43 snippets (module skeletons, IF/CASE/WHILE, THROW, PASSTHRU, JSON
   responses, …) — triggered like `module-compute`, `throw`, `trycatch`
+- **Deferred deliberately: model-driven field completion.** Deeper message
+  tree paths (`XMLNSC.<root>`, `MRM.<model>.…`, BDF/XSD-derived structures)
+  get placeholder items that *say so in the item*. Completing the actual
+  fields of a message means parsing message models (XSD/MRM/BDF), which is
+  its own project phase — the server will not fake field knowledge it does
+  not have. The static lists it does offer are documented and honest about
+  being static
 - The **whole** context-relevant list ships on every keystroke — the server
   stopped pruning by prefix, so your client's fuzzy/subsequence matcher sees
   every candidate (`datetype` can still find `DATETIME`); items carry

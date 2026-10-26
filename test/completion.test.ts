@@ -34,9 +34,46 @@ test('detects LocalEnvironment, Database, types and general contexts', () => {
   assert.equal(detectCompletionContext('CREATE COMPUTE MODULE M'), 'general');
 });
 
-test('json-data offers Data', () => {
+// C-5 / PLAN task 18: the .JSON. list is Data plus the Properties copy-hint
+// item. The hint item exists because building `JSON.Data` without copying
+// `OutputRoot.Properties` is the bug this server itself publishes (check
+// `output-root-properties`); its doc states where the properties live rather
+// than asserting a `JSON.Properties` folder — see the code comment for why.
+test('json-data offers Data and the Properties copy-hint item, prefix-filtered', () => {
   const items = buildCompletionItems('json-data', 'SET x = InputRoot.JSON.', '');
-  assert.deepEqual(items.map((i) => i.label), ['Data']);
+  assert.deepEqual(items.map((i) => i.label), ['Data', 'Properties']);
+  const props = items[1];
+  const doc = (props.documentation as { value: string }).value;
+  assert.ok(
+    doc.includes('SET OutputRoot.Properties = InputRoot.Properties;'),
+    'the item doc names the exact copy line the hint asks for'
+  );
+  assert.ok(doc.includes('output-root-properties'), 'and points at the check that flags it');
+  assert.deepEqual(
+    buildCompletionItems('json-data', 'SET x = InputRoot.JSON.D', '').map((i) => i.label),
+    ['Data'],
+    'typing a prefix narrows the pair like every other list'
+  );
+});
+
+test('the datasource placeholder is honest and carries a SET example', () => {
+  const [item] = buildCompletionItems('datasource', "PASSTHRU('SELECT 1') TO Database.", '');
+  assert.equal(item.label, 'DS_YOUR_DATASOURCE');
+  const doc = (item.documentation as { value: string }).value;
+  assert.ok(doc.includes('Integration Server'), 'it says where the name comes from');
+  assert.ok(doc.includes('SET Connection = myDatasource;'), 'PLAN task 18: the SET example');
+});
+
+test('the LocalEnvironment list stays at the honest ported six (no invented fields)', () => {
+  const labels = buildCompletionItems('local-env', 'SET x = Environment.', '').map((i) => i.label);
+  assert.deepEqual(labels, [
+    'ReplyToQueue',
+    'ReplyToQueueManager',
+    'CorrelationId',
+    'MsgId',
+    'Destination',
+    'MQMD',
+  ]);
 });
 
 test('domains context offers parser domains, filtered by prefix', () => {

@@ -663,17 +663,43 @@ implement second, and record the decision either way in `VERIFICATION.md`
 
 ### 18. C-5 — better static message-tree completion (model work stays deferred)  `[M]` → closes C-5 at its agreed scope
 
-- [ ] Interim, static, honest: after `.JSON.` offer `Data` **and** `Properties`
+- [x] Interim, static, honest: after `.JSON.` offer `Data` **and** `Properties`
       (with the copy-hint doc); `InputLocalEnvironment.` etc. get the known LE
       field list (already exist — extend `ESQL_LOCAL_ENVIRONMENT_FIELDS`
       against the ACE docs page, webfetch, attribution note);
       `Database.` placeholder gains a "configure the datasource in the
       Integration Server" doc line (it has one — extend with `SET` example).
-- [ ] Keep the placeholder-only behaviour for XMLNSC paths, but say so *in the
+- [x] Keep the placeholder-only behaviour for XMLNSC paths, but say so *in the
       item* (it already does) and add the explicit deferral note to README:
       model-driven (XSD/MRM/BDF) field completion is its own project phase —
       it needs message-model parsing, which is outside this repo's current
       scope. Do **not** fake it.
+
+  *Landed as:* `.JSON.` now offers `Data` + a `Properties` item whose doc
+  names the exact copy line (`SET OutputRoot.Properties =
+  InputRoot.Properties;`) and points at the `output-root-properties` hint —
+  deliberately NOT asserting a `JSON.Properties` folder: the item teaches
+  where the properties actually live, and the code comment records why.
+  `Database.`'s placeholder doc gained the `SET Connection = myDatasource;`
+  example plus the `AT`/`TO Database.` mentions. README: deferral note for
+  model-driven (XSD/MRM/BDF) field completion added to the Completion
+  section (and the bullet now lists what each context really offers); the
+  XMLNSC placeholder already says "replace me" in the item and still does.
+  **Recorded exception — LE field extension NOT shipped:** the environment
+  could not read the ACE docs pages. ibm.com served only its bundle index
+  (the SSTTDS_12.0 TOC, which DID verify the page identities: "Local
+  environment tree" ac00520_, "Populating Destination…" ac16862_,
+  "Using LocalEnvironment variables with JMSOutput and JMSReply nodes"
+  ac25870_), every deep-page URL and the archived Knowledge Center 403'd,
+  websearch was cancelled, and webfetch eventually stopped reaching anything
+  (example.com 403 — control-verified). Rather than extend the list from
+  memory (the C-5 defect class exactly), the six ported fields stay, now
+  with an attribution + deferral comment in `esqlData.ts` naming the pages
+  to read when a fetch-capable session can. A unit test pins the six so an
+  unverified edit is loud. No e2e added: this changed static completion data
+  and item docs — the unit tests cover it, the generic e2e completion
+  session still runs over the same wiring, and no diagnostic/grammar path
+  is touched.
 
 ### 19. C-6 — tree-backed clause state (grammar mode only)  `[L]` → closes C-6
 

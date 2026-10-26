@@ -171,8 +171,19 @@ export const ESQL_DOMAINS: EsqlDomainDoc[] = [
 ];
 
 /**
- * Common LocalEnvironment fields (the full set is deployment-specific;
- * Phase 3 will offer model-driven completion here).
+ * Common LocalEnvironment fields — ported from joaquinvulcano/esql-vscode
+ * (MIT, see ATTRIBUTION.md) and kept to that honest six.
+ *
+ * The authoritative source for what may appear in the tree is IBM's ACE 12
+ * documentation, bundle SSTTDS_12.0, `com.ibm.etools.mft.doc` — notably
+ * "Local environment tree" (ac00520_), "Populating Destination in the local
+ * environment tree" (ac16862_) and "Using LocalEnvironment variables with
+ * JMSOutput and JMSReply nodes" (ac25870_) — whose existence was verified via
+ * the bundle's table of contents. Extending this list FROM those pages needs
+ * a session that can actually fetch them; ibm.com served only its index
+ * shell (and later nothing) during task 18, and inventing field names into a
+ * completion list is exactly the false knowledge this repo refuses. The full
+ * usable set is also flow-specific — nodes read what their own docs promise.
  */
 export const ESQL_LOCAL_ENVIRONMENT_FIELDS: EsqlDomainDoc[] = [
   { name: 'ReplyToQueue', detail: 'MQ reply-to queue', description: 'Queue name for asynchronous replies.' },

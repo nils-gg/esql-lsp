@@ -461,10 +461,29 @@ export function buildCompletionItems(
 
   switch (context) {
     case 'json-data': {
-      const item = ci('Data', CompletionItemKind.Property);
-      item.detail = 'JSON payload container';
-      item.documentation = markdown('Continue with `.Data.<field>` to address the JSON payload.');
-      return [item];
+      const data = ci('Data', CompletionItemKind.Property);
+      data.detail = 'JSON payload container';
+      data.documentation = markdown('Continue with `.Data.<field>` to address the JSON payload.');
+      // PLAN task 18: the list carries a second item teaching the single
+      // most common JSON-output bug — building `JSON.Data` while leaving the
+      // message-level Properties behind (the `output-root-properties` check
+      // publishes that hint; the item doc points at the same line). The doc
+      // states where the properties actually live instead of asserting a
+      // `JSON.Properties` folder — the ACE page for the JSON tree structure
+      // could not be re-read in this build environment (network egress
+      // blocked), and a completion doc must not claim structure it could not
+      // verify.
+      const props = ci('Properties', CompletionItemKind.Property);
+      props.detail = 'Copy the incoming message properties (the usual bug)';
+      props.documentation = markdown(
+        'Properties do not live under `JSON.` — the properties that travel with a ' +
+          'message live at `<root>.Properties`, and ACE does not carry them into the ' +
+          'reply by itself. When building JSON output, copy them at the routine head:\n\n' +
+          '```esql\nSET OutputRoot.Properties = InputRoot.Properties;\n```\n\n' +
+          'The `output-root-properties` hint flags a `SET OutputRoot.JSON.Data` line ' +
+          'whose routine never copies them.'
+      );
+      return filterByPrefix([data, props], prefix);
     }
     case 'xmlns-root': {
       const item = ci('Root', CompletionItemKind.Property);
@@ -480,11 +499,16 @@ export function buildCompletionItems(
     case 'local-env':
       return filterByPrefix(domainItems(ESQL_LOCAL_ENVIRONMENT_FIELDS), prefix);
     case 'datasource': {
+      // Static placeholder, honestly labelled: datasource names are runtime
+      // configuration, and the server has no Integration Server to ask.
       const item = ci('DS_YOUR_DATASOURCE', CompletionItemKind.Reference);
       item.detail = 'Database datasource';
       item.documentation = markdown(
-        'Replace with the datasource name configured in the Integration Server, ' +
-          'e.g. `DS_ORACLE_PROD`.'
+        'Replace with the datasource name configured in the Integration Server ' +
+          '(JDBC/ODBC configurable service), e.g. `DS_ORACLE_PROD`.\n\n' +
+          '**Example:**\n\n```esql\nSET Connection = myDatasource;\n```\n\n' +
+          'or per statement, e.g. `PASSTHRU ... TO Database.myDatasource` / ' +
+          '`SELECT ... AT myDatasource`.'
       );
       return [item];
     }
