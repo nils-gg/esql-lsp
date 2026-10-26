@@ -135,15 +135,15 @@ children.
 One coherent change: the feature modules gain a *workspace lookup* parameter;
 `server.ts` resolves what the document itself cannot answer.
 
-- [ ] Definition: in `onDefinition` (`src/server.ts:532`), when local
+- [x] Definition: in `onDefinition` (`src/server.ts:532`), when local
       `definitionAt` finds nothing for the word and a workspace root exists:
       `lookupRoutine` / `lookupSharedVar` → `Location` in the declaring file.
       Keep same-file resolution winning (local shadow). Applies to both parse
       modes (the index is heuristic-extracted anyway → mode-identical).
-- [ ] Hover: same fallback → signature block synthesized from facts
+- [x] Hover: same fallback → signature block synthesized from facts
       (`FUNCTION RETURNS X`, container module, uri) with a `defined in
       helper.esql` line.
-- [ ] References (G-3 first, then cross-file): `referencesAt` currently reports
+- [x] References (G-3 first, then cross-file): `referencesAt` currently reports
       zero for a name declared in a sibling — fix the in-file half: when the
       word matches a workspace SHARED name (or has a located fact), report the
       current file's occurrences. Cross-file half: `onReferences` additionally
@@ -151,12 +151,16 @@ One coherent change: the feature modules gain a *workspace lookup* parameter;
       open buffers) with the existing whole-word occurrence finder — SHARED
       variables and user routines are the two worth scanning (documented
       workspace≈application approximation, see review N-2's last row).
-- [ ] Mark cross-file results so hover/e2e can assert the path taken.
-- [ ] T-3: new e2e case — open a two-file fixture workspace, `definition` from
+      A ROUTINE name answered by the current file stays file-local (the local
+      shadow — `Main` in ten files means ten routines).
+- [x] Mark cross-file results so hover/e2e can assert the path taken.
+      (Hover carries `*workspace — defined in …*`; definitions/references are
+      assertable by the returned uri. Rename, task 16, gets the same hook.)
+- [x] T-3: new e2e case — open a two-file fixture workspace, `definition` from
       `CALL` jumps to the sibling, `references` on the SHARED name returns
       ranges in both files, hover on the call target shows the signature;
       must pass with and without the grammar.
-- [ ] README feature section: cross-file go-to-definition is no longer
+- [x] README feature section: cross-file go-to-definition is no longer
       "planned" — update the roadmap lines the review cited.
 
 ### 7. G-6 — schema segment vs `Main()` routine  `[S]` → closes G-6

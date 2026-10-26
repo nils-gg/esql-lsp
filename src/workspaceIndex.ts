@@ -55,6 +55,13 @@ export interface SharedVarFact {
 /** One indexed `.esql` file, reduced to what siblings can rely on. */
 export interface FileFacts {
   uri: string;
+  /**
+   * The snapshot text, kept so the cross-file reference scan (G-3) can find
+   * occurrences in files nobody has open. Memory is bounded by the same
+   * MAX_FILES × MAX_FILE_BYTES that produced it (worst case 128 MB, in
+   * practice ~15 KB × the file count).
+   */
+  text: string;
   /** Located `DECLARE … SHARED` variables, declaration order (N-2). */
   sharedVars: SharedVarFact[];
   /** UPPERCASE names of those variables (I-13's core need), derived. */
@@ -127,7 +134,7 @@ export function extractFileFacts(text: string, uri: string): FileFacts {
   const schema = schemaFromSource(text);
   if (schema)
     symbols.push({ name: schema.name, kind: 'schema', detail: 'BROKER SCHEMA', container: '', uri, range: schema.range });
-  return { uri, sharedVars, sharedNames, symbols };
+  return { uri, text, sharedVars, sharedNames, symbols };
 }
 
 /** Keep the entries whose URI the caller replaces with live text out of a result. */
@@ -239,6 +246,21 @@ export class WorkspaceIndex {
     for (const facts of this.files.values()) {
       if (skip?.has(facts.uri)) continue;
       out.push(...facts.symbols);
+    }
+    return out;
+  }
+
+  /**
+   * Whole FileFacts of the snapshot (text included), for the cross-file
+   * occurrence scan (G-3). Same exclusion contract as every other reader:
+   * the caller replaces open buffers with their live text itself.
+   */
+  factsFromDisk(excludingUris?: Iterable<string>): FileFacts[] {
+    const skip = excludingUris ? new Set(excludingUris) : undefined;
+    const out: FileFacts[] = [];
+    for (const facts of this.files.values()) {
+      if (skip?.has(facts.uri)) continue;
+      out.push(facts);
     }
     return out;
   }

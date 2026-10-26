@@ -138,14 +138,19 @@ ACE applications split across `.esql` files that share state through
 workspace root (`workspaceFolders`/`rootUri`), the server scans the tree for
 `.esql` files once after startup — bounded: ≤ 500 files, ≤ 256 KB each, junk
 directories skipped — and every open buffer's live text overrides its on-disk
-snapshot. Two things follow:
+snapshot. Three things follow:
 
 - the **undeclared-variable check** honours `DECLARE x SHARED …` from sibling
   files, so `FailureCount` declared in `Receiver.esql` is no longer reported
   in `ReceiverExceptionHandler.esql` (without a workspace root the check
   stays file-local — and it never suppresses names wholesale);
 - **`workspace/symbol`** answers a flat, query-filtered outline — modules,
-  routines, BROKER SCHEMAs — from the scan plus open buffers.
+  routines, BROKER SCHEMAs — from the scan plus open buffers;
+- **cross-file navigation**: go-to-definition from a `CALL` target or a
+  sibling-declared `SHARED` variable jumps into the declaring file, hover
+  there shows the signature synthesized from the index, and find-references
+  sweeps every file that shares the name (a name the current file itself
+  declares stays file-local — the local shadow).
 
 Two deliberate approximations: "workspace-wide" stands in for ACE's
 *application-wide* `SHARED` scope (an LSP has no application boundary), and
@@ -417,9 +422,11 @@ CONTRIBUTING.md        # dev setup, ground rules, PR guide
    (`DECIDEMODE`-style `PROPAGATE` clauses, `ASJSON`/`TOMIME` options).
    Deciding each one needs the reference, not the test suite.
  - **Phase 3 — model-driven features.** MRM/XSD schema import for message-tree
-   field completion, formatting. The workspace index now exists
-   (`workspace/symbol`, SHARED-aware undeclared check): the next consumer is
-   cross-file go-to-definition/hover for `CALL` targets, then completion.
+   field completion, formatting. The workspace index now exists and is used:
+   `workspace/symbol`, SHARED-aware undeclared check, and cross-file
+   go-to-definition / find-references / hover for `CALL` targets and `SHARED`
+   names. The next consumers are SHARED-aware completion details and rename
+   across files.
 - Longer term: optional integration with the ACE ESQL compiler for
   authoritative validation.
 

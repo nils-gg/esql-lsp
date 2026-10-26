@@ -642,8 +642,10 @@ export function schemaFromSource(source: string): { name: string; range: Range }
 /**
  * Whole-word occurrences of `name` that are NOT part of a dotted path
  * (`OutputRoot.JSON.Data` never matches `Data`) — references without a tree.
+ * Exported for the server's cross-file reference scan (CODE_REVIEW.md G-3):
+ * same-file and sibling-file occurrence lists are then built by ONE finder.
  */
-function occurrences(source: string, name: string): Range[] {
+export function occurrences(source: string, name: string): Range[] {
   const { lines, rawLines } = scan(source);
   const out: Range[] = [];
   const re = /[_a-zA-Z][_a-zA-Z0-9]*/g;

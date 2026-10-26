@@ -1267,3 +1267,133 @@ test('the workspace scan silences sibling-SHARED false positives (I-13)', async 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * T-3 / G-1 / G-2 / G-3 over a real two-file workspace: definition from the
+ * CALL jumps into the sibling, references on the SHARED name answer in BOTH
+ * files (uses in the open buffer + declaration and uses in the disk-only
+ * sibling), hover on the call target shows the signature. Deliberately not
+ * gated on the grammar — the workspace index is pattern-extracted, so both
+ * modes must deliver identical navigation; the NO_GRAMMAR suite run proves
+ * the second half by executing this very test without the addon.
+ */
+test('cross-file definition, references and hover over stdio (G-1/G-2/G-3)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-xnav-'));
+  const helperPath = path.join(dir, 'helper.esql');
+  const callerPath = path.join(dir, 'caller.esql');
+  const helperUri = pathToFileURL(helperPath).href;
+  const callerUri = pathToFileURL(callerPath).href;
+  const HELPER = [
+    'BROKER SCHEMA com.test.xnav;', //                0
+    'CREATE COMPUTE MODULE HelperLib', //             1
+    'DECLARE Counter SHARED INTEGER 0;', //           2  the SHARED declaration
+    'CREATE FUNCTION Helper() RETURNS BOOLEAN', //    3  the call target
+    'BEGIN', //                                       4
+    '  SET Counter = Counter + 1;', //                5
+    '  RETURN TRUE;', //                              6
+    'END;', //                                        7
+    'END MODULE;', //                                 8
+    '',
+  ].join('\n');
+  const CALLER = [
+    'BROKER SCHEMA com.test.xnav;', //                0
+    'CREATE COMPUTE MODULE CallerFlow', //            1
+    'CREATE FUNCTION Main() RETURNS BOOLEAN', //      2
+    'BEGIN', //                                       3
+    '  CALL Helper();', //                            4
+    '  SET Counter = Counter + 2;', //                5
+    '  RETURN TRUE;', //                              6
+    'END;', //                                        7
+    'END MODULE;', //                                 8
+    '',
+  ].join('\n');
+  try {
+    fs.writeFileSync(helperPath, HELPER);
+    fs.writeFileSync(callerPath, CALLER);
+
+    const client = new LspClient();
+    try {
+      await client.request('initialize', {
+        processId: process.pid,
+        rootUri: pathToFileURL(dir).href,
+        workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'xnav' }],
+        capabilities: {},
+        initializationOptions: {},
+      });
+      client.notify('initialized', {});
+      client.notify('textDocument/didOpen', {
+        textDocument: { uri: callerUri, languageId: 'esql', version: 1, text: CALLER },
+      });
+      // Scan-settled marker: the sibling SHARED name stops being undeclared.
+      await client.waitFor(
+        'textDocument/publishDiagnostics',
+        (p: any) =>
+          p.uri === callerUri &&
+          p.diagnostics.every((d: any) => d.code !== 'undeclared-variable'),
+        15000
+      );
+
+      // G-1: definition from CALL Helper() lands on the sibling's header.
+      const def = await client.request('textDocument/definition', {
+        textDocument: { uri: callerUri },
+        position: { line: 4, character: 9 }, // on `Helper`
+      });
+      const defLocs = (def.result ?? []) as any[];
+      assert.equal(defLocs.length, 1, `one location: ${JSON.stringify(defLocs)}`);
+      assert.ok(defLocs[0].uri.endsWith('/helper.esql'), 'in the sibling file');
+      assert.equal(defLocs[0].range.start.line, 3, 'on the CREATE FUNCTION line');
+
+      // And from the SHARED variable use, into its declaration.
+      const defVar = await client.request('textDocument/definition', {
+        textDocument: { uri: callerUri },
+        position: { line: 5, character: 8 }, // on `Counter`
+      });
+      const varLocs = (defVar.result ?? []) as any[];
+      assert.equal(varLocs.length, 1, 'the SHARED declaration, nowhere else');
+      assert.ok(varLocs[0].uri.endsWith('/helper.esql'));
+      assert.equal(varLocs[0].range.start.line, 2);
+
+      // G-3: references sweep both files — caller's two uses, helper's
+      // declaration plus its two uses.
+      const refs = await client.request('textDocument/references', {
+        textDocument: { uri: callerUri },
+        position: { line: 5, character: 8 },
+        context: { includeDeclaration: true },
+      });
+      const refLocs = (refs.result ?? []) as any[];
+      const onCaller = refLocs.filter((l) => l.uri === callerUri);
+      const onHelper = refLocs.filter((l) => l.uri === helperUri);
+      assert.equal(onCaller.length, 2, `caller uses: ${JSON.stringify(onCaller)}`);
+      assert.equal(onHelper.length, 3, `helper decl + uses: ${JSON.stringify(onHelper)}`);
+      assert.ok(
+        onHelper.some((l) => l.range.start.line === 2 && l.range.start.character === 8),
+        'the declaration itself is among them'
+      );
+
+      // includeDeclaration: false drops exactly the declaration.
+      const uses = await client.request('textDocument/references', {
+        textDocument: { uri: callerUri },
+        position: { line: 5, character: 8 },
+        context: { includeDeclaration: false },
+      });
+      const useLocs = (uses.result ?? []) as any[];
+      assert.equal(useLocs.length, 4, 'the four uses, no declaration');
+      assert.ok(!useLocs.some((l) => l.range.start.line === 2 && l.uri === helperUri));
+
+      // G-2: hover on the call target — synthesized signature + provenance.
+      const hov = await client.request('textDocument/hover', {
+        textDocument: { uri: callerUri },
+        position: { line: 4, character: 9 },
+      });
+      const hv = hov.result?.contents;
+      const value = typeof hv === 'string' ? hv : hv?.value ?? '';
+      assert.match(value, /FUNCTION Helper\(\) RETURNS BOOLEAN/, 'signature block');
+      assert.match(value, /defined in helper\.esql/, 'cross-file provenance line');
+      assert.match(value, /workspace/, 'the path taken is marked');
+    } finally {
+      await client.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -48,6 +48,7 @@ import {
   Position,
   ResponseError,
   ErrorCodes,
+  MarkupKind,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
@@ -55,7 +56,7 @@ import { analyze } from './diagnostics';
 import { buildCompletionItems, detectCompletionContext } from './completion';
 import { hoverAt } from './hover';
 import { documentSymbols, documentSymbolsFromTree } from './symbols';
-import { definitionAt, referencesAt, declarationsFromSource } from './definitions';
+import { definitionAt, referencesAt, declarationsFromSource, occurrences, wordAtPosition } from './definitions';
 import { mergeSettings, unwrapSettings, EsqlSettings, DEFAULT_SETTINGS } from './settings';
 import {
   initGrammar,
@@ -66,7 +67,7 @@ import {
   DocAnalysis,
   Tree,
 } from './parser';
-import { linesOf } from './scanner';
+import { linesOf, scan } from './scanner';
 import { WorkspaceIndex, extractFileFacts, WorkspaceSymbol, SharedVarFact } from './workspaceIndex';
 import { fileURLToPath } from 'url';
 
@@ -216,6 +217,142 @@ function sharedNamesFromWorkspace(): ReadonlySet<string> | undefined {
   const facts = workspaceFacts();
   if (!facts) return undefined;
   return new Set(facts.sharedVars.map((v) => v.name.toUpperCase()));
+}
+
+/** The word under the cursor exactly as the extractors see it (masked, quoted-aware). */
+function cursorWord(text: string, line: number, character: number): string | null {
+  const { lines, rawLines } = scan(text);
+  const at = wordAtPosition(lines, rawLines, line, character);
+  return at ? at.word : null;
+}
+
+/** `file:///x/helper.esql` → `helper.esql` — the hover's human location line. */
+function baseName(uri: string): string {
+  return uri.slice(uri.lastIndexOf('/') + 1);
+}
+
+/**
+ * Cross-file go-to-definition (CODE_REVIEW.md G-1): a `CALL` into a sibling
+ * routine or a SHARED variable declared in a sibling file resolved to nothing
+ * — definitions were single-file by construction. Only consulted when the
+ * document itself answered NOTHING, so a same-file declaration shadows the
+ * workspace exactly like a same-scope ESQL declaration shadows a SHARED one.
+ */
+function workspaceDefinition(word: string, fromUri: string): Location[] {
+  const out: Location[] = [];
+  for (const r of lookupRoutine(word)) {
+    if (r.uri !== fromUri) out.push(Location.create(r.uri, r.range));
+  }
+  for (const v of lookupSharedVar(word)) {
+    if (v.uri !== fromUri) out.push(Location.create(v.uri, v.range));
+  }
+  return out;
+}
+
+/**
+ * Cross-file hover (CODE_REVIEW.md G-2): the signature is synthesized from
+ * the located facts — the hover promises what the index actually knows. The
+ * `workspace —` prefix marks the path taken (the plan's assertion hook).
+ */
+function workspaceHover(word: string, fromUri: string): Hover | null {
+  const md = (code: string, where: string): Hover => ({
+    contents: {
+      kind: MarkupKind.Markdown,
+      value: '```esql\n' + code + '\n```\n\n*workspace — ' + where + '*',
+    },
+  });
+  for (const r of lookupRoutine(word)) {
+    if (r.uri === fromUri) continue;
+    const sig = r.detail.startsWith('FUNCTION')
+      ? r.detail.replace(/^FUNCTION\b/, `FUNCTION ${r.name}()`)
+      : `${r.detail} ${r.name}()`;
+    return md(sig, `defined in ${baseName(r.uri)}${r.container ? ` (module ${r.container})` : ''}`);
+  }
+  for (const v of lookupSharedVar(word)) {
+    if (v.uri === fromUri) continue;
+    return md(`DECLARE ${v.name} SHARED;`, `defined in ${baseName(v.uri)} (${v.detail})`);
+  }
+  return null;
+}
+
+/** Range equality, the way this file needs to compare fact ranges. */
+function sameRange(a: Range, b: Range): boolean {
+  return (
+    a.start.line === b.start.line &&
+    a.start.character === b.start.character &&
+    a.end.line === b.end.line &&
+    a.end.character === b.end.character
+  );
+}
+
+/**
+ * Cross-file references (CODE_REVIEW.md G-3). Two halves:
+ *  - in-file: a SHARED name declared in a SIBLING has no local declaration,
+ *    so `referencesAt` answered zero — the current file's own occurrences are
+ *    then reported through the same whole-word finder the in-file path uses.
+ *  - cross-file: every file that shares the name (declares it, by the located
+ *    facts) is scanned — open buffers from live text, disk files from the
+ *    snapshot text. Workspace ≈ application is the documented approximation
+ *    (review N-2). A ROUTINE name that resolves inside the current file keeps
+ *    its answer file-local (`Main` in ten files means ten different
+ *    routines); SHARED names are application-wide by definition, so they
+ *    always get the full sweep.
+ */
+function crossFileReferences(
+  word: string,
+  fromUri: string,
+  localRanges: Range[],
+  includeDeclaration: boolean
+): Location[] {
+  const vars = lookupSharedVar(word).filter((v) => v.uri !== fromUri);
+  const routines = lookupRoutine(word).filter((r) => r.uri !== fromUri);
+  if (vars.length === 0 && routines.length === 0) return [];
+  // A ROUTINE answered by the file itself stays file-local (local shadow,
+  // same rule as definition); a SHARED name always sweeps the workspace.
+  const localRoutineAnswer = routines.length > 0 && vars.length === 0 && localRanges.length > 0;
+  if (localRoutineAnswer) return [];
+
+  const out: Location[] = [];
+  const seen = new Set<string>();
+  const add = (uri: string, ranges: Range[]) => {
+    for (const r of ranges) {
+      const key = `${uri}|${r.start.line}:${r.start.character}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(Location.create(uri, r));
+    }
+  };
+
+  // The current file's own occurrences — its half of G-3 when the name is
+  // declared in a sibling and referencesAt had nothing to resolve.
+  const here = textDocuments.get(fromUri);
+  if (here) add(fromUri, occurrences(here.getText(), word));
+
+  for (const doc of textDocuments.all()) {
+    if (doc.uri === fromUri) continue;
+    const sharedHere =
+      vars.some((v) => v.uri === doc.uri) || routines.some((r) => r.uri === doc.uri);
+    if (sharedHere) add(doc.uri, occurrences(doc.getText(), word));
+  }
+  const openUris = new Set(textDocuments.keys());
+  for (const facts of workspaceIndex.factsFromDisk(openUris)) {
+    const sharedHere =
+      vars.some((v) => v.uri === facts.uri) || routines.some((r) => r.uri === facts.uri);
+    if (sharedHere) add(facts.uri, occurrences(facts.text, word));
+  }
+  if (includeDeclaration) {
+    // The declaration NAME itself: inside scan-able text it is already among
+    // the occurrences; this also catches names the word finder cannot spell
+    // (quoted names). The shared `seen` key keeps it idempotent.
+    for (const v of vars) add(v.uri, [v.range]);
+    for (const r of routines) add(r.uri, [r.range]);
+    return out;
+  }
+  return out.filter(
+    (l) =>
+      !vars.some((v) => v.uri === l.uri && sameRange(v.range, l.range)) &&
+      !routines.some((r) => r.uri === l.uri && sameRange(r.range, l.range))
+  );
 }
 
 /** Compute and publish diagnostics for one document, right now. */
@@ -561,7 +698,17 @@ connection.onHover((params: HoverParams): Hover | null => {
   const position = viewPosition(doc, params.position);
   if (!position) return null;
   const text = doc.getText();
-  return hoverAt(text, position.line, position.character, parsedDocument(doc.uri, text).analysis ?? undefined);
+  const local = hoverAt(
+    text,
+    position.line,
+    position.character,
+    parsedDocument(doc.uri, text).analysis ?? undefined
+  );
+  if (local) return local;
+  // G-2: hover a CALL target or SHARED name that lives in a sibling file.
+  const word = cursorWord(text, position.line, position.character);
+  if (!word) return null;
+  return workspaceHover(word, doc.uri);
 });
 
 connection.onDocumentSymbol(
@@ -588,7 +735,12 @@ connection.onDefinition((params: DefinitionParams): Location[] | null => {
     position.character,
     parsedDocument(doc.uri, text).analysis ?? undefined
   );
-  return ranges.length ? ranges.map((range) => Location.create(doc.uri, range)) : null;
+  if (ranges.length) return ranges.map((range) => Location.create(doc.uri, range));
+  // G-1: nothing in this file — sibling routines and SHARED variables next.
+  const word = cursorWord(text, position.line, position.character);
+  if (!word) return null;
+  const cross = workspaceDefinition(word, doc.uri);
+  return cross.length ? cross : null;
 });
 
 connection.onReferences((params: ReferenceParams): Location[] | null => {
@@ -605,7 +757,18 @@ connection.onReferences((params: ReferenceParams): Location[] | null => {
     includeDeclaration,
     parsedDocument(doc.uri, text).analysis ?? undefined
   );
-  return ranges.length ? ranges.map((range) => Location.create(doc.uri, range)) : null;
+  const out = ranges.map((range) => Location.create(doc.uri, range));
+  // G-3: merge the workspace half (no-op unless the name is SHARED or a
+  // routine that lives elsewhere, see crossFileReferences).
+  const word = cursorWord(text, position.line, position.character);
+  if (word) {
+    const local = new Set(out.map((l) => `${l.range.start.line}:${l.range.start.character}`));
+    for (const loc of crossFileReferences(word, doc.uri, ranges, includeDeclaration)) {
+      const key = `${loc.range.start.line}:${loc.range.start.character}`;
+      if (loc.uri !== doc.uri || !local.has(key)) out.push(loc);
+    }
+  }
+  return out.length ? out : null;
 });
 
 connection.languages.semanticTokens.on((params) => {
