@@ -1,0 +1,465 @@
+# Implementation plan — closing CODE_REVIEW.md (rev 3)
+
+**Scope:** every finding in `CODE_REVIEW.md` rev 3 — C-1…C-7, G-1…G-6, E-1…E-10,
+N-1, N-2, T-1…T-4. (Note: the review defines **G-1…G-6**; there is no G-7.
+G-4 — "rename can't exist on top of single-file references" — is not a separate
+work item; it closes the moment the rename work (N-1) lands on the fixed
+navigation, so it is tracked inside task 5.2.)
+
+Findings merge where they share one file/one mechanism; the mapping table in
+§6 guarantees nothing is dropped. Sizes: **S** ≤ 1 h · **M** = 1–4 h ·
+**L** = 0.5–2 d.
+
+## 0. Ground rules (from AGENTS.md — apply to every task)
+
+- After editing `grammar.js`: `npx tree-sitter generate` **and** `npm ci` at the
+  repo root (the `file:`-dep copy trap), corpus test in `test/corpus/`,
+  `VERIFICATION.md` note for any adjudicated construct.
+- Every new diagnostic check: unit test + e2e assertion over a real stdio
+  session + a settings-toggle case (`test/e2e.test.ts`), and it must work in
+  heuristic mode too (fallback tests must not skip via
+  `skipWithoutGrammar()`).
+- e2e fixtures are line-number-coupled — re-verify request positions when
+  editing fixture text.
+- `npm test` **and** `ESQL_LSP_NO_GRAMMAR=1 npm test` **and**
+  `npm run grammar:test` green per task; `scripts/record_demo.sh` in both modes
+  whenever completion UX changes; `npm run verify:package` before tagging.
+- Commits: one-line subject + body naming what was verified; identity
+  `nils <nige@users.noreply.github.com>`; reference findings by review id
+  (e.g. "C-1, C-2: …").
+
+---
+
+## Phase 0 — green base, quick wins
+
+### 1. T-1 — fix the failing expectation, commit the WIP  `[S]` → closes T-1
+
+The uncommitted `nextWords.ts` work is the foundation of tasks 6–7; it cannot
+stay red and unstaged.
+
+- [ ] `test/completion.test.ts`: expect `['FIELD','FIRSTCHILD','FROM']` for
+      `labelSet('DELETE F')` — the code is right (review §T-1).
+- [ ] `npm test` → 141/0; `ESQL_LSP_NO_GRAMMAR=1 npm test` → same.
+- [ ] Commit: `test/completion.test.ts` fix + `src/data/nextWords.ts` +
+      `src/completion.ts` as one coherent feature commit (the clause-aware
+      next-word completion), body naming the suite counts.
+
+### 2. C-4 — snippets as real LSP snippets  `[S]` → closes C-4
+
+- [ ] `snippetItems()` in `src/completion.ts`: set
+      `insertTextFormat = InsertTextFormat.Snippet(2)`.
+- [ ] Guard: keep it only when the client declared
+      `completionItem.snippetSupport`; otherwise strip `${1:x}`/`$0` to plain
+      text (fallback clients would insert placeholders literally). Requires
+      capturing the capability in `onInitialize` (one boolean next to
+      `clientWantsHierarchicalSymbols`) and passing it into
+      `buildCompletionItems`.
+- [ ] Unit: item carries the flag with snippetSupport; carries PlainText +
+      de-placeholdered text without it. e2e: the existing capability session
+      asserts the flag.
+
+### 3. E-6 + T-4 + C-7 — one extractor for the fallback patterns  `[S/M]` → closes E-6, T-4, C-7
+
+- [ ] Delete `MODULE_RE` from `src/diagnostics.ts`; import the
+      `CREATE … MODULE` matcher (or a `moduleHeaderMatch(line)` helper) from
+      `src/definitions.ts` — single source, `DATABASEEVENT` included, so
+      `missing-end-module` / `module-no-main` fire on DATABASEEVENT modules.
+- [ ] Add the AGENTS-style pin comment: fallback regexes live in
+      `definitions.ts` and are imported, never re-typed (T-4).
+- [ ] C-7: fix `DECLARE_RE` in `src/definitions.ts` — a flag word may not be
+      consumed as the datatype when no real type follows
+      (`(?!(?:SHARED|EXTERNAL|CONSTANT)\b)` before the type group), so
+      mid-edit `DECLARE x SHARED ` declares nothing in heuristic mode, matching
+      the tree. Add the mode-parity completion-count test (243 == 243).
+- [ ] Unit: DATABASEEVENT module missing Main/END MODULE now flagged;
+      `DECLARE x SHARED;` / `DECLARE x SHARED ` declare nothing;
+      `DECLARE x SHARED INTEGER;` still declares.
+
+---
+
+## Phase 1 — the workspace symbol foundation (unlocks navigation, completion, rename)
+
+### 4. N-2 — located workspace facts + lookup API  `[M]` → closes N-2 (enables 5, 6, 10, 13)
+
+Today `FileFacts.sharedNames` is `Set<string>` — names without a home. Everything
+cross-file (definition, references, rename, completion detail) needs *located*
+facts. Extend, don't rebuild:
+
+- [ ] `src/workspaceIndex.ts`: add to `FileFacts` a
+      `sharedVars: Array<{ name, uri, range, detail }>` (keep `sharedNames`
+      derived or replace its readers — `sharedNamesFromDisk` has exactly one
+      caller in `server.ts`). `extractFileFacts` already runs
+      `declarationsFromSource`, which carries ranges and `shared: true`.
+- [ ] Index query API: `lookupRoutine(name)`, `lookupSharedVar(name)` over
+      disk facts **plus live open documents** (same overlay pattern as
+      `sharedNamesFromWorkspace()` in `server.ts:164` — hoist that overlay into
+      a reusable `workspaceFacts()` helper so every consumer gets one merge).
+- [ ] Index routines by uppercase name (Map) for O(1) lookup; keep
+      `symbolsFromDisk` for `workspace/symbol` as-is.
+- [ ] Unit: located SHARED facts extracted (incl. quoted SHARED names — must
+      agree with task 5's outcome); lookup merges live buffer edits over the
+      disk snapshot.
+
+### 5. G-5 + T-2 — quoted names in the tree path  `[M]` → closes G-5, T-2
+
+Independent of tasks 4–7; do it while the parser code is fresh. The grammar
+emits `quoted_identifier`; `analyzeDocument()` only indexes `identifier`
+children.
+
+- [ ] `src/parser.ts` declare-statement walk: also index
+      `child.type === 'quoted_identifier'` (name = text without the quotes,
+      range = inner text, matching `wordAtPosition`'s quoted handling so
+      cursor↔declaration ranges agree).
+- [ ] Fix the wrong comment at `src/parser.ts:747` — it states the inverse of
+      reality.
+- [ ] Check the same walk for other `quoted_identifier` sites (routine
+      `EXTERNAL NAME`, `NAME 'alias'` clauses) — index or document.
+- [ ] T-2: give every quoted-name expectation in `test/definitions.test.ts` a
+      grammar-mode twin (pass the real `DocAnalysis`, not `undefined`); add a
+      quoted name to the fixture `test/symbols.test.ts` compares across modes —
+      it must appear in the grammar outline (currently vanishes: measured).
+
+### 6. G-1 + G-2 + G-3 + G-4(partial) + T-3 — cross-file navigation  `[L]` → closes G-1, G-2, G-3, T-3 (needs 4)
+
+One coherent change: the feature modules gain a *workspace lookup* parameter;
+`server.ts` resolves what the document itself cannot answer.
+
+- [ ] Definition: in `onDefinition` (`src/server.ts:532`), when local
+      `definitionAt` finds nothing for the word and a workspace root exists:
+      `lookupRoutine` / `lookupSharedVar` → `Location` in the declaring file.
+      Keep same-file resolution winning (local shadow). Applies to both parse
+      modes (the index is heuristic-extracted anyway → mode-identical).
+- [ ] Hover: same fallback → signature block synthesized from facts
+      (`FUNCTION RETURNS X`, container module, uri) with a `defined in
+      helper.esql` line.
+- [ ] References (G-3 first, then cross-file): `referencesAt` currently reports
+      zero for a name declared in a sibling — fix the in-file half: when the
+      word matches a workspace SHARED name (or has a located fact), report the
+      current file's occurrences. Cross-file half: `onReferences` additionally
+      consults located facts **and** scans other files' text (disk snapshot +
+      open buffers) with the existing whole-word occurrence finder — SHARED
+      variables and user routines are the two worth scanning (documented
+      workspace≈application approximation, see review N-2's last row).
+- [ ] Mark cross-file results so hover/e2e can assert the path taken.
+- [ ] T-3: new e2e case — open a two-file fixture workspace, `definition` from
+      `CALL` jumps to the sibling, `references` on the SHARED name returns
+      ranges in both files, hover on the call target shows the signature;
+      must pass with and without the grammar.
+- [ ] README feature section: cross-file go-to-definition is no longer
+      "planned" — update the roadmap lines the review cited.
+
+### 7. G-6 — schema segment vs `Main()` routine  `[S]` → closes G-6
+
+- [ ] In the tree path of `definitionAt`, when the cursor's word sits inside a
+      `schema_name` node, drop routine matches; heuristic path: same rule when
+      the line matches `BROKER SCHEMA …` within the cursor span.
+- [ ] Unit: `BROKER SCHEMA com.acme.main` with a `Main()` routine in view →
+      exactly one location (the schema), and clicking `Main` still finds the
+      routine.
+
+---
+
+## Phase 2 — completion upgrade
+
+### 8. C-1 + C-2 — routines and workspace SHARED names in the list  `[M]` → closes C-1, C-2 (needs 4)
+
+- [ ] Feed routines to `buildCompletionItems`: own file's
+      `analysis.routines` (both modes: `routinesFromSource` is already shared)
+      as `Function`-kind items with signature detail; workspace routines via
+      task-4 lookup, detail `in <file> · <signature>`.
+- [ ] SHARED variables from task 4 lookup as `Variable` items, detail
+      `SHARED, declared in <file>`.
+- [ ] Keep them *out* of clause-narrowed lists (the `=` `TYPE` `VALUE` lists
+      must stay closed); additive/general only. Dedupe by label still applies;
+      same-file wins over same-named workspace fact.
+- [ ] Position-sensitivity: routine items appear in general lists everywhere
+      (they are valid in expressions too), not only after `CALL`.
+- [ ] Unit + e2e (both modes): `CALL Hel` → `Helper`; general list contains
+      `Main` and `FailureCount`; narrowed `SET x ` list unchanged (still 5).
+
+### 9. C-3 — let the client do fuzzy matching  `[S/M]` → closes C-3 (touches 8's output)
+
+- [ ] Drop the `startsWith` pruning in `filterByPrefix` for the **general**
+      list; keep the clause-table narrowing (that is context, not prefix).
+- [ ] Set `filterText = label` on items whose label can fool matchers (quoted
+      names → the bare name; snippets keep the label as typed).
+- [ ] `sortText`: put clause-rule items and in-scope declared names first so
+      label-alphabetical clients still rank sensibly.
+- [ ] Re-run `scripts/record_demo.sh` in **both** modes — the README demo
+      drives omnifunc with explicit C-n/C-y and asserts pane content; verify
+      the asserted selections still land.
+- [ ] Perf guard: list-size assertion in a test (general list bounded, ≤ ~300
+      items as today).
+
+---
+
+## Phase 3 — diagnostic messages (the ELM pass)
+
+### 10. E-1 + E-8 + E-10 — the message builder never goes silent  `[L]` → closes E-1, E-8, E-10 (shared util also serves 12–14)
+
+- [ ] New shared util `src/suggest.ts`: bounded Levenshtein +
+      `didYouMean(word, candidates, maxDist)`; candidate lists built from data
+      the server already has (keywords, `ESQL_TYPES`, workspace routines,
+      declared names in scope). Unit tests incl. case-insensitivity and the
+      empty-list contract ("no suggestions" ≠ guessing).
+- [ ] `describeDamagedRegion()` in `src/parser.ts`: the bare `Syntax error.`
+      fallthrough (line ~646) must become — in priority order —
+      1. **Semicolon case (E-8)**: last token of the region completes a
+         statement (`;`-terminated grammar shape) and the following token
+         starts a new statement keyword →
+         `Statement is not terminated — expected ';' here.` (this recovers
+         what heuristic mode's hint already said, in grammar mode);
+      2. **Found-token case**: quote the offending token and name what the
+         region was attached to:
+         `Unexpected 'SETN' in a SET statement. Did you mean 'SET'?`
+         (did-you-mean only against keywords within edit distance);
+      3. **Last resort** (still no bare text): `Syntax error in <phrase>:
+         unexpected '<token>' here.` — the region text is always quoted.
+- [ ] Corpus of message assertions: extend `test/parser.test.ts` with
+      `messageFor(snippet)` expectations for the review's live cases (SETN,
+      unclosed CAST, missing `;` variants) — messages become tested surface,
+      not ad-hoc strings.
+- [ ] Keep `Missing syntax: expected …` paths; add the opening-paren position
+      when the grammar exposes it (`expected ')' — this '(' on line 8 is
+      unclosed`).
+
+### 11. E-2 + E-7 — damage-tolerant analysis, honest cascade message  `[L]` → closes E-2, E-7
+
+- [ ] Message (E-2a): when a top-level statement's ERROR region starts at a
+      statement keyword and extends ≥2 statements, the message names the
+      unterminated statement and anchors at its end:
+      `This DECLARE statement is not terminated — expected ';' before 'CREATE'.`
+      (the follow-token scan from task 10 already exists by then).
+- [ ] Mining (E-2b): declaration/routine extraction must keep working inside
+      ERROR regions. Recommended route (reuses one extractor, no new parser):
+      run the heuristic extractors (`declarationsFromSource`,
+      `routinesFromSource`) over the *region text* and merge results with the
+      tree's — tree ranges win where they agree; damaged-only names come from
+      the regex pass. Both modes then behave identically under damage.
+- [ ] E-7: when the grammar emitted a syntax error covering a module header,
+      `checkModuleStructure` suppresses its duplicate `missing-end-module`
+      **iff** the grammar message already says module; better per review:
+      promote the grammar message to the good `missing-end-module` text and
+      suppress the grammar's generic phrasing for that shape instead. One
+      diagnostic per root cause; assert via fixture `unclosed.esql`.
+- [ ] Regression probe: the review's E-2 fixture must keep definitions +
+      completion + undeclared-check alive under the single file-wide ERROR.
+
+### 12. E-3 — `LOGICAL` adjudication  `[M]` → closes E-3
+
+Per repo rule the ACE 12.0.x **railroad diagram adjudicates** — decide first,
+implement second, and record the decision either way in `VERIFICATION.md`
+("Unadjudicated construct gaps" discipline).
+
+- [ ] Check the diagram / IBM docs for `LOGICAL` in DECLARE (webfetch only —
+      ibm.com 403s shell curl, per repo graveyard).
+- [ ] **If legal** (expected): add `LOGICAL` to the grammar `datatype` rule →
+      `npx tree-sitter generate` → `npm ci` → corpus test → `grammar:test`;
+      add it to `ESQL_TYPES` (`src/data/esqlData.ts`) marked deprecated
+      ("legacy synonym — prefer INTEGER/BOOLEAN") so completion offers it;
+      optionally a *hint*-severity `deprecated-type` note (new code, setting,
+      unit + e2e + toggle case per ground rules).
+- [ ] **If rejected**: keep the error, fix the lie in the message:
+      `Unknown data type 'LOGICAL' — ESQL knows CHARACTER, INTEGER, … ;
+      did you mean 'BOOLEAN'?` (uses task 10's util), and keep `LOGICAL` out
+      of `ESQL_TYPES`.
+- [ ] Either way: both-modes test that a clean file with `LOGICAL` yields
+      grammar mode and heuristic mode the *same or strictly softer* result —
+      the "tree path worse than fallback" split is the actual defect.
+
+---
+
+## Phase 4 — new checks (cheap once the index + suggest util exist)
+
+### 13. E-4 — unknown `CALL` target  `[M]` → closes E-4
+
+- [ ] New check in `src/diagnostics.ts`: bare `CALL <name>` / expression
+      function references whose name is not declared in file, not in the
+      workspace index (task-4 lookup incl. open buffers), not a built-in —
+      message: `Routine 'DoesNotExist' is not defined in this file or
+      workspace. Did you mean 'Helper'?` (task-10 util).
+- [ ] New code `unknown-routine`; settings flag `checkUnknownRoutines`;
+      README diagnostics table row; **only active with a workspace root**
+      (no root → the workspace says nothing, stay silent, like I-13's rule).
+- [ ] False-positive guards (name them in code comments): dynamic/external
+      routines (`EXTERNAL NAME`), index overflow files (skipped count > 0 →
+      suppress or soften), built-in list from `esqlData`.
+- [ ] Ground-rule test trio incl. settings toggle + both modes + a no-root
+      degradation case.
+
+### 14. E-5 — undeclared reads  `[L]` → closes E-5
+
+- [ ] Grammar mode: walk `doc.references` (kind `variable`) — a read whose
+      name is nowhere in scope, not reserved, not workspace-SHARED →
+      `Variable 'UndeclaredRead' is read here but never declared.` with
+      did-you-mean against names in scope.
+- [ ] Heuristic mode (required — checks work in both): conservative
+      occurrence-based pass — whole-word bare identifiers on masked code
+      lines, excluding dotted-path parts, statement keywords, labels,
+      routine names, and anything in `RESERVED_SET_TARGETS`/declared/workspace
+      sets; suppress the whole check in files the scanner flags as damaged.
+- [ ] Reword the write-target message to distinguish the two roles ("assigned
+      here" vs "read here") — today "used in SET" is a lie by omission.
+- [ ] Own settings flag `checkUndeclaredReads` (default on), code
+      `undeclared-read`, ground-rule test trio, and a false-positive sweep on
+      the real 103-file corpus before defaulting on (the I-13 experience says
+      measure, then decide).
+
+---
+
+## Phase 5 — rename (the answer to "does it work in third files?")
+
+### 15. N-1a — `prepareRename` + same-file rename  `[M]` → part of N-1
+
+- [ ] Capability: `renameProvider: { prepareProvider: true }`.
+- [ ] `prepareRename`: reuse `wordAtPosition` (quoted names already handled —
+      placeholder = bare name); reject on built-ins, path elements, comments,
+      past-EOF (follow the `viewPosition` conventions).
+- [ ] `rename` for file-local symbols (routine-body/module-scope variables,
+      parameters): reuse `referencesAt` incl. quoted uses; return one
+      `WorkspaceEdit` over the requesting file only.
+- [ ] **Refuse cleanly, don't half-do:** SHARED variables and routines while a
+      workspace root exists and cross-file isn't wired yet →
+      `ResponseError` naming why ("declared SHARED — other files may call it;
+      cross-file rename arrives with the workspace pass"). This safety rule
+      exists precisely because the same-file rename of a SHARED name *breaks*
+      siblings.
+- [ ] Tests: e2e rename of a local var (both modes), quoted-name rename, the
+      refusal case.
+
+### 16. N-1b + G-4 — workspace-wide rename, third files included  `[L]` → closes N-1, G-4 (needs 4, 6, 15)
+
+- [ ] Generalize task 6's cross-file reference engine into
+      `workspaceReferences(name, kind)`: located facts (task-4 SHARED decls +
+      routines) + per-file text scan (disk snapshot via index + live open
+      documents; open text always wins) → `Location[]` across files.
+- [ ] `rename` now unions: current file (ranges from `referencesAt`), other
+      open documents (ranges from the live text), disk files (re-read text,
+      re-scan with the same occurrence finder at request time — stale-snapshot
+      guard: if a disk file changed on disk since indexing, re-scan fresh).
+- [ ] SHARED semantics honesty: the change includes an annotation
+      (`WorkspaceEdit.changeAnnotation` or a `message` in the UI flow) that
+      ACE SHARED scope is *application*-wide and this renamed everything the
+      *workspace* could see (the documented approximation, surfaced where the
+      user can act on it).
+- [ ] Bounds: respect the index caps (500 files / size limits); refuse with a
+      clear error when the workspace was skipped/truncated rather than a
+      silent partial rename.
+- [ ] e2e: three-file fixture — rename a SHARED variable in file A, assert
+      edits land in A (decl), B (uses), C (uses); routine rename rewrites a
+      cross-file `CALL`; quoted-name SHARED rename; both modes.
+- [ ] README: rename documented as a feature; roadmap line flipped from
+      "planned".
+
+---
+
+## Phase 6 — quick fixes (the last ELM ingredient)
+
+### 17. E-9 — `codeActionProvider` + fix set  `[L]` → closes E-9 (needs phases 3–4 stable)
+
+- [ ] Advertise `codeActionProvider` (quickfix kind only); match published
+      diagnostics by `code` — every code names its fix.
+- [ ] Fixes, in order of message-implies-edit clarity:
+      1. `deprecated-parser` → rewrite `XMLNS` → `XMLNSC` (range is exact);
+      2. `missing-end-module` → insert `END MODULE;` at EOF (indent-matched);
+      3. `no-propagation` → insert `RETURN TRUE;` in Main's `END;`;
+      4. `output-root-properties` → insert the `SET OutputRoot.Properties =
+         InputRoot.Properties;` line at the routine head;
+      5. `undeclared-variable` / `undeclared-read` → insert
+         `DECLARE <name> CHARACTER;` skeleton (type = CAST-hinted if inferable,
+         else ask via a second oneOf-style action variant, not a guess);
+      6. semicolon-family (from tasks 10/11 when the message named `;`) →
+         insert `;` at the anchor;
+      7. `did-you-mean` variants → replace-with-suggestion, one action per
+         candidate, max 3.
+- [ ] Each fix is a `WorkspaceEdit`; unit-test each transform, e2e asserts the
+      action list for a published diagnostic and applying one over stdio.
+- [ ] Settings: fixes obey the owning check's toggle.
+
+---
+
+## Phase 7 — lower-priority completion work
+
+### 18. C-5 — better static message-tree completion (model work stays deferred)  `[M]` → closes C-5 at its agreed scope
+
+- [ ] Interim, static, honest: after `.JSON.` offer `Data` **and** `Properties`
+      (with the copy-hint doc); `InputLocalEnvironment.` etc. get the known LE
+      field list (already exist — extend `ESQL_LOCAL_ENVIRONMENT_FIELDS`
+      against the ACE docs page, webfetch, attribution note);
+      `Database.` placeholder gains a "configure the datasource in the
+      Integration Server" doc line (it has one — extend with `SET` example).
+- [ ] Keep the placeholder-only behaviour for XMLNSC paths, but say so *in the
+      item* (it already does) and add the explicit deferral note to README:
+      model-driven (XSD/MRM/BDF) field completion is its own project phase —
+      it needs message-model parsing, which is outside this repo's current
+      scope. Do **not** fake it.
+
+### 19. C-6 — tree-backed clause state (grammar mode only)  `[L]` → closes C-6
+
+- [ ] In grammar mode, resolve the cursor's enclosing node from the parse tree
+      and derive the legal next words from the grammar (`node-types.json`
+      `next` sibling edges) instead of the current-line table; multi-line
+      clauses then narrow correctly.
+- [ ] Heuristic mode (and damaged regions, incl. mid-edit files the parser
+      hasn't recovered): keep the `NEXT_WORD_RULES` table — it stays the
+      fallback, per the project's degradation promise.
+- [ ] Parity tests: every clause the table covers, written across two lines,
+      narrows the same in tree mode as the table does on one line; demo
+      re-run both modes (this changes what users see while typing).
+
+---
+
+## Ordering & rationale (summary)
+
+| # | Task | Closes | Depends on | Size |
+|---|------|--------|------------|------|
+| 1 | green base + commit WIP | T-1 | — | S |
+| 2 | snippet format | C-4 | — | S |
+| 3 | one extractor | E-6, T-4, C-7 | — | S/M |
+| 4 | located workspace facts | N-2 | — | M |
+| 5 | quoted names, both modes | G-5, T-2 | — | M |
+| 6 | cross-file navigation | G-1, G-2, G-3, T-3 | 4 | L |
+| 7 | schema vs `Main` | G-6 | — | S |
+| 8 | routine + SHARED completion | C-1, C-2 | 4 | M |
+| 9 | filterText | C-3 | 8 | S/M |
+| 10 | message builder + did-you-mean | E-1, E-8, E-10 | — | L |
+| 11 | damage tolerance | E-2, E-7 | 10 | L |
+| 12 | LOGICAL adjudication | E-3 | 10 (if message route) | M |
+| 13 | unknown CALL check | E-4 | 4, 10 | M |
+| 14 | undeclared reads | E-5 | 4, 10 | L |
+| 15 | same-file rename | N-1a | 3 | M |
+| 16 | cross-file rename | N-1b, G-4 | 4, 6, 15 | L |
+| 17 | quick fixes | E-9 | 10–14 | L |
+| 18 | static tree completion | C-5 | — | M |
+| 19 | tree-backed clause state | C-6 | 8 | L |
+
+**Why this order:** 1–3 cost almost nothing and make everything else
+comfortable (green base, shared extractor). 4 is the *only* true infrastructure
+task — three phases consume it — so it precedes everything cross-file. 5–7 are
+correctness repairs that don't wait on anything. Completion (8–9) follows the
+index change it rides on. The message pass (10–12) is the user-visible heart of
+the ELM goal and needs no dependencies beyond the phase, while the new checks
+(13–14) deliberately come *after* it because their messages should use the
+did-you-mean utility and share the wording conventions. Rename is sequenced
+late on purpose: the safety story ("renaming SHARED breaks siblings") only
+holds once 16 can actually see all files, and 15's explicit refusal makes the
+interim state safe rather than silently wrong. Quick fixes last so they fix
+final, well-worded diagnostics.
+
+**Mapping check (nothing dropped):** C-1→8 · C-2→8 · C-3→9 · C-4→2 · C-5→18 ·
+C-6→19 · C-7→3 · G-1→6 · G-2→6 · G-3→6 · G-4→16 · G-5→5 · G-6→7 · E-1→10 ·
+E-2→11 · E-3→12 · E-4→13 · E-5→14 · E-6→3 · E-7→11 · E-8→10 · E-9→17 ·
+E-10→10 · N-1→15+16 · N-2→4 · T-1→1 · T-2→5 · T-3→6 · T-4→3. There is no G-7
+in the review.
+
+## Global verification gate (end of every phase)
+
+```
+npm test
+ESQL_LSP_NO_GRAMMAR=1 npm test        # fallback tests must run, grammar-only skip
+npm run grammar:test                  # + generate/npm ci dance if grammar.js changed (task 12)
+npm run smoke:stdio -- --expect-grammar
+scripts/record_demo.sh                # both modes, once completion UX changed (phases 2, 7)
+npx npm@10 ci --dry-run               # after any dependency change
+npm run verify:package                # before any tag
+```
