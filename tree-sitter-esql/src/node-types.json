@@ -693,6 +693,10 @@
           "named": true
         },
         {
+          "type": "kw_LOGICAL",
+          "named": true
+        },
+        {
           "type": "kw_MINUTE",
           "named": true
         },
@@ -3202,6 +3206,10 @@
   },
   {
     "type": "kw_LOG",
+    "named": true
+  },
+  {
+    "type": "kw_LOGICAL",
     "named": true
   },
   {

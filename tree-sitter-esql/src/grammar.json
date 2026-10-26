@@ -1432,6 +1432,18 @@
         }
       }
     },
+    "kw_LOGICAL": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 1,
+        "content": {
+          "type": "PATTERN",
+          "value": "LOGICAL",
+          "flags": "i"
+        }
+      }
+    },
     "kw_LOOP": {
       "type": "TOKEN",
       "content": {
@@ -8517,6 +8529,10 @@
             {
               "type": "SYMBOL",
               "name": "kw_FLOAT"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "kw_LOGICAL"
             },
             {
               "type": "SEQ",

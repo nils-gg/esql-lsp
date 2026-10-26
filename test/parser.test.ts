@@ -520,6 +520,26 @@ test('names, routines and SET targets inside the cascade survive (E-2b)', async 
   );
 });
 
+// ── E-3: the legacy LOGICAL datatype ───────────────────────────────────────
+
+test('legacy LOGICAL parses cleanly — the grammar false-flag is gone (E-3)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // Measured defect: `DECLARE legacy LOGICAL;` in an otherwise CLEAN file
+  // yielded `Syntax error in a DECLARE statement.` plus an "expected a data
+  // type here." lie from the tree path, while the fallback said nothing —
+  // grammar mode was worse than its own degradation. The adjudication
+  // (VERIFICATION.md): pre-ACE vocabulary, real legacy code, ACE 12 still
+  // compiles it → the permissive grammar accepts it.
+  const src = i12wrap('DECLARE legacy LOGICAL;', 'DECLARE off LOGICAL FALSE;', 'RETURN TRUE;');
+  const doc = analyzeDocument(parse(src)!, src);
+  assert.deepEqual(doc.syntaxIssues.map((i) => i.message), [], JSON.stringify(doc.syntaxIssues));
+  assert.deepEqual(
+    doc.declaredNames.map((d) => [d.name, d.detail]),
+    [['legacy', 'LOGICAL'], ['off', 'LOGICAL']],
+    'both declarations are indexed, type as written'
+  );
+});
+
 test('a wholly collapsed module is reported on its definition line (I-12)', async (t) => {
   if (!(await skipWithoutGrammar(t))) return;
   // Damage so deep (unterminated IF) that the whole module becomes one ERROR:

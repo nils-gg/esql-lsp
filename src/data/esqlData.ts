@@ -55,6 +55,11 @@ export const ESQL_TYPES: EsqlTypeDoc[] = [
   { name: 'FLOAT', description: 'Approximate real number.' },
   { name: 'DECIMAL', description: 'Exact real number.' },
   { name: 'BOOLEAN', description: 'TRUE or FALSE.' },
+  {
+    name: 'LOGICAL',
+    description:
+      'Legacy truth value (pre-ACE ESQL), still compiled by ACE 12 — **deprecated**: prefer `BOOLEAN`.',
+  },
   { name: 'DATE', description: 'Date without time.' },
   { name: 'TIME', description: 'Time without date.' },
   { name: 'TIMESTAMP', description: 'Date and time combined.' },

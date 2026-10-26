@@ -461,6 +461,57 @@ test('the deprecated-parser and JSON hints each answer to their own setting', ()
   assert.deepEqual(heads({ ...D, checkOutputRootProperties: false }), [XMLNS]);
 });
 
+// ── E-3: the legacy LOGICAL datatype — the hint side (grammar side lives in
+// parser.test; the defect was the two paths DISAGREEING) ────────────────────
+
+const LOGICAL_MODULE = [
+  'CREATE COMPUTE MODULE LegacyTypes',
+  '    CREATE FUNCTION Main() RETURNS BOOLEAN',
+  '    BEGIN',
+  '        DECLARE flag LOGICAL;',
+  '        SET flag = TRUE;',
+  '        RETURN TRUE;',
+  '    END;',
+  'END MODULE;',
+  '',
+].join('\n');
+
+const LOGICAL_HINT = "Data type 'LOGICAL' is legacy ESQL and deprecated. Use 'BOOLEAN' in ACE 12.";
+
+test('legacy LOGICAL gets the deprecated-type hint, nothing else fires', () => {
+  const { errors, warnings, hints } = messages(LOGICAL_MODULE);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(hints, [LOGICAL_HINT]);
+});
+
+test('the hint lives in the datatype slot, not the word (E-3 regex precision)', () => {
+  // A variable NAMED logical is not a deprecated type; SHARED/EXTERNAL sit
+  // between name and type per the railroad and must not hide the type.
+  const named = ['DECLARE logical INTEGER;', 'SET logical = 1;', ''].join('\n');
+  assert.equal(messages(named).hints.length, 0, 'name slot, not type slot');
+  const shared = ['DECLARE TraceEnabled SHARED LOGICAL TRUE;', ''].join('\n');
+  assert.deepEqual(messages(shared).hints, [LOGICAL_HINT]);
+  const multi = ['DECLARE a, b LOGICAL;', ''].join('\n');
+  assert.deepEqual(messages(multi).hints, [LOGICAL_HINT]);
+});
+
+test('the LOGICAL hint answers to checkDeprecatedTypes on its own', () => {
+  const heads = (settings: typeof D) => analyze(LOGICAL_MODULE, settings).map((d) => d.message.slice(0, 10));
+  assert.deepEqual(heads(D), ['Data type ']);
+  assert.deepEqual(heads({ ...D, checkDeprecatedTypes: false }), []);
+});
+
+test('LOGICAL: grammar mode never says MORE than the fallback (E-3 probe)', async (t) => {
+  const heur = analyze(LOGICAL_MODULE, D).map((d) => [d.code, d.message, d.range.start.line, d.range.start.character]);
+  assert.deepEqual(heur, [['deprecated-type', LOGICAL_HINT, 3, 21]]);
+  if (!(await skipWithoutGrammar(t))) return;
+  const doc = analyzeDocument(parse(LOGICAL_MODULE)!, LOGICAL_MODULE);
+  assert.deepEqual(doc.syntaxIssues, [], 'the false flag must not come back');
+  const grammar = analyze(LOGICAL_MODULE, D, doc).map((d) => [d.code, d.message, d.range.start.line, d.range.start.character]);
+  assert.deepEqual(grammar, heur, 'both paths agree line-for-line on legacy ESQL');
+});
+
 test('diagnostics can be disabled via settings', () => {
   // Module structure (ungated) is satisfied: Main() present, END MODULE present.
   const src = [
@@ -479,6 +530,7 @@ test('diagnostics can be disabled via settings', () => {
     checkPropagation: false,
     checkMissingSemicolon: false,
     checkDeprecatedParsers: false,
+    checkDeprecatedTypes: false,
     checkOutputRootProperties: false,
   };
   assert.deepEqual(analyze(src, allOff), []);

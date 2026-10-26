@@ -344,9 +344,9 @@ Per repo rule the ACE 12.0.x **railroad diagram adjudicates** — decide first,
 implement second, and record the decision either way in `VERIFICATION.md`
 ("Unadjudicated construct gaps" discipline).
 
-- [ ] Check the diagram / IBM docs for `LOGICAL` in DECLARE (webfetch only —
+- [x] Check the diagram / IBM docs for `LOGICAL` in DECLARE (webfetch only —
       ibm.com 403s shell curl, per repo graveyard).
-- [ ] **If legal** (expected): add `LOGICAL` to the grammar `datatype` rule →
+- [x] **If legal** (expected): add `LOGICAL` to the grammar `datatype` rule →
       `npx tree-sitter generate` → `npm ci` → corpus test → `grammar:test`;
       add it to `ESQL_TYPES` (`src/data/esqlData.ts`) marked deprecated
       ("legacy synonym — prefer INTEGER/BOOLEAN") so completion offers it;
@@ -356,9 +356,28 @@ implement second, and record the decision either way in `VERIFICATION.md`
       `Unknown data type 'LOGICAL' — ESQL knows CHARACTER, INTEGER, … ;
       did you mean 'BOOLEAN'?` (uses task 10's util), and keep `LOGICAL` out
       of `ESQL_TYPES`.
-- [ ] Either way: both-modes test that a clean file with `LOGICAL` yields
+- [x] Either way: both-modes test that a clean file with `LOGICAL` yields
       grammar mode and heuristic mode the *same or strictly softer* result —
       the "tree path worse than fallback" split is the actual defect.
+
+  *Landed as:* the diagram route ran but the diagram does NOT list LOGICAL:
+  the 12.0.x DECLARE page (ak04980_) and the ESQL non-reserved keywords page
+  (both fetched verbatim 2026-10-26) omit it — it is pre-ACE vocabulary. The
+  permissive-superset rule still accepts it (real legacy ESQL ACE 12 compiles;
+  the review measured that), so this is the accept branch + the optional hint,
+  recorded in VERIFICATION.md. `kw_LOGICAL` joins `datatype` with zero new LR
+  conflicts; corpus pins bare/`FALSE`-valued/`SHARED`-before-datatype forms.
+  Rev-2's `DECLARE TraceEnabled LOGICAL SHARED TRUE;` repro was confounded:
+  SHARED-after-datatype is rejected for EVERY datatype (INTEGER included) and
+  the diagram puts SHARED before it — not a LOGICAL issue, left strict.
+  Analyzer side: flat `deprecated-type` HINT (setting `checkDeprecatedTypes`,
+  README row + settings JSON), regex pins the DATATYPE SLOT (name list +
+  optional SHARED/EXTERNAL/CONSTANT first) so `DECLARE logical INTEGER;`
+  cannot false-positive; `ESQL_TYPES` carries LOGICAL marked deprecated.
+  Both-modes probe asserts the full diagnostic list (codes+messages+ranges)
+  is IDENTICAL between modes and grammar mode reports zero syntax issues;
+  e2e ships the hint over stdio + its own toggle-off case (no skip guard —
+  the flat check's mode-independence is the E-3 point; severity 4 = LSP Hint).
 
 ---
 

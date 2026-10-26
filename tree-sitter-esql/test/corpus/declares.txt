@@ -544,3 +544,69 @@ END MODULE;
         (kw_END)))
     (kw_END)
     (kw_MODULE)))
+
+===
+legacy LOGICAL datatype (pre-ACE synonym, accepted permissively — E-3)
+===
+
+DECLARE TraceEnabled SHARED LOGICAL TRUE;
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE flag LOGICAL;
+  DECLARE off LOGICAL FALSE;
+  RETURN flag;
+END
+END MODULE;
+---
+
+(source_file
+  (declare_statement
+    (kw_DECLARE)
+    (identifier)
+    (kw_SHARED)
+    (datatype
+      (kw_LOGICAL))
+    (expression
+      (primary_expression
+        (kw_TRUE))))
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (datatype
+              (kw_LOGICAL))))
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (datatype
+              (kw_LOGICAL))
+            (expression
+              (primary_expression
+                (kw_FALSE)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (field_reference
+                  (identifier))))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))

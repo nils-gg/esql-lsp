@@ -36,6 +36,14 @@ const ROUTINE_RE = /\bCREATE\s+(?:FUNCTION|PROCEDURE)\b/i;
  * path, i.e. followed by a dot. A namespace-declaration prefix is spelled
  * `xmlns:something` and is a NAME, not the parser (ISSUES.md I-8). */
 const XMLNS_RE = /\bXMLNS\b(?!C)(?=[ \t]*\.)/i;
+// Legacy truth-value datatype (CODE_REVIEW.md E-3). The datatype SLOT is
+// pinned — name list then optional SHARED/EXTERNAL/CONSTANT (the railroad's
+// order) then LOGICAL — so a variable literally named `logical`
+// (`DECLARE logical INTEGER;`) cannot light up, and the line is masked, so
+// `'LOGICAL'` inside a string stays silent. Best-effort by design: a DECLARE
+// split across lines is missed, exactly like the other flat checks.
+const DECLARE_LOGICAL_RE =
+  /\bDECLARE\b\s+[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*(?:\s+(?:SHARED|EXTERNAL|CONSTANT))*\s+(LOGICAL)\b/i;
 const JSON_DATA_RE = /^\s*SET\s+OutputRoot\.JSON\.Data\b/i;
 const PROPS_MENTIONED_RE = /\bProperties\b/i;
 const PROPS_COPIED_RE = /SET\s+OutputRoot\.Properties\b/i;
@@ -164,6 +172,7 @@ export function analyze(
     checkPropagateOrReturn(lines, diagnostics);
   }
   if (settings.checkDeprecatedParsers) checkDeprecatedParsers(lines, diagnostics);
+  if (settings.checkDeprecatedTypes) checkDeprecatedTypes(lines, diagnostics);
   // With the grammar there is an authoritative error for a real missing `;`
   // already — the hint would only add noise.
   if (settings.checkMissingSemicolon && !doc) checkMissingSemicolons(lines, diagnostics);
@@ -190,6 +199,7 @@ export type DiagnosticCode =
   | 'no-propagation'
   | 'unclosed-main'
   | 'deprecated-parser'
+  | 'deprecated-type'
   | 'missing-semicolon'
   | 'output-root-properties';
 
@@ -198,7 +208,7 @@ export type DiagnosticCode =
  * Where the diagnostic codes are documented, sent as LSP `codeDescription.href`
  * on every diagnostic so a client can offer "explain this problem" without
  * matching message text. One anchor for the whole family: the README table
- * documents all nine codes and mirrors the setting names; per-code anchors
+ * documents all ten codes and mirrors the setting names; per-code anchors
  * would rot the moment the table is reworded.
  */
 const DIAGNOSTIC_DOCS_HREF = 'https://github.com/nils-gg/esql-lsp#diagnostics';
@@ -368,6 +378,31 @@ function checkDeprecatedParsers(lines: string[], out: Diagnostic[]): void {
       "Parser 'XMLNS' is deprecated. Use 'XMLNSC' in ACE 12.",
       DiagnosticSeverity.Warning,
       'deprecated-parser'
+    ));
+  }
+}
+
+/**
+ * 6. Legacy `LOGICAL` data type (CODE_REVIEW.md E-3). The grammar ACCEPTS it
+ * (permissive superset — pre-ACE ESQL that ACE 12 still compiles, though the
+ * 12.0.x DECLARE/keyword pages no longer list it; see VERIFICATION.md), so
+ * the strictness lives here as the docs-grounded preference. Line-based and
+ * therefore identical in both modes — the E-3 defect was precisely the two
+ * paths disagreeing.
+ */
+function checkDeprecatedTypes(lines: string[], out: Diagnostic[]): void {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = DECLARE_LOGICAL_RE.exec(line);
+    if (!m) continue;
+    // The slot match can also hold a NAME spelled `logical`; the datatype
+    // is the LAST LOGICAL inside the match.
+    const col = m.index + m[0].toUpperCase().lastIndexOf('LOGICAL');
+    out.push(diag(
+      lineRange(i, line, col, col + 'LOGICAL'.length),
+      "Data type 'LOGICAL' is legacy ESQL and deprecated. Use 'BOOLEAN' in ACE 12.",
+      DiagnosticSeverity.Hint,
+      'deprecated-type'
     ));
   }
 }

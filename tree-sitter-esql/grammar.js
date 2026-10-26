@@ -199,6 +199,12 @@ export default grammar({
     kw_LIKE: $ => token(prec(1, /LIKE/i)),
     kw_LIST: $ => token(prec(1, /LIST/i)),
     kw_LOG: $ => token(prec(1, /LOG/i)),
+    // Legacy truth-value synonym from pre-ACE ESQL. NOT in the ACE 12.0.x
+    // DECLARE DataType list nor the non-reserved keyword list (both pages
+    // verified verbatim 2026-10-26; see VERIFICATION.md), but real legacy
+    // files carry it, so the permissive grammar accepts it and the server's
+    // `deprecated-type` check says what modern ESQL prefers.
+    kw_LOGICAL: $ => token(prec(1, /LOGICAL/i)),
     kw_LOOP: $ => token(prec(1, /LOOP/i)),
     kw_MAX: $ => token(prec(1, /MAX/i)),
     kw_MESSAGE: $ => token(prec(1, /MESSAGE/i)),
@@ -1439,6 +1445,12 @@ export default grammar({
     datatype: $ => seq(
       choice(
         $.kw_BIT, $.kw_BLOB, $.kw_BOOLEAN, $.kw_FLOAT,
+        // Legacy truth-value synonym (E-3): NOT in the ACE 12.0.x datatype /
+        // keyword lists (both pages checked verbatim 2026-10-26 — see
+        // VERIFICATION.md), but real pre-ACE ESQL that ACE 12 still compiles,
+        // so the permissive grammar accepts it and the server's
+        // `deprecated-type` hint carries the strictness.
+        $.kw_LOGICAL,
         seq(choice($.kw_CHAR, $.kw_CHARACTER), optional($.kw_VARYING)),
         $.kw_VARCHAR, $.kw_DECIMAL, $.kw_DEC, $.kw_NUMERIC,
         $.kw_INTEGER, $.kw_INT,

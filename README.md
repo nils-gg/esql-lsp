@@ -58,6 +58,7 @@ step asserts the pane, so a plain run doubles as an end-to-end UI test,
 | `Main()` without `RETURN`/`PROPAGATE` | ⚠️ Warning | Message will not reach any terminal |
 | Variable in `SET` without `DECLARE` | ⚠️ Warning | Grammar-exact when loaded; case-insensitive regex otherwise; function params count as declared |
 | Deprecated `XMLNS` parser | ⚠️ Warning | Use `XMLNSC` in ACE 12 |
+| Legacy `LOGICAL` data type | 💡 Hint | Pre-ACE truth value; grammar accepts it (real legacy ESQL), the hint says prefer `BOOLEAN` — same in both modes |
 | Missing `;` at end of statement | 💡 Hint | Heuristic on statement starters (skipped when the grammar is loaded — real missing `;` become syntax errors then) |
 | `OutputRoot.JSON.Data` set without Properties copy | 💡 Hint | Very common integration bug |
 
@@ -75,7 +76,7 @@ suppress one check without matching message text, or offer "explain this
 problem". The codes mirror the setting names below: `syntax-error`,
 `missing-end-module`,
 `module-no-main`, `no-propagation`, `unclosed-main`, `undeclared-variable`,
-`deprecated-parser`, `missing-semicolon`, `output-root-properties`.
+`deprecated-parser`, `deprecated-type`, `missing-semicolon`, `output-root-properties`.
 
 ### Completion
 
@@ -376,6 +377,7 @@ to `true`:
     "checkPropagation": true,
     "checkMissingSemicolon": true,
     "checkDeprecatedParsers": true,
+    "checkDeprecatedTypes": true,
     "checkOutputRootProperties": true
   },
   "completion": {

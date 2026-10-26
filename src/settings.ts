@@ -19,6 +19,8 @@ export interface EsqlDiagnosticsSettings {
   checkMissingSemicolon: boolean;
   /** Warn when the deprecated XMLNS parser is used instead of XMLNSC. */
   checkDeprecatedParsers: boolean;
+  /** Hint on the legacy LOGICAL data type (CODE_REVIEW.md E-3). */
+  checkDeprecatedTypes: boolean;
   /** Hint when building OutputRoot.JSON.Data without copying Properties. */
   checkOutputRootProperties: boolean;
 }
@@ -38,6 +40,7 @@ export const DEFAULT_SETTINGS: EsqlSettings = {
     checkPropagation: true,
     checkMissingSemicolon: true,
     checkDeprecatedParsers: true,
+    checkDeprecatedTypes: true,
     checkOutputRootProperties: true,
   },
   completion: {
@@ -85,6 +88,7 @@ export function mergeSettings(initOptions: unknown): EsqlSettings {
       checkPropagation: bool(d, 'checkPropagation', true),
       checkMissingSemicolon: bool(d, 'checkMissingSemicolon', true),
       checkDeprecatedParsers: bool(d, 'checkDeprecatedParsers', true),
+      checkDeprecatedTypes: bool(d, 'checkDeprecatedTypes', true),
       checkOutputRootProperties: bool(d, 'checkOutputRootProperties', true),
     },
     completion: {

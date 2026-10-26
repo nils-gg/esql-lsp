@@ -178,6 +178,7 @@
 (kw_BIT) @type
 (kw_BLOB) @type
 (kw_BOOLEAN) @type
+(kw_LOGICAL) @type
 (kw_CHAR) @type
 (kw_CHARACTER) @type
 (kw_VARCHAR) @type

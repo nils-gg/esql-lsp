@@ -954,6 +954,70 @@ test('every diagnostic over the wire carries source and code', async () => {
 });
 
 /**
+ * E-3 over a real stdio session: a legacy `LOGICAL` file gets its
+ * modernization hint and its own setting toggle silences exactly that
+ * check. No skipWithoutGrammar guard on purpose — the hint is a flat check
+ * and fires identically on both paths; the measured defect was grammar mode
+ * FALSE-FLAGGING what its own fallback silently accepted, so the no-addon
+ * run of this test is just as meaningful as the grammar one.
+ */
+test('legacy LOGICAL: hint over stdio, silenced by its own setting (E-3)', async (t) => {
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e/LogicalE3.esql';
+  const src = [
+    'CREATE COMPUTE MODULE LegacyTypes',
+    '    CREATE FUNCTION Main() RETURNS BOOLEAN',
+    '    BEGIN',
+    '        DECLARE flag LOGICAL;',
+    '        SET flag = TRUE;',
+    '        RETURN TRUE;',
+    '    END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: src },
+    });
+    const first = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.some((d: any) => d.code === 'deprecated-type')
+    );
+    const hint = first.diagnostics.find((d: any) => d.code === 'deprecated-type');
+    assert.equal(hint.severity, 4, 'Hint severity (LSP: 1 error, 2 warning, 3 info, 4 hint)');
+    assert.equal(hint.range.start.line, 3);
+    assert.equal(hint.range.start.character, 21, 'underlines the type word itself');
+    assert.ok(
+      !first.diagnostics.some((d: any) => d.code === 'syntax-error'),
+      'a clean legacy file is not damage — pre-E-3 grammar mode said otherwise'
+    );
+    // Silence exactly this check…
+    client.notify('workspace/didChangeConfiguration', {
+      settings: { esql: { diagnostics: { checkDeprecatedTypes: false } } },
+    });
+    await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.every((d: any) => d.code !== 'deprecated-type')
+    );
+    // …without disturbing the session.
+    const hover = await client.request('textDocument/hover', {
+      textDocument: { uri },
+      position: { line: 3, character: 17 },
+    });
+    assert.match(hover.result?.contents?.value ?? '', /flag/, 'healthy session after the settings change');
+  } finally {
+    await client.close();
+  }
+});
+
+/**
  * I-22: malformed requests. A client that sends `{}` (a proxy, a replay, a
  * plugin with a bug) used to get `-32603 InternalError` quoting V8 — "Cannot
  * read properties of undefined (reading 'uri')" — which some editors show the
