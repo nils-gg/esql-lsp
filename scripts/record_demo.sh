@@ -73,11 +73,10 @@ wait_pane_not() { # wait_pane_not blurb pattern [pattern...]  (each must be gone
   done
 }
 
-# line 3's virtual text is mode-dependent: the grammar path reports the damaged
-# module header as a named syntax error (it outranks the hidden duplicate), the
-# heuristics only know the missing END MODULE. Assert what each mode ships.
-MODE_PAT="Syntax error in a module definition."
-[ "${ESQL_LSP_NO_GRAMMAR:-}" = "1" ] && MODE_PAT="is missing its closing"
+# line 3's virtual text is now mode-independent: E-7 makes the grammar path
+# drop its module-definition phrasing on the line the structure check owns,
+# so both paths show the better-worded missing-END MODULE message.
+MODE_PAT="is missing its closing"
 
 tmux -f "$DEMO_DIR/tmux.demo.conf" new-session -d -s "$SESS" -x "$W" -y "$H"
 
@@ -177,7 +176,7 @@ echo "[9] close the module: type END MODULE, structure errors clear; quit"
 S G; P 0.3
 S o
 T "END MODULE;"; S Escape
-wait_pane_not "module closed" "is missing its closing" "Syntax error in a module definition."
+wait_pane_not "module closed" "is missing its closing"
 P 1.2
 S gg; P 1.4
 L ":w"; S Enter; P 0.4

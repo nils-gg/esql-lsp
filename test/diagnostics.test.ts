@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { DiagnosticSeverity } from 'vscode-languageserver';
 import { analyze } from '../src/diagnostics';
+import { parse, analyzeDocument } from '../src/parser';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import { skipWithoutGrammar } from './grammarStatus';
 
@@ -46,6 +47,108 @@ test('missing END MODULE is an error', () => {
   const { errors } = messages(src);
   assert.equal(errors.length, 1);
   assert.match(errors[0], /missing its closing 'END MODULE'/);
+});
+
+/**
+ * CODE_REVIEW.md E-7: an unclosed module made the grammar answer the SAME
+ * forgotten END MODULE twice — its own `Syntax error in a module
+ * definition.` on the header line plus the structure check's
+ * `missing-end-module`. The structure check words it better (it names the
+ * module), so where both target an unclosed module's header the grammar's
+ * phrasing is dropped — while the tree keeps describing the damage
+ * (parser.test owns that message; the suppression lives in diagnostics).
+ */
+test('an unclosed module reports its missing END MODULE once, in both modes (E-7)', async (t) => {
+  const src = [
+    'CREATE COMPUTE MODULE Case13',
+    '    CREATE FUNCTION Main() RETURNS BOOLEAN',
+    '    BEGIN',
+    '        SET neverDeclared = 1;',
+    '',
+  ].join('\n');
+  const heur = analyze(src, D).filter((d) => /END MODULE/.test(d.message));
+  assert.equal(heur.length, 1, 'the heuristic baseline both modes must match');
+  assert.match(heur[0].message, /missing its closing 'END MODULE'/);
+  if (!(await skipWithoutGrammar(t))) return;
+  const doc = analyzeDocument(parse(src)!, src);
+  assert.ok(
+    doc.syntaxIssues.some((i) => i.message === 'Syntax error in a module definition.'),
+    JSON.stringify(doc.syntaxIssues.map((i) => i.message))
+  );
+  const grammar = analyze(src, D, doc);
+  const gEnd = grammar.filter((d) => /END MODULE/.test(d.message));
+  assert.equal(gEnd.length, 1, 'one diagnostic per root cause');
+  assert.equal(gEnd[0].message, heur[0].message, 'the better-worded one');
+  assert.equal(gEnd[0].range.start.line, heur[0].range.start.line);
+  assert.ok(
+    !grammar.some((d) => /module definition/.test(d.message)),
+    JSON.stringify(grammar.map((d) => d.message))
+  );
+});
+
+test('a damaged header of a CLOSED module keeps its syntax message (E-7 targets)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // Suppression is targeted — same line AND a missing END MODULE. A closed
+  // module cannot fire `missing-end-module`, so nothing else would ever
+  // report this broken header; dropping the grammar message here would
+  // silently lose a check, which is the failure this test exists for.
+  const src = [
+    'CREATE COMPUTE MODULE %%%',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    '  RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  const doc = analyzeDocument(parse(src)!, src);
+  const grammar = analyze(src, D, doc);
+  assert.ok(
+    grammar.some(
+      (d) => d.code === 'syntax-error' && /Syntax error in a module definition\./.test(d.message)
+    ),
+    JSON.stringify(grammar.map((d) => [d.code, d.message]))
+  );
+  assert.ok(!grammar.some((d) => d.code === 'missing-end-module'), 'the module IS closed');
+});
+
+test('mined names quiet the undeclared check exactly where they should (E-2)', async (t) => {
+  // The E-2 regression probe as a standing test: one forgotten `;` above
+  // the module used to make the CORRECTLY declared SHARED look undeclared
+  // in grammar mode. The heuristic pass declares everything it can see
+  // (flat set), so its warning list is the reference the tree path — with
+  // its mining of the damaged region — must now reproduce.
+  const src = [
+    'BROKER SCHEMA com.acme.e2;',
+    '',
+    'DECLARE FailureCount SHARED INTEGER',
+    '',
+    'CREATE COMPUTE MODULE E2Module',
+    '',
+    '  CREATE FUNCTION Main() RETURNS BOOLEAN',
+    '  BEGIN',
+    '    DECLARE local INTEGER;',
+    '    SET FailureCount = 1;',
+    '    SET local = 2;',
+    '    SET neverSeen = 3;',
+    '    RETURN TRUE;',
+    '  END;',
+    '',
+    'END MODULE',
+    '',
+  ].join('\n');
+  const { warnings } = messages(src);
+  assert.deepEqual(
+    warnings,
+    ["Variable 'neverSeen' is used in SET but never declared with DECLARE."],
+    'heuristic mode: the one name with no DECLARE'
+  );
+  if (!(await skipWithoutGrammar(t))) return;
+  const doc = analyzeDocument(parse(src)!, src);
+  const gWarnings = analyze(src, D, doc)
+    .filter((d) => d.severity === DiagnosticSeverity.Warning)
+    .map((d) => d.message);
+  assert.deepEqual(gWarnings, warnings, 'both modes agree on what is declared inside the damage');
 });
 
 test('module without Main() is a warning', () => {
@@ -473,8 +576,12 @@ test('grammar mode reports the undeclared name inside a damaged region (I-6)', a
   if (!(await skipWithoutGrammar(t))) return;
   const { parse, analyzeDocument } = await import('../src/parser');
   const diags = analyze(CASE13, D, analyzeDocument(parse(CASE13)!));
-  assert.ok(diags.some((d) => d.code === 'syntax-error'), 'the damage itself is still reported');
-  assert.ok(diags.some((d) => d.code === 'missing-end-module'), 'and the module structure too');
+  // E-7 changed what "the damage is reported" means here: the grammar's
+  // module-definition message defers to `missing-end-module` on the header
+  // line (one diagnostic per root cause — the E-7 pair of tests pins both
+  // sides). What must survive is the SEMANTIC check inside the damage.
+  const endModule = diags.filter((d) => d.code === 'missing-end-module');
+  assert.equal(endModule.length, 1, 'the damage itself is still reported — once');
   const undeclared = diags.filter((d) => d.code === 'undeclared-variable');
   assert.equal(undeclared.length, 1, JSON.stringify(diags.map((d) => [d.code, d.message])));
   assert.match(undeclared[0].message, /neverDeclared/);

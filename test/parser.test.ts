@@ -435,6 +435,91 @@ test('an inserted closing paren names its unclosed opener (E-10)', async (t) => 
   }
 });
 
+// ── E-2: a top-level forgotten `;` and everything it takes down ────────────
+
+/**
+ * The review's live reproduction: a module-level DECLARE missing its `;`
+ * makes error recovery swallow the CREATE MODULE header, the routine and
+ * the body into one ERROR spanning the file — before E-2 the analysis
+ * returned one file-wide `Syntax error.` with declaredNames and routines
+ * effectively empty, degrading completion, go-to-definition and the
+ * undeclared check at once.
+ */
+const E2_CASCADE = [
+  'BROKER SCHEMA com.acme.e2;',
+  '',
+  'DECLARE FailureCount SHARED INTEGER',
+  '',
+  'CREATE COMPUTE MODULE E2Module',
+  '',
+  '  CREATE FUNCTION Main() RETURNS BOOLEAN',
+  '  BEGIN',
+  '    DECLARE local INTEGER;',
+  '    SET FailureCount = 1;',
+  '    SET local = 2;',
+  '    SET neverSeen = 3;',
+  '    RETURN TRUE;',
+  '  END;',
+  '',
+  'END MODULE',
+  '',
+].join('\n');
+
+test('a forgotten `;` above a module names the cascade it starts (E-2a)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const doc = analyzeDocument(parse(E2_CASCADE)!, E2_CASCADE);
+  const first = doc.syntaxIssues[0];
+  // Same seam reading as E-8's single swallowed statement — but the region
+  // holds more than one statement opener, so the message says WHICH
+  // statement lost its terminator and what ran over it. (The plain
+  // `Statement is not terminated — expected ';' here.` for one swallowed
+  // statement is the E-8 corpus' surface; both phrasings must stay distinct.)
+  assert.equal(
+    first.message,
+    "This DECLARE statement is not terminated — expected ';' before 'CREATE'."
+  );
+  // Anchored in the slot the `;` belongs in: right after `INTEGER` on the
+  // DECLARE line, through the whitespace the terminator should occupy.
+  assert.equal(first.range.start.line, 2);
+  assert.equal(first.range.start.character, 35);
+  assert.deepEqual([first.range.end.line, first.range.end.character], [4, 0]);
+});
+
+test('names, routines and SET targets inside the cascade survive (E-2b)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const doc = analyzeDocument(parse(E2_CASCADE)!, E2_CASCADE);
+  // Before the mining pass this analysis saw ONE declared name (the tree's
+  // own children stop at the region), no routines at all, and every SET
+  // target below the swallowed header went missing.
+  assert.deepEqual(
+    doc.declaredNames.map((d) => d.name).sort(),
+    ['FailureCount', 'local']
+  );
+  assert.equal(
+    doc.declaredNames.filter((d) => d.name === 'FailureCount').length,
+    1,
+    'tree entries come first: the padding re-read must not duplicate them'
+  );
+  const local = doc.declaredNames.find((d) => d.name === 'local')!;
+  assert.ok(local, 'mined out of the region text');
+  assert.deepEqual([local.range.start.line, local.range.start.character], [8, 12], 'file coordinates');
+  assert.equal(local.detail, 'INTEGER', 'line-padded slice: the cut-off datatype still reads');
+  assert.ok(local.shared === undefined || local.shared === false, 'not SHARED — no invented visibility claim');
+
+  assert.deepEqual(doc.routines.map((r) => r.name), ['Main']);
+  const main = doc.routines[0];
+  assert.equal(main.moduleName, 'E2Module', 'the slice still sees the module header');
+  assert.equal(main.range.start.line, 6, 'the header line, in file coordinates');
+
+  // The SET targets drive the undeclared check: neverSeen is the one name
+  // that should warn (its DECLARE does not exist), and mining is what makes
+  // it visible to the grammar path at all.
+  assert.ok(
+    doc.setTargets.some((x) => x.name === 'neverSeen' && x.range.start.line === 11),
+    JSON.stringify(doc.setTargets.map((x) => [x.name, x.range.start.line]))
+  );
+});
+
 test('a wholly collapsed module is reported on its definition line (I-12)', async (t) => {
   if (!(await skipWithoutGrammar(t))) return;
   // Damage so deep (unterminated IF) that the whole module becomes one ERROR:

@@ -1045,15 +1045,20 @@ test('malformed requests answer InvalidParams, positions off the end answer noth
 });
 
 /**
- * ISSUES.md I-6 over a real stdio session: a file whose module is unclosed —
- * the state of every buffer being typed. `syntax-error` only ever comes from
- * the tree path, so waiting for it also proves the grammar took over this
- * document; the publish that carries it must NOT have lost the semantic
- * checks the heuristic pass had already reported.
+ * ISSUES.md I-6 plus CODE_REVIEW.md E-2b/E-7 over a real stdio session: a
+ * file with garbage above an unclosed module — the worst state of a buffer
+ * being typed. `syntax-error` only ever comes from the tree path, so
+ * waiting for it still proves the grammar took over this document; the
+ * publish that carries it must then show what the task-11 work owes:
+ * `neverDeclared` — a SET target INSIDE the text recovery swallowed — is
+ * still flagged (E-2b mining is what makes that possible), and the
+ * forgotten END MODULE is reported ONCE, in the structure check's
+ * better-worded form, not twice with the grammar's own phrasing (E-7).
  */
-test('grammar mode keeps semantic checks inside a damaged file (I-6)', async (t) => {
+test('grammar mode keeps semantic checks inside a damaged file (I-6, E-2b, E-7)', async (t) => {
   if (!(await skipWithoutGrammar(t))) return;
   const src = [
+    '%%% stray text above the module',
     'CREATE COMPUTE MODULE Case13',
     '    CREATE FUNCTION Main() RETURNS BOOLEAN',
     '    BEGIN',
@@ -1084,22 +1089,34 @@ test('grammar mode keeps semantic checks inside a damaged file (I-6)', async (t)
     const codes = diags.diagnostics.map((d: any) => d.code);
     assert.ok(
       codes.includes('undeclared-variable'),
-      `undeclared name still reported inside the damaged region: ${JSON.stringify(diags.diagnostics.map((d: any) => [d.code, d.message]))}`
+      `mined SET target still reported inside the damage: ${JSON.stringify(diags.diagnostics.map((d: any) => [d.code, d.message]))}`
     );
     assert.ok(codes.includes('missing-end-module'), 'module structure check still fires too');
     const und = diags.diagnostics.find((d: any) => d.code === 'undeclared-variable');
-    assert.equal(und.range.start.line, 5, 'exact line of the SET inside the ERROR region');
+    assert.equal(und.range.start.line, 6, 'exact line of the SET inside the ERROR region');
     assert.equal(
       und.codeDescription?.href,
       'https://github.com/nils-gg/esql-lsp#diagnostics',
       'codeDescription survives the real protocol (optional, but sent)'
     );
-    // I-12: the damage diagnostic is no longer a bare multi-line span — it
-    // names the module definition and sits on that definition's own line.
+    // E-7: the grammar still sees the damaged module header, but its
+    // `Syntax error in a module definition.` shares the root cause with
+    // missing-end-module and loses the line to the better wording.
+    const endModule = diags.diagnostics.filter((d: any) => /END MODULE/.test(d.message));
+    assert.equal(endModule.length, 1, JSON.stringify(diags.diagnostics.map((d: any) => d.message)));
+    assert.equal(
+      endModule[0].range.start.line,
+      1,
+      'on the CREATE MODULE header line, naming the module'
+    );
+    assert.ok(
+      !diags.diagnostics.some((d: any) => /Syntax error in a module definition\./.test(d.message)),
+      'the suppressed phrasing must not survive to the wire'
+    );
+    // The surviving syntax-error is the garbage line's own quoted-token
+    // message — suppression is targeted, not a blanket silence.
     const syntax = diags.diagnostics.find((d: any) => d.code === 'syntax-error');
-    assert.match(syntax.message, /Syntax error in a module definition\./);
-    assert.equal(syntax.range.start.line, 0, 'on the CREATE MODULE header line');
-    assert.equal(syntax.range.end.line, 0, 'one line, not the whole damaged region');
+    assert.match(syntax.message, /^Unexpected '%%%' here\./);
   } finally {
     await client.close();
   }

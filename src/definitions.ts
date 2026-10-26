@@ -15,7 +15,10 @@
 
 import { Range } from 'vscode-languageserver';
 import { scan, wordAt, findBeginToken, findEndToken, unquoteESQLName } from './scanner';
-import type { DocAnalysis, DeclaredName, RoutineInfo } from './parser';
+import type { DocAnalysis, DeclaredName, RoutineInfo, SetTarget } from './parser';
+
+/** `SET bareName =` / `:=`, rejecting dotted message-tree paths (see bareTargetsFromSource). */
+const SET_TARGET_RE = /^\s*SET\s+([A-Za-z_]\w*)(?!\s*\.)\s*(?:=|:=)/i;
 
 /**
  * Routine header. The parameter list and the RETURNS clause are BOTH optional
@@ -518,6 +521,31 @@ function owningModule(
     if (!found || m.start > found.start) found = m;
   }
   return found?.name;
+}
+
+/**
+ * Bare-word SET targets found by pattern (no grammar): every `SET name =`
+ * that targets a bare identifier. A DOTTED target (`SET a.b = …`) is a
+ * message-tree path, not a variable — the lookahead is part of the contract,
+ * not decoration.
+ *
+ * The single home of this rule (the E-6 one-extractor discipline): the
+ * heuristic undeclared check reads it, and the grammar path's mining of
+ * damaged regions (CODE_REVIEW.md E-2) reads it — a second copy could only
+ * ever drift, and which spelling looks like a variable is exactly the kind
+ * of fact two paths must not disagree about.
+ */
+export function bareTargetsFromSource(source: string): SetTarget[] {
+  const { lines } = scan(source);
+  const out: SetTarget[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = SET_TARGET_RE.exec(lines[i]);
+    if (!m) continue;
+    const name = m[1];
+    const col = lines[i].indexOf(name, m.index);
+    out.push({ name, range: Range.create(i, col, i, col + name.length) });
+  }
+  return out;
 }
 
 /**

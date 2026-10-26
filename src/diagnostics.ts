@@ -22,7 +22,7 @@
 import { Diagnostic, DiagnosticSeverity, Range } from 'vscode-languageserver';
 import { scan, findBeginToken, findEndToken } from './scanner';
 import { EsqlDiagnosticsSettings } from './settings';
-import { declarationsFromSource, MODULE_RE, END_MODULE_RE } from './definitions';
+import { declarationsFromSource, bareTargetsFromSource, MODULE_RE, END_MODULE_RE } from './definitions';
 import type { DocAnalysis } from './parser';
 
 // The module-boundary matchers are imported from definitions.ts, not re-typed
@@ -36,7 +36,6 @@ const ROUTINE_RE = /\bCREATE\s+(?:FUNCTION|PROCEDURE)\b/i;
  * path, i.e. followed by a dot. A namespace-declaration prefix is spelled
  * `xmlns:something` and is a NAME, not the parser (ISSUES.md I-8). */
 const XMLNS_RE = /\bXMLNS\b(?!C)(?=[ \t]*\.)/i;
-const SET_VAR_RE = /^\s*SET\s+([A-Za-z_]\w*)(?!\s*\.)\s*(?:=|:=)/i;
 const JSON_DATA_RE = /^\s*SET\s+OutputRoot\.JSON\.Data\b/i;
 const PROPS_MENTIONED_RE = /\bProperties\b/i;
 const PROPS_COPIED_RE = /SET\s+OutputRoot\.Properties\b/i;
@@ -128,17 +127,38 @@ export function analyze(
   const { lines } = scan(source);
 
   if (doc && settings.checkSyntaxErrors) {
+    // E-7 (one diagnostic per root cause): an unclosed module makes the
+    // grammar swallow its whole body — the named
+    // `Syntax error in a module definition.` on the header line and
+    // `missing-end-module` describe the SAME forgotten END MODULE, and the
+    // structure check words it better (it knows the module's name). Where
+    // both target the header of an unclosed module, the structure check
+    // owns the line and the grammar's phrasing is dropped. Damaged module
+    // headers that are NOT this shape keep their syntax message.
+    const structure: Diagnostic[] = [];
+    checkModuleStructure(lines, structure);
+    const unclosedHeaders = new Set(
+      structure
+        .filter((d) => d.code === 'missing-end-module')
+        .map((d) => d.range.start.line)
+    );
     for (const issue of doc.syntaxIssues) {
+      if (
+        issue.kind === 'module-definition' &&
+        unclosedHeaders.has(issue.range.start.line)
+      )
+        continue;
       diagnostics.push(
         diag(issue.range, issue.message, DiagnosticSeverity.Error, 'syntax-error')
       );
     }
+    diagnostics.push(...structure);
+  } else {
+    checkModuleStructure(lines, diagnostics);
   }
-
-  checkModuleStructure(lines, diagnostics);
   if (settings.checkUndeclaredVariables) {
     if (doc) checkDeclaredVariablesFromTree(doc, diagnostics, workspaceSharedNames);
-    else checkDeclaredVariables(source, lines, diagnostics, workspaceSharedNames);
+    else checkDeclaredVariables(source, diagnostics, workspaceSharedNames);
   }
   if (settings.checkPropagation) {
     checkPropagateOrReturn(lines, diagnostics);
@@ -241,26 +261,19 @@ function checkModuleStructure(lines: string[], out: Diagnostic[]): void {
 /** 2. Undeclared variables assigned via SET (heuristic, no grammar). */
 function checkDeclaredVariables(
   source: string,
-  lines: string[],
   out: Diagnostic[],
   workspaceSharedNames?: ReadonlySet<string>
 ): void {
   const declared = collectDeclaredNames(source);
   if (workspaceSharedNames) for (const n of workspaceSharedNames) declared.add(n);
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const m = SET_VAR_RE.exec(line);
-    if (!m) continue;
-
-    const name = m[1];
-    const upper = name.toUpperCase();
+  for (const target of bareTargetsFromSource(source)) {
+    const upper = target.name.toUpperCase();
     if (RESERVED_SET_TARGETS.has(upper) || declared.has(upper)) continue;
 
-    const col = line.indexOf(name, m.index);
     out.push(diag(
-      lineRange(i, line, col, col + name.length),
-      `Variable '${name}' is used in SET but never declared with DECLARE.`,
+      target.range,
+      `Variable '${target.name}' is used in SET but never declared with DECLARE.`,
       DiagnosticSeverity.Warning,
       'undeclared-variable'
     ));

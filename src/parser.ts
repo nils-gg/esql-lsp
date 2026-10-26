@@ -19,6 +19,7 @@ import { Range } from 'vscode-languageserver';
 import { linesOf, scan, unquoteESQLName } from './scanner';
 import { ESQL_KEYWORDS } from './data/esqlData';
 import { didYouMean } from './suggest';
+import { bareTargetsFromSource, declarationsFromSource, routinesFromSource } from './definitions';
 
 /** Minimal structural view of a tree-sitter node (avoids pulling the
  *  runtime's types into the server's compile). */
@@ -77,6 +78,15 @@ export interface SetTarget {
 export interface SyntaxIssue {
   message: string;
   range: Range;
+  /**
+   * The structural shape this message describes, when a semantic check words
+   * it better (CODE_REVIEW.md E-7). `module-definition`: damage swallowed a
+   * module header — if that module is ALSO missing its END MODULE, the
+   * `missing-end-module` diagnostic owns the line and diagnostics.ts drops
+   * this phrasing (one diagnostic per root cause; the structure check knows
+   * the module's name).
+   */
+  kind?: 'module-definition';
 }
 
 /** `CREATE (COMPUTE|FILTER|DATABASE|DATABASEEVENT) MODULE name … END MODULE`. */
@@ -559,6 +569,9 @@ const STATEMENT_OPENERS: ReadonlySet<string> = new Set<string>([
   'BROKER',
 ]);
 
+/** Matches a statement-opening word anywhere in (uppercased, masked) text. */
+const OPENER_SCAN_RE = new RegExp(`\\b(?:${[...STATEMENT_OPENERS].join('|')})\\b`);
+
 /**
  * The keyword a damaged region's opening word was probably reaching for
  * (E-1's did-you-mean; the move E-10 wants everywhere). Only a NON-keyword
@@ -635,6 +648,10 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
   const declaredNames: DeclaredName[] = [];
   const setTargets: SetTarget[] = [];
   const syntaxIssues: SyntaxIssue[] = [];
+  // Outermost ERROR regions (E-2b): the mining pass reads their text with the
+  // pattern extractors after the walk. MISSING/inserted nodes are zero-width
+  // and hold no statements, so only real regions qualify.
+  const damagedRegions: SyntaxNode[] = [];
   const modules: ModuleInfo[] = [];
   const routines: RoutineInfo[] = [];
   const schemas: SchemaInfo[] = [];
@@ -717,6 +734,22 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
         return null;
       if (a.type === 'esql_statement' || !a.type.endsWith('_statement')) continue;
       if (!masked().slice(a.startIndex, a.endIndex).trimEnd().endsWith(';')) return null;
+      // E-2a: the cascade. When the region's text holds ANOTHER statement
+      // opener past its first word, recovery swallowed more than the next
+      // statement — one forgotten `;` ate a whole run of them. That shape
+      // earns a message naming the unterminated statement and the word that
+      // followed it (the review's `This DECLARE statement is not terminated
+      // — expected ';' before 'CREATE'.`); a single swallowed statement
+      // keeps the plain wording. Masked text again: a BEGIN inside a comment
+      // cascades nothing.
+      const regionText = maskedRegion(node);
+      const lead = regionText.match(/^\s*[A-Za-z_]\w*/)?.[0].length ?? first.length;
+      const cascaded = OPENER_SCAN_RE.test(regionText.slice(lead).toUpperCase());
+      const kind = a.type
+        .replace(/_statement$/, '')
+        .replace(/_/g, ' ')
+        .trim()
+        .toUpperCase();
       // The terminator's slot: from just past the last non-blank character
       // before the region, through the whitespace the `;` belongs in.
       const src = text();
@@ -725,7 +758,9 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
       if (idx <= a.startIndex || /\s/.test(src[idx])) return null;
       const from = positionAt(src, idx + 1);
       return {
-        message: "Statement is not terminated — expected ';' here.",
+        message: cascaded
+          ? `This ${kind} statement is not terminated — expected ';' before '${first}'.`
+          : "Statement is not terminated — expected ';' here.",
         range: Range.create(
           from.row,
           from.column,
@@ -757,7 +792,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
    * that keeps the bare text is a region of pure comment damage: nothing to
    * name, nothing to quote.
    */
-  const describeDamagedRegion = (node: SyntaxNode): { message: string; range: Range } => {
+  const describeDamagedRegion = (node: SyntaxNode): SyntaxIssue => {
     const seam = unterminatedStatement(node);
     if (seam) return seam;
     // E-1: measured against the keyword table once per region.
@@ -765,8 +800,15 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
       const s = keywordSuggestion(regionFirstWord(node));
       return s ? ` Did you mean '${s}'?` : '';
     })();
-    const named = (phrase: string, anchor: SyntaxNode) => ({
+    // E-7: damage naming a MODULE DEFINITION is tagged so diagnostics.ts can
+    // drop it when `missing-end-module` fires on the same line (one
+    // diagnostic per forgotten END MODULE). Deriving the tag from the phrase
+    // covers every naming path at once — the leading-keyword one below and
+    // the ancestor one — and a damaged header of a CLOSED module keeps its
+    // message: nothing else reports that shape.
+    const named = (phrase: string, anchor: SyntaxNode): SyntaxIssue => ({
       message: `Syntax error in ${phrase}.${hint}`,
+      ...(phrase === 'a module definition' ? { kind: 'module-definition' as const } : {}),
       range: Range.create(
         anchor.startPosition.row,
         anchor.startPosition.column,
@@ -884,6 +926,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
             ? { message: insertionMessage(node, parent), range: rangeOf(node) }
             : describeDamagedRegion(node)
         );
+        if (node.type === 'ERROR') damagedRegions.push(node); // mined after the walk (E-2b)
       }
       // Error recovery preserves intact subtrees inside the damaged region
       // (e.g. a complete CREATE FUNCTION inside a module missing its
@@ -1076,6 +1119,79 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
     seenIssues.add(key);
     return true;
   });
+
+  // E-2b: declarations survive their own damage (CODE_REVIEW.md E-2). One
+  // forgotten `;` above a module lets recovery swallow every following line
+  // into one giant ERROR region: the tokens are ALL THERE — DECLARE words,
+  // a whole CREATE FUNCTION header — but the tree stops NAMING them, so
+  // declaredNames, routines and setTargets come back near-empty AT ONCE and
+  // every consumer degrades together (the review's repro made a correctly
+  // declared SHARED look undeclared). The pattern extractors see what
+  // recovery dropped, so each outermost region's text gets a second pass
+  // with them, results shifted back into file coordinates. The slice is
+  // padded to whole lines — regions start and end mid-line and the
+  // extractors are line-anchored; padding from column 0 is what keeps every
+  // mined column a true file column. Best-effort BY DESIGN: text cut out of
+  // its construct can miss a pattern straddling the slice edge, but
+  // everything intact inside the damage lands. Tree entries come FIRST and
+  // win any position clash: the padding re-reads clean neighbours at region
+  // edges, and for text the parser handled normally the tree's answer is
+  // the authoritative one.
+  const fileEnd = rangeOf(tree.rootNode);
+  const src = text();
+  const minedKey = (name: string, r: Range) => `${name.toUpperCase()}@${r.start.line}:${r.start.character}`;
+  const knownDecl = new Set(declaredNames.map((d) => minedKey(d.name, d.range)));
+  const knownRoutine = new Set(routines.map((r) => minedKey(r.name, r.range)));
+  const knownTarget = new Set(setTargets.map((t) => minedKey(t.name, t.range)));
+  for (const region of damagedRegions) {
+    let from = region.startIndex;
+    while (from > 0 && src[from - 1] !== '\n') from--;
+    let to = region.endIndex;
+    while (to < src.length && src[to] !== '\n') to++;
+    const regionText = src.slice(from, to);
+    if (!regionText.trim()) continue;
+    const rowShift = positionAt(src, from).row;
+    const shift = (r: Range): Range =>
+      Range.create(r.start.line + rowShift, r.start.character, r.end.line + rowShift, r.end.character);
+
+    for (const d of declarationsFromSource(regionText)) {
+      const range = shift(d.range);
+      const key = minedKey(d.name, range);
+      if (knownDecl.has(key)) continue;
+      knownDecl.add(key);
+      declaredNames.push({
+        ...d,
+        range,
+        // The scope the extractors derive is relative to the slice — i.e.
+        // to the very structure the damage ate. A wrong NARROW scope is E-2
+        // under a new label: a real declaration made invisible by a
+        // fabricated boundary reads as an undeclared use. Nothing honest
+        // is knowable here, so the name covers the rest of the file — at
+        // least as wide as the damage that hid it.
+        scope: Range.create(range.start.line, range.start.character, fileEnd.end.line, fileEnd.end.character),
+      });
+    }
+    for (const r0 of routinesFromSource(regionText)) {
+      const range = shift(r0.range);
+      const key = minedKey(r0.name, range);
+      if (knownRoutine.has(key)) continue;
+      knownRoutine.add(key);
+      routines.push({
+        ...r0,
+        range,
+        declRange: shift(r0.declRange),
+        ...(r0.bodyRange ? { bodyRange: shift(r0.bodyRange) } : {}),
+      });
+    }
+    for (const t of bareTargetsFromSource(regionText)) {
+      const range = shift(t.range);
+      const key = minedKey(t.name, range);
+      if (knownTarget.has(key)) continue;
+      knownTarget.add(key);
+      setTargets.push({ name: t.name, range });
+    }
+  }
+
   return {
     declaredNames,
     setTargets,

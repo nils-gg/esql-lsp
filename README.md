@@ -53,7 +53,7 @@ step asserts the pane, so a plain run doubles as an end-to-end UI test,
 | Check | Severity | Description |
 |---|---|---|
 | Syntax error / missing token | 🔴 Error | tree-sitter `ERROR` nodes plus recovered-but-inserted tokens (a missing `;` the parser silently repaired) — when the grammar is loaded. The messages never go silent: damage is named after its construct (`Syntax error in a SET statement.`), a found token is quoted with a keyword suggestion (`Unexpected 'SETN' here. Did you mean 'SET'?`), a statement that swallowed the next gets its missing `;` named at the exact slot, and an inserted `)` names the unclosed `(` it belongs to |
-| Missing `END MODULE` | 🔴 Error | Module never closed |
+| Missing `END MODULE` | 🔴 Error | Module never closed — and the only diagnostic for that root cause even in grammar mode, where the damaged module header's own syntax message defers to it (one report per forgotten `END MODULE`) |
 | Module without `Main()` | ⚠️ Warning | ACE cannot execute the module |
 | `Main()` without `RETURN`/`PROPAGATE` | ⚠️ Warning | Message will not reach any terminal |
 | Variable in `SET` without `DECLARE` | ⚠️ Warning | Grammar-exact when loaded; case-insensitive regex otherwise; function params count as declared |

@@ -291,25 +291,52 @@ One coherent change: the feature modules gain a *workspace lookup* parameter;
 
 ### 11. E-2 + E-7 — damage-tolerant analysis, honest cascade message  `[L]` → closes E-2, E-7
 
-- [ ] Message (E-2a): when a top-level statement's ERROR region starts at a
+- [x] Message (E-2a): when a top-level statement's ERROR region starts at a
       statement keyword and extends ≥2 statements, the message names the
       unterminated statement and anchors at its end:
       `This DECLARE statement is not terminated — expected ';' before 'CREATE'.`
       (the follow-token scan from task 10 already exists by then).
-- [ ] Mining (E-2b): declaration/routine extraction must keep working inside
+- [x] Mining (E-2b): declaration/routine extraction must keep working inside
       ERROR regions. Recommended route (reuses one extractor, no new parser):
       run the heuristic extractors (`declarationsFromSource`,
       `routinesFromSource`) over the *region text* and merge results with the
       tree's — tree ranges win where they agree; damaged-only names come from
       the regex pass. Both modes then behave identically under damage.
-- [ ] E-7: when the grammar emitted a syntax error covering a module header,
+- [x] E-7: when the grammar emitted a syntax error covering a module header,
       `checkModuleStructure` suppresses its duplicate `missing-end-module`
       **iff** the grammar message already says module; better per review:
       promote the grammar message to the good `missing-end-module` text and
       suppress the grammar's generic phrasing for that shape instead. One
       diagnostic per root cause; assert via fixture `unclosed.esql`.
-- [ ] Regression probe: the review's E-2 fixture must keep definitions +
+- [x] Regression probe: the review's E-2 fixture must keep definitions +
       completion + undeclared-check alive under the single file-wide ERROR.
+
+  *Landed as:* E-2a reuses task 10's seam reading — the cascade variant
+  fires when the region's MASKED text holds another statement opener past
+  its first word (`OPENER_SCAN_RE`), naming the ancestor statement kind and
+  the word that ran over it; one swallowed statement keeps the plain E-8
+  wording (corpus pins both phrasings distinct). E-2b: `analyzeDocument`
+  collects outermost ERROR regions during the walk and re-runs
+  `declarationsFromSource`/`routinesFromSource`/`bareTargetsFromSource`
+  (the SET-target rule moved to `definitions.ts` — one extractor, E-6
+  discipline) over each region's text, padded to whole lines (extractors
+  are line-anchored; padding from column 0 keeps mined columns true file
+  columns), shifted back and merged with tree entries added FIRST (position
+  dedupe `NAME@line:char`). Mined declarations get scope = declaration →
+  EOF: the structure scopes derive from is exactly what the damage ate, and
+  a fabricated narrow boundary is E-2 relabelled. E-7: `SyntaxIssue.kind
+  = 'module-definition'` (derived from the phrase, so every naming path
+  tags itself) + `analyze()` drops that kind when `missing-end-module`
+  fires on the same line — the structure text wins (it names the module);
+  a damaged header of a CLOSED module keeps its message (test pins
+  non-suppression; e2e's `%%%`-fixture syntax-error pins the same over
+  stdio). Regression probe: both modes warn exactly `neverSeen` on the
+  review fixture (diagnostics unit), e2e DamagedI6 reworked to wait on
+  the mined undeclared inside the damage + assert the single END MODULE
+  report; `record_demo.sh` MODE_PAT unified — the pane text is now
+  mode-independent. The old grammar-mode I-6 unit asserting the duplicate
+  syntax-error went red exactly as the design intends and was retargeted
+  to the single-report contract.
 
 ### 12. E-3 — `LOGICAL` adjudication  `[M]` → closes E-3
 
