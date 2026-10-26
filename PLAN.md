@@ -37,43 +37,49 @@ Findings merge where they share one file/one mechanism; the mapping table in
 The uncommitted `nextWords.ts` work is the foundation of tasks 6–7; it cannot
 stay red and unstaged.
 
-- [ ] `test/completion.test.ts`: expect `['FIELD','FIRSTCHILD','FROM']` for
+- [x] `test/completion.test.ts`: expect `['FIELD','FIRSTCHILD','FROM']` for
       `labelSet('DELETE F')` — the code is right (review §T-1).
-- [ ] `npm test` → 141/0; `ESQL_LSP_NO_GRAMMAR=1 npm test` → same.
-- [ ] Commit: `test/completion.test.ts` fix + `src/data/nextWords.ts` +
+- [x] `npm test` → 141/0; `ESQL_LSP_NO_GRAMMAR=1 npm test` → same.
+- [x] Commit: `test/completion.test.ts` fix + `src/data/nextWords.ts` +
       `src/completion.ts` as one coherent feature commit (the clause-aware
       next-word completion), body naming the suite counts.
 
 ### 2. C-4 — snippets as real LSP snippets  `[S]` → closes C-4
 
-- [ ] `snippetItems()` in `src/completion.ts`: set
+- [x] `snippetItems()` in `src/completion.ts`: set
       `insertTextFormat = InsertTextFormat.Snippet(2)`.
-- [ ] Guard: keep it only when the client declared
+- [x] Guard: keep it only when the client declared
       `completionItem.snippetSupport`; otherwise strip `${1:x}`/`$0` to plain
       text (fallback clients would insert placeholders literally). Requires
       capturing the capability in `onInitialize` (one boolean next to
       `clientWantsHierarchicalSymbols`) and passing it into
       `buildCompletionItems`.
-- [ ] Unit: item carries the flag with snippetSupport; carries PlainText +
+- [x] Unit: item carries the flag with snippetSupport; carries PlainText +
       de-placeholdered text without it. e2e: the existing capability session
       asserts the flag.
 
 ### 3. E-6 + T-4 + C-7 — one extractor for the fallback patterns  `[S/M]` → closes E-6, T-4, C-7
 
-- [ ] Delete `MODULE_RE` from `src/diagnostics.ts`; import the
+- [x] Delete `MODULE_RE` from `src/diagnostics.ts`; import the
       `CREATE … MODULE` matcher (or a `moduleHeaderMatch(line)` helper) from
       `src/definitions.ts` — single source, `DATABASEEVENT` included, so
       `missing-end-module` / `module-no-main` fire on DATABASEEVENT modules.
-- [ ] Add the AGENTS-style pin comment: fallback regexes live in
+- [x] Add the AGENTS-style pin comment: fallback regexes live in
       `definitions.ts` and are imported, never re-typed (T-4).
-- [ ] C-7: fix `DECLARE_RE` in `src/definitions.ts` — a flag word may not be
+- [x] C-7: fix `DECLARE_RE` in `src/definitions.ts` — a flag word may not be
       consumed as the datatype when no real type follows
       (`(?!(?:SHARED|EXTERNAL|CONSTANT)\b)` before the type group), so
       mid-edit `DECLARE x SHARED ` declares nothing in heuristic mode, matching
       the tree. Add the mode-parity completion-count test (243 == 243).
-- [ ] Unit: DATABASEEVENT module missing Main/END MODULE now flagged;
+- [x] Unit: DATABASEEVENT module missing Main/END MODULE now flagged;
       `DECLARE x SHARED;` / `DECLARE x SHARED ` declare nothing;
       `DECLARE x SHARED INTEGER;` still declares.
+
+  *Found while testing:* the parity claim holds in the buffer-being-typed
+  state (open module: both paths declare nothing for a flag-only line), but
+  inside an already-CLOSED module the tree's ERROR-region recovery indexes a
+  typeless `DECLARE x SHARED;` as `x` with empty detail. Deliberately not
+  asserted; task 10 adjudicates what damaged-region recovery should trust.
 
 ---
 

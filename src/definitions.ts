@@ -37,13 +37,23 @@ const FN_RE =
 // analyzer, symbols, hover and completion all read from (see AGENTS.md): one
 // place decides what counts as declared, so the four features cannot disagree.
 // The scan() view is masked (comments/strings blanked, positions preserved).
+// Pinned by CODE_REVIEW.md T-4/E-6: a consumer (diagnostics.ts included)
+// IMPORTS these matchers — re-typing a near-copy elsewhere is how DATABASEEVENT
+// silently fell out of the module checks and how the SHARED flag drifted
+// between modes (C-7).
 
 /** `DECLARE name[, name…] [CONSTANT|SHARED|EXTERNAL] type …` — group 1 is the
  * FULL comma-separated name list (a multi-name declaration declares every
  * name), group 2 the type word. Handler declarations (`DECLARE CONTINUE|EXIT
- * HANDLER …`) declare no variable and are excluded. */
+ * HANDLER …`) declare no variable and are excluded.
+ *
+ * The type word must not be another flag word: mid-edit `DECLARE x SHARED `
+ * (buffer being typed, no datatype yet) then declares NOTHING, which is what
+ * the tree path does too — a `declare_statement` without a `datatype` child
+ * is the namespace-alias form and is not indexed (CODE_REVIEW.md C-7: without
+ * the guard the heuristic indexed x typed `SHARED` and the modes drifted). */
 const DECLARE_RE =
-  /\bDECLARE\s+(?!CONTINUE\b|EXIT\b)((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+(?:CONSTANT\s+|SHARED\s+|EXTERNAL\s+)*([A-Za-z]+)/i;
+  /\bDECLARE\s+(?!CONTINUE\b|EXIT\b)((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+(?:CONSTANT\s+|SHARED\s+|EXTERNAL\s+)*(?!(?:SHARED|EXTERNAL|CONSTANT)\b)([A-Za-z]+)/i;
 
 /**
  * `DECLARE "a name an identifier cannot hold" [SHARED|EXTERNAL|CONSTANT] type …`
@@ -58,10 +68,16 @@ const QUOTED_DECLARE_RE =
 const PARAM_PART_RE =
   /^\s*(?:(?:IN|OUT|INOUT)\s+)?([A-Za-z_]\w*)\s*(?:(CONSTANT)\s+)?([A-Za-z]+)?/i;
 
-/** `CREATE (COMPUTE|FILTER|DATABASE|DATABASEEVENT) MODULE name` (fallback path). */
-const MODULE_RE =
+/** `CREATE (COMPUTE|FILTER|DATABASE|DATABASEEVENT) MODULE name` (fallback path).
+ * Exported because it is also THE module-boundary scanner for diagnostics.ts:
+ * the earlier local copy in that file omitted DATABASEEVENT, so
+ * `missing-end-module`/`module-no-main` stayed silent on DATABASEEVENT modules
+ * (CODE_REVIEW.md E-6). Import this one — fallback regexes live in this file
+ * and are imported, never re-typed somewhere else (T-4). */
+export const MODULE_RE =
   /\bCREATE\s+(COMPUTE|FILTER|DATABASE|DATABASEEVENT)\s+MODULE\s+([A-Za-z_]\w*)/i;
-const END_MODULE_RE = /\bEND\s+MODULE\b/i;
+/** `END MODULE` — same single-source rule as `MODULE_RE`. */
+export const END_MODULE_RE = /\bEND\s+MODULE\b/i;
 
 /** `BROKER SCHEMA a.b.c` — the application's schema declaration. */
 const BROKER_RE = /\bBROKER\s+SCHEMA\s+([A-Za-z0-9_.]+)/i;

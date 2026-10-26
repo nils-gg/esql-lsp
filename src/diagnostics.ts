@@ -22,11 +22,13 @@
 import { Diagnostic, DiagnosticSeverity, Range } from 'vscode-languageserver';
 import { scan, findBeginToken, findEndToken } from './scanner';
 import { EsqlDiagnosticsSettings } from './settings';
-import { declarationsFromSource } from './definitions';
+import { declarationsFromSource, MODULE_RE, END_MODULE_RE } from './definitions';
 import type { DocAnalysis } from './parser';
 
-const MODULE_RE = /\bCREATE\s+(COMPUTE|FILTER|DATABASE)\s+MODULE\s+([A-Za-z_]\w*)/i;
-const END_MODULE_RE = /\bEND\s+MODULE\b/i;
+// The module-boundary matchers are imported from definitions.ts, not re-typed
+// here: the local MODULE_RE copy this file used to carry omitted
+// DATABASEEVENT, so both module checks were blind to that module kind, while
+// declarations/hover/completion saw it (CODE_REVIEW.md E-6 + T-4).
 const MAIN_RE = /\bCREATE\s+FUNCTION\s+Main\s*\(\s*\)/i;
 /** Routine header, used to group per-routine hints (ISSUES.md I-7). */
 const ROUTINE_RE = /\bCREATE\s+(?:FUNCTION|PROCEDURE)\b/i;

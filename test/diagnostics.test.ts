@@ -528,3 +528,45 @@ test('workspace SHARED names satisfy the undeclared check (I-13)', async (t) => 
     );
   }
 });
+
+// ── E-6: the fourth module kind is module-checked like the other three ─────
+
+/**
+ * The diagnostics' local MODULE_RE omitted DATABASEEVENT, so both structure
+ * checks stayed silent on those modules while declarations/hover/completion
+ * knew the kind. Now the matcher is imported from definitions.ts and every
+ * CREATE … MODULE kind is checked.
+ */
+test('DATABASEEVENT modules get the same structure checks (E-6)', () => {
+  const noMain = [
+    'BROKER SCHEMA com.test;',
+    'CREATE DATABASEEVENT MODULE DeNoMain',
+    'BEGIN',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  const { warnings } = messages(noMain);
+  assert.ok(
+    warnings.some((w) => /contains no Main\(\)/.test(w)),
+    `module-no-main fires on DATABASEEVENT: ${JSON.stringify(warnings)}`
+  );
+  assert.ok(
+    !warnings.some((w) => /missing its closing/.test(w)),
+    'a closed DATABASEEVENT module is not reported unclosed'
+  );
+
+  const unclosed = [
+    'BROKER SCHEMA com.test;',
+    'CREATE DATABASEEVENT MODULE DeOpen',
+    'BEGIN',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    'END;',
+    '',
+  ].join('\n');
+  const { errors } = messages(unclosed);
+  assert.ok(
+    errors.some((e) => /missing its closing 'END MODULE'/.test(e)),
+    `missing-end-module fires on DATABASEEVENT: ${JSON.stringify(errors)}`
+  );
+});

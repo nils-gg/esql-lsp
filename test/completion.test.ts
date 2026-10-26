@@ -9,6 +9,7 @@ import {
   plainSnippetText,
 } from '../src/completion';
 import { initGrammar, parse, analyzeDocument } from '../src/parser';
+import { declarationsFromSource } from '../src/definitions';
 
 test('detects parser-domain context after message tree root', () => {
   assert.equal(detectCompletionContext('SET x = InputRoot.'), 'domains');
@@ -401,4 +402,71 @@ test('snippetSupport=true ships the raw bodies as real LSP snippets', () => {
   const snip = items.find((i) => i.label === 'module-compute')!;
   assert.equal(snip.insertTextFormat, 2, 'InsertTextFormat.Snippet');
   assert.ok(snip.insertText!.includes('${1:'), 'placeholder body passed through');
+});
+
+// ── C-7: a half-typed flag word must not fake a datatype ────────────────────
+
+/**
+ * Mid-edit `DECLARE x SHARED ` used to index x typed `SHARED` in heuristic
+ * mode while the tree indexed nothing there — the review measured 244 vs 243
+ * completion items. DECLARE_RE now refuses a flag word as the type, so both
+ * paths declare nothing until a real datatype arrives. `DECLARE y SHARED
+ * INTEGER` (the documented name-then-flag form) is unaffected. The parity is
+ * measured in the buffer-being-typed state (module still open), which is
+ * where the drift showed; inside an already-CLOSED module the tree's
+ * ERROR-region recovery may still keep a typeless mid-edit name (a
+ * damaged-region trust question for PLAN task 10), so that state is
+ * deliberately not asserted either way.
+ */
+const C7_MODULE = [
+  'CREATE COMPUTE MODULE M', //                         0
+  'CREATE FUNCTION Main() RETURNS BOOLEAN', //          1
+  'BEGIN', //                                           2
+  'DECLARE y SHARED INTEGER;', //                       3  the real form
+  'DECLARE x SHARED;', //                               4  flag only -> nothing
+  'DECLARE w SHARED ', //                               5  mid-edit -> nothing
+  '',
+].join('\n');
+
+test('a flag-only DECLARE declares nothing in the fallback (C-7)', () => {
+  const names = declarationsFromSource(C7_MODULE).map((d) => `${d.name}:${d.detail}`);
+  assert.ok(!names.some((n) => n.startsWith('x:')), 'x SHARED; declares nothing');
+  assert.ok(!names.some((n) => n.startsWith('w:')), 'mid-edit w SHARED <nothing> too');
+  assert.ok(names.includes('y:INTEGER'), 'the real form still declares');
+  const y = declarationsFromSource(C7_MODULE).find((d) => d.name === 'y')!;
+  assert.equal(y.shared, true, 'and the flag still marks it shared');
+});
+
+test('the buffer being typed parses the same in both paths (C-7)', async (t) => {
+  // The C-7 measurement state: a half-typed flag-only DECLARE as the last
+  // line of a module still being written.
+  const midEdit = [
+    'CREATE COMPUTE MODULE M', //                 0
+    'CREATE FUNCTION Main() RETURNS BOOLEAN', //  1
+    'BEGIN', //                                   2
+    'DECLARE y SHARED INTEGER;', //               3
+    'DECLARE x SHARED ', //                       4  being typed
+    '',
+  ].join('\n');
+  const patNames = declarationsFromSource(midEdit)
+    .map((d) => `${d.name}:${d.detail}`)
+    .sort();
+  assert.deepEqual(patNames, ['y:INTEGER'], 'fallback: the flag-only line declares nothing');
+  if (!(await initGrammar())) {
+    t.skip('tree-sitter addon unavailable — nothing to compare the fallback against');
+    return;
+  }
+  const doc = analyzeDocument(parse(midEdit)!, midEdit);
+  const treeNames = doc.declaredNames.map((d) => `${d.name}:${d.detail}`).sort();
+  assert.deepEqual(treeNames, patNames, 'same declared names, same details');
+  const at = { line: 4, character: 0 };
+  const treeItems = buildCompletionItems('general', '', midEdit, doc.declaredNames, at);
+  const patItems = buildCompletionItems(
+    'general',
+    '',
+    midEdit,
+    declarationsFromSource(midEdit),
+    at
+  );
+  assert.equal(treeItems.length, patItems.length, 'the two paths offer equal-length lists');
 });
