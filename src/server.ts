@@ -67,7 +67,7 @@ import {
   Tree,
 } from './parser';
 import { linesOf } from './scanner';
-import { WorkspaceIndex, extractFileFacts, WorkspaceSymbol } from './workspaceIndex';
+import { WorkspaceIndex, extractFileFacts, WorkspaceSymbol, SharedVarFact } from './workspaceIndex';
 import { fileURLToPath } from 'url';
 
 const DIAGNOSTICS_DEBOUNCE_MS = 300;
@@ -164,23 +164,58 @@ function parsedDocument(uri: string, text: string): ParsedDocument {
 }
 
 /**
- * The workspace's SHARED declarations (ISSUES.md I-13), seen as: the bounded
+ * The workspace's located facts (CODE_REVIEW.md N-2), seen as: the bounded
  * disk snapshot, with every OPEN document's contribution taken from its live
  * text instead of the snapshot — an unsaved `DECLARE x SHARED …` in a sibling
- * buffer counts, a deleted one stops counting. Returns undefined without a
- * workspace root: the undeclared check then keeps its file-local meaning,
- * which is what every unit test (and rootUri-less session) gets.
+ * buffer counts (at ITS edited position), a deleted one stops counting.
+ * Returns undefined without a workspace root: features then behave exactly
+ * file-locally, which is what every unit test (and rootUri-less session) gets.
+ *
+ * This is THE merge: the I-13 name set, the cross-file definition/hover
+ * lookups (task 6) and rename (task 16) all read the same view, so they can
+ * never disagree about what the workspace declares.
  */
-function sharedNamesFromWorkspace(): ReadonlySet<string> | undefined {
+function workspaceFacts(): { sharedVars: SharedVarFact[]; routines: WorkspaceSymbol[] } | undefined {
   if (!workspaceIndex.rootPath()) return undefined;
-  const names = new Set<string>();
+  const sharedVars: SharedVarFact[] = [];
+  const routines: WorkspaceSymbol[] = [];
   const openUris = new Set<string>();
   for (const doc of textDocuments.all()) {
     openUris.add(doc.uri);
-    for (const n of extractFileFacts(doc.getText(), doc.uri).sharedNames) names.add(n);
+    const facts = extractFileFacts(doc.getText(), doc.uri);
+    sharedVars.push(...facts.sharedVars);
+    for (const s of facts.symbols) if (s.kind === 'routine') routines.push(s);
   }
-  for (const n of workspaceIndex.sharedNamesFromDisk(openUris)) names.add(n);
-  return names;
+  sharedVars.push(...workspaceIndex.sharedVarsFromDisk(openUris));
+  routines.push(...workspaceIndex.symbolsFromDisk(openUris).filter((s) => s.kind === 'routine'));
+  return { sharedVars, routines };
+}
+
+/** Case-insensitive (ESQL semantics), live buffers first: closest edit wins. */
+function lookupSharedVar(name: string): SharedVarFact[] {
+  const facts = workspaceFacts();
+  if (!facts) return [];
+  const key = name.toUpperCase();
+  return facts.sharedVars.filter((v) => v.name.toUpperCase() === key);
+}
+
+/** Same contract as `lookupSharedVar`, over `CREATE FUNCTION|PROCEDURE`. */
+function lookupRoutine(name: string): WorkspaceSymbol[] {
+  const facts = workspaceFacts();
+  if (!facts) return [];
+  const key = name.toUpperCase();
+  return facts.routines.filter((s) => s.name.toUpperCase() === key);
+}
+
+/**
+ * The workspace's SHARED declarations (ISSUES.md I-13) — names only, derived
+ * from the one merged view above. Returns undefined without a workspace root:
+ * the undeclared check then keeps its file-local meaning.
+ */
+function sharedNamesFromWorkspace(): ReadonlySet<string> | undefined {
+  const facts = workspaceFacts();
+  if (!facts) return undefined;
+  return new Set(facts.sharedVars.map((v) => v.name.toUpperCase()));
 }
 
 /** Compute and publish diagnostics for one document, right now. */

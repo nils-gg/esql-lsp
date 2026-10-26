@@ -91,18 +91,18 @@ Today `FileFacts.sharedNames` is `Set<string>` — names without a home. Everyth
 cross-file (definition, references, rename, completion detail) needs *located*
 facts. Extend, don't rebuild:
 
-- [ ] `src/workspaceIndex.ts`: add to `FileFacts` a
+- [x] `src/workspaceIndex.ts`: add to `FileFacts` a
       `sharedVars: Array<{ name, uri, range, detail }>` (keep `sharedNames`
       derived or replace its readers — `sharedNamesFromDisk` has exactly one
       caller in `server.ts`). `extractFileFacts` already runs
       `declarationsFromSource`, which carries ranges and `shared: true`.
-- [ ] Index query API: `lookupRoutine(name)`, `lookupSharedVar(name)` over
+- [x] Index query API: `lookupRoutine(name)`, `lookupSharedVar(name)` over
       disk facts **plus live open documents** (same overlay pattern as
       `sharedNamesFromWorkspace()` in `server.ts:164` — hoist that overlay into
       a reusable `workspaceFacts()` helper so every consumer gets one merge).
-- [ ] Index routines by uppercase name (Map) for O(1) lookup; keep
+- [x] Index routines by uppercase name (Map) for O(1) lookup; keep
       `symbolsFromDisk` for `workspace/symbol` as-is.
-- [ ] Unit: located SHARED facts extracted (incl. quoted SHARED names — must
+- [x] Unit: located SHARED facts extracted (incl. quoted SHARED names — must
       agree with task 5's outcome); lookup merges live buffer edits over the
       disk snapshot.
 

@@ -159,3 +159,61 @@ test('a rescan while a scan runs joins it instead of starting a second walk', as
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── N-2: located facts + name-keyed lookup ──────────────────────────────────
+
+test('SHARED facts carry a location, not just a name (N-2)', () => {
+  const facts = extractFileFacts(RECEIVER, 'file:///w/Receiver.esql');
+  const fc = facts.sharedVars.find((v) => v.name === 'FailureCount')!;
+  assert.equal(fc.uri, 'file:///w/Receiver.esql');
+  assert.equal(fc.range.start.line, 4, 'the DECLARE line');
+  assert.equal(fc.range.start.character, 10, 'the NAME column, jump-ready');
+  assert.equal(fc.range.end.character, 22, 'range spans just the name');
+  assert.equal(fc.detail, 'INTEGER', 'detail is the declared type');
+  assert.deepEqual([...facts.sharedNames], ['FAILURECOUNT'], 'the name set is derived');
+});
+
+test('a quoted SHARED declare is located like any other', () => {
+  const facts = extractFileFacts(
+    ['CREATE COMPUTE MODULE Q', 'BEGIN', "  DECLARE \"shared-encoded-host\" SHARED CHARACTER 'h';", 'END MODULE;', ''].join('\n'),
+    'file:///w/Q.esql'
+  );
+  assert.ok(facts.sharedNames.has('SHARED-ENCODED-HOST'), 'name set knows it');
+  const q = facts.sharedVars.find((v) => v.name === 'shared-encoded-host')!;
+  assert.equal(q.range.start.line, 2, 'located on its line, quotes excluded');
+  assert.equal(q.range.start.character, 11, 'the range starts INSIDE the quotes');
+});
+
+test('name-keyed disk lookups: case-insensitive, per-file excludable (N-2)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-lookup-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'Receiver.esql'), RECEIVER);
+    fs.writeFileSync(
+      path.join(dir, 'Handler.esql'),
+      RECEIVER.replace('MODULE Receiver', 'MODULE Handler')
+    );
+    const idx = new WorkspaceIndex();
+    idx.setRoot(dir);
+    await idx.rescan();
+
+    const mains = idx.routinesNamed('main'); // lowercase query: ESQL is insensitive
+    assert.equal(mains.length, 2, 'one per file, duplicates kept for the caller to rank');
+    assert.ok(mains.every((s) => /FUNCTION RETURNS BOOLEAN/.test(s.detail)), 'detail for hover');
+    assert.ok(mains.every((s) => s.container === 'Receiver' || s.container === 'Handler'));
+
+    const receiverUri = mains.find((s) => s.container === 'Receiver')!.uri;
+    const liveHandler = idx.routinesNamed('Main', [receiverUri]);
+    assert.equal(liveHandler.length, 1, 'excluding the open file leaves exactly the sibling');
+    assert.ok(!liveHandler.some((s) => s.uri === receiverUri), 'no stale disk copy of the live file');
+
+    assert.equal(idx.sharedVarsNamed('failurecount').length, 2, 'SHARED lookup is insensitive too');
+    assert.deepEqual(idx.sharedVarsNamed('no-such-var'), [], 'unknown name is just empty');
+    assert.equal(
+      idx.sharedVarsFromDisk([receiverUri]).length,
+      1,
+      'located SHARED facts exclude a live file per-file, like the name set'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

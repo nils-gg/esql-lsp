@@ -1173,6 +1173,66 @@ test('the workspace scan silences sibling-SHARED false positives (I-13)', async 
       assert.ok(module.location.uri.endsWith('/Receiver.esql'), module.location.uri);
       const none = await client.request('workspace/symbol', { query: 'nothing-matches' });
       assert.deepEqual(none.result, [], 'query filters as a substring');
+
+      // N-2 witness: the merge is live-first. Opening the DECLARING file with
+      // unsaved text that DROPS the SHARED DECLARE must bring the finding
+      // back on the using file — the open buffer supersedes the disk copy.
+      const declUri = pathToFileURL(declPath).href;
+      const DECL_WITHOUT = [
+        'BROKER SCHEMA com.test.recv;',
+        'CREATE COMPUTE MODULE Receiver',
+        'CREATE FUNCTION Main() RETURNS BOOLEAN',
+        'BEGIN',
+        '  SET FailureCount = 0;',
+        '  RETURN TRUE;',
+        'END;',
+        'END MODULE;',
+        '',
+      ].join('\n');
+      client.notify('textDocument/didOpen', {
+        textDocument: { uri: declUri, languageId: 'esql', version: 1, text: DECL_WITHOUT },
+      });
+      // Re-validate the using file against the new workspace view.
+      client.notify('textDocument/didChange', {
+        textDocument: { uri: useUri, version: 2 },
+        contentChanges: [{ text: USE.replace('RETURN TRUE;', '-- touch\n  RETURN TRUE;') }],
+      });
+      const backAgain = await client.waitFor(
+        'textDocument/publishDiagnostics',
+        (p: any) =>
+          p.uri === useUri &&
+          p.diagnostics.some(
+            (d: any) => d.code === 'undeclared-variable' && /FailureCount/.test(d.message)
+          ),
+        15000
+      );
+      assert.ok(backAgain, 'an unsaved removal of the sibling DECLARE counts');
+
+      // And re-adding it (still unsaved) silences the finding again.
+      client.notify('textDocument/didChange', {
+        textDocument: { uri: declUri, version: 2 },
+        contentChanges: [
+          {
+            text: DECL_WITHOUT.replace(
+              'SET FailureCount = 0;',
+              'DECLARE FailureCount SHARED INTEGER 0;\n  SET FailureCount = 0;'
+            ),
+          },
+        ],
+      });
+      client.notify('textDocument/didChange', {
+        textDocument: { uri: useUri, version: 3 },
+        contentChanges: [
+          { text: USE.replace('RETURN TRUE;', '-- touch again\n  RETURN TRUE;') },
+        ],
+      });
+      await client.waitFor(
+        'textDocument/publishDiagnostics',
+        (p: any) =>
+          p.uri === useUri &&
+          p.diagnostics.every((d: any) => d.code !== 'undeclared-variable'),
+        15000
+      );
     } finally {
       await client.close();
     }

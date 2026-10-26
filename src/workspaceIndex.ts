@@ -36,10 +36,28 @@ import {
   schemaFromSource,
 } from './definitions';
 
+/**
+ * A `DECLARE … SHARED` variable with a home (CODE_REVIEW.md N-2). The I-13
+ * undeclared-check only ever needed the NAME; cross-file definition, hover,
+ * completion detail and rename all need where and what type, so the located
+ * fact is the primary record and `FileFacts.sharedNames` is derived from it.
+ */
+export interface SharedVarFact {
+  /** Declared spelling (ESQL names are case-insensitive; keep the original). */
+  name: string;
+  uri: string;
+  /** Range of the declared name itself — a definition/rename target. */
+  range: Range;
+  /** Human-readable type for hover/completion, e.g. 'INTEGER' or 'CONSTANT CHARACTER'. */
+  detail: string;
+}
+
 /** One indexed `.esql` file, reduced to what siblings can rely on. */
 export interface FileFacts {
   uri: string;
-  /** UPPERCASE names of `DECLARE … SHARED` variables (I-13's core need). */
+  /** Located `DECLARE … SHARED` variables, declaration order (N-2). */
+  sharedVars: SharedVarFact[];
+  /** UPPERCASE names of those variables (I-13's core need), derived. */
   sharedNames: Set<string>;
   /** Symbols this file contributes to `workspace/symbol`. */
   symbols: WorkspaceSymbol[];
@@ -82,10 +100,12 @@ const SKIP_DIRS = new Set([
  * and buffer contribute to the workspace view.
  */
 export function extractFileFacts(text: string, uri: string): FileFacts {
-  const sharedNames = new Set<string>();
+  const sharedVars: SharedVarFact[] = [];
   for (const d of declarationsFromSource(text)) {
-    if (d.shared && d.kind === 'variable') sharedNames.add(d.name.toUpperCase());
+    if (d.shared && d.kind === 'variable')
+      sharedVars.push({ name: d.name, uri, range: d.range, detail: d.detail });
   }
+  const sharedNames = new Set<string>(sharedVars.map((v) => v.name.toUpperCase()));
   const symbols: WorkspaceSymbol[] = [];
   const mods = modulesFromSource(text);
   for (const m of mods) {
@@ -107,13 +127,32 @@ export function extractFileFacts(text: string, uri: string): FileFacts {
   const schema = schemaFromSource(text);
   if (schema)
     symbols.push({ name: schema.name, kind: 'schema', detail: 'BROKER SCHEMA', container: '', uri, range: schema.range });
-  return { uri, sharedNames, symbols };
+  return { uri, sharedVars, sharedNames, symbols };
+}
+
+/** Keep the entries whose URI the caller replaces with live text out of a result. */
+function filterSkip<T>(
+  list: T[] | undefined,
+  excludingUris: Iterable<string> | undefined,
+  uriOf: (item: T) => string
+): T[] {
+  if (!list || list.length === 0) return [];
+  if (!excludingUris) return [...list];
+  const skip = new Set(excludingUris);
+  return list.filter((item) => !skip.has(uriOf(item)));
 }
 
 export class WorkspaceIndex {
   private root: string | undefined;
   /** absolute path -> facts (files that read but failed map to empty facts is WRONG; they are simply absent + counted). */
   private files = new Map<string, FileFacts>();
+  /**
+   * Name-keyed views over `files`, rebuilt with every scan (N-2): ESQL names
+   * are case-insensitive, so the key is UPPERCASE. Lists because a name can
+   * legitimately appear in several files (the caller decides who wins).
+   */
+  private routinesByName = new Map<string, WorkspaceSymbol[]>();
+  private sharedVarsByName = new Map<string, SharedVarFact[]>();
   private scannedCount = 0;
   private skippedCount = 0;
   private scanning: Promise<void> | undefined;
@@ -163,6 +202,34 @@ export class WorkspaceIndex {
       for (const name of facts.sharedNames) out.add(name);
     }
     return out;
+  }
+
+  /**
+   * Every located SHARED fact on disk (N-2), same exclusion contract as
+   * `sharedNamesFromDisk`. `server.ts` merges the live-document overlay on
+   * top so every consumer sees one view.
+   */
+  sharedVarsFromDisk(excludingUris?: Iterable<string>): SharedVarFact[] {
+    const out: SharedVarFact[] = [];
+    const skip = excludingUris ? new Set(excludingUris) : undefined;
+    for (const facts of this.files.values()) {
+      if (skip?.has(facts.uri)) continue;
+      out.push(...facts.sharedVars);
+    }
+    return out;
+  }
+
+  /**
+   * Disk routines with this (case-insensitive) name — O(1) name match, the
+   * per-entry URI filter is over that name's small list only.
+   */
+  routinesNamed(name: string, excludingUris?: Iterable<string>): WorkspaceSymbol[] {
+    return filterSkip(this.routinesByName.get(name.toUpperCase()), excludingUris, (s) => s.uri);
+  }
+
+  /** Disk SHARED variables with this (case-insensitive) name. */
+  sharedVarsNamed(name: string, excludingUris?: Iterable<string>): SharedVarFact[] {
+    return filterSkip(this.sharedVarsByName.get(name.toUpperCase()), excludingUris, (v) => v.uri);
   }
 
   /** All disk-snapshot symbols, minus the URIs the caller replaces with live text. */
@@ -225,6 +292,23 @@ export class WorkspaceIndex {
       }
     }
     this.files = found;
+    // Rebuild the name-keyed views atomically with the file map, so a lookup
+    // can never see an index mid-scan.
+    const routines = new Map<string, WorkspaceSymbol[]>();
+    const shared = new Map<string, SharedVarFact[]>();
+    for (const facts of found.values()) {
+      for (const s of facts.symbols) {
+        if (s.kind !== 'routine') continue;
+        const key = s.name.toUpperCase();
+        (routines.get(key) ?? routines.set(key, []).get(key)!).push(s);
+      }
+      for (const v of facts.sharedVars) {
+        const key = v.name.toUpperCase();
+        (shared.get(key) ?? shared.set(key, []).get(key)!).push(v);
+      }
+    }
+    this.routinesByName = routines;
+    this.sharedVarsByName = shared;
     this.scannedCount = scanned;
     this.skippedCount = skipped;
   }
