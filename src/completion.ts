@@ -22,7 +22,7 @@
  *                       label, filtered by the word currently being typed
  */
 
-import { CompletionItem, CompletionItemKind } from 'vscode-languageserver';
+import { CompletionItem, CompletionItemKind, InsertTextFormat } from 'vscode-languageserver';
 import {
   ESQL_KEYWORDS,
   ESQL_TYPES,
@@ -144,11 +144,43 @@ function treeVarItems(): CompletionItem[] {
   });
 }
 
-function snippetItems(): CompletionItem[] {
+/**
+ * Strip LSP snippet syntax down to text that is valid ESQL as typed:
+ * `${N:placeholder}` → its placeholder, `${N|choice1,choice2|}` → the FIRST
+ * choice (it is the body's own suggested default — `DECLARE x CHARACTER …`,
+ * `PROPAGATE TO TERMINAL 'out'` compile), `${N}`/`$N`/`$0` → nothing.
+ * Innermost-first iteration so the nested `${3: DEFAULT ${4:''}}` resolves.
+ * Used only for clients that never declared `completionItem.snippetSupport`
+ * — for them, `insertText` defaults to PlainText, and shipping raw `${1:…}`
+ * would type placeholders straight into the buffer (CODE_REVIEW.md C-4).
+ */
+export function plainSnippetText(body: string): string {
+  const innermost = /\$\{\d+(?::([^{}]*)|\|([^|{}]*)\|)?\}|\$\d+/g;
+  let text = body;
+  for (let pass = 0; pass < 8; pass++) {
+    const next = text.replace(innermost, (_m, placeholder, choices) =>
+      choices !== undefined ? String(choices).split(',')[0] : placeholder ?? ''
+    );
+    if (next === text) break;
+    text = next;
+  }
+  return text;
+}
+
+function snippetItems(snippetSupport: boolean): CompletionItem[] {
   return ESQL_SNIPPETS.map((s) => {
     const item = ci(s.label, CompletionItemKind.Snippet);
     item.detail = s.description;
-    item.insertText = s.insertText;
+    if (snippetSupport) {
+      // The client asked for snippets, so the placeholder bodies are honest
+      // to send (ISSUES.md-style one-liner: without the flag, spec-correct
+      // clients still insert them as literal text — C-4).
+      item.insertText = s.insertText;
+      item.insertTextFormat = InsertTextFormat.Snippet;
+    } else {
+      item.insertText = plainSnippetText(s.insertText);
+      item.insertTextFormat = InsertTextFormat.PlainText;
+    }
     return item;
   });
 }
@@ -300,7 +332,11 @@ export function buildCompletionItems(
   linePrefix: string,
   source: string,
   declarations?: DeclaredName[],
-  position?: { line: number; character: number }
+  position?: { line: number; character: number },
+  /** Whether the client declared `completionItem.snippetSupport`. Default
+   * true (what direct callers and tests expect); `server.ts` passes the real
+   * capability so snippetless clients get de-placeholdered PlainText. */
+  snippetSupport = true
 ): CompletionItem[] {
   const prefix = wordBeingTyped(linePrefix);
 
@@ -360,7 +396,7 @@ export function buildCompletionItems(
             ...treeVarItems(),
             ...typeItems(),
             ...declaredItems,
-            ...snippetItems(),
+            ...snippetItems(snippetSupport),
           ],
           new Set(declaredItems)
         );

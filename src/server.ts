@@ -109,6 +109,16 @@ let clientWantsSemanticTokensRefresh = false;
 let clientWantsHierarchicalSymbols = false;
 
 /**
+ * Whether the *client* declared `completionItem.snippetSupport`. Snippet
+ * bodies are LSP snippet strings (`${1:…}`, `${1|a,b|}`, `$0`); the protocol
+ * says `insertText` without `insertTextFormat` is PlainText, so sending them
+ * raw to a client that never asked for snippets typed placeholder syntax
+ * literally into the buffer (CODE_REVIEW.md C-4). Without the capability the
+ * server ships de-placeholdered text that is valid ESQL as typed.
+ */
+let clientWantsSnippets = false;
+
+/**
  * Pending validation timers, one per document. This MUST be keyed by URI: with
  * a single shared timer, every scheduleDiagnostics() call cancelled the
  * previous document's timer, so a burst of didOpen (restore session, open a
@@ -262,6 +272,8 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
     params.capabilities?.workspace?.semanticTokens?.refreshSupport === true;
   clientWantsHierarchicalSymbols =
     params.capabilities?.textDocument?.documentSymbol?.hierarchicalDocumentSymbolSupport === true;
+  clientWantsSnippets =
+    params.capabilities?.textDocument?.completion?.completionItem?.snippetSupport === true;
   // Workspace root for the I-13 index: `workspaceFolders` is the modern field,
   // `rootUri` the deprecated one — clients that send both agree, so whichever
   // arrives wins. Non-`file:` schemes (a VFS workspace) get no index; every
@@ -505,7 +517,7 @@ connection.onCompletion((params: CompletionParams): CompletionItem[] => {
   return buildCompletionItems(context, linePrefix, text, declarations, {
     line: pos.line,
     character: pos.character,
-  });
+  }, clientWantsSnippets);
 });
 
 connection.onHover((params: HoverParams): Hover | null => {

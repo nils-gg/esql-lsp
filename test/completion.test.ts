@@ -6,6 +6,7 @@ import {
   buildCompletionItems,
   wordBeingTyped,
   nextWordRuleFor,
+  plainSnippetText,
 } from '../src/completion';
 import { initGrammar, parse, analyzeDocument } from '../src/parser';
 
@@ -365,4 +366,39 @@ test('next-word items carry a detail; type words keep their type documentation',
   assert.equal(type.kind, CompletionItemKind.TypeParameter);
   assert.equal(type.detail, 'ESQL data type');
   assert.equal((type.documentation as { kind?: string }).kind, 'markdown');
+});
+
+// ── C-4: snippet bodies respect the client's snippetSupport capability ─────
+
+test('plainSnippetText strips placeholder syntax to valid ESQL', () => {
+  // ${N:placeholder} -> its text
+  assert.equal(plainSnippetText('${1:varName}'), 'varName');
+  // ${N|a,b,c|} -> the first choice, the body's own suggested default
+  assert.equal(plainSnippetText('${1|out,alternate,failure|}'), 'out');
+  // ${N} and $N/$0 -> nothing
+  assert.equal(plainSnippetText('a ${1} b $0'), 'a  b ');
+  // nested: the inner ${4:''} resolves first, then the outer default
+  assert.equal(plainSnippetText('${3: DEFAULT ${4:0}}'), ' DEFAULT 0');
+  // the real DECLARE snippet body de-placeholderes into compilable ESQL
+  assert.equal(
+    plainSnippetText(
+      "DECLARE ${1:varName} ${2|CHARACTER,INTEGER|}${3: DEFAULT ${4:''}};\n$0"
+    ),
+    "DECLARE varName CHARACTER DEFAULT '';\n"
+  );
+});
+
+test('snippetSupport=false ships de-placeholdered PlainText bodies', () => {
+  const items = buildCompletionItems('general', '', '', [], undefined, false);
+  const snip = items.find((i) => i.label === 'module-compute')!;
+  assert.equal(snip.insertTextFormat, 1, 'InsertTextFormat.PlainText');
+  assert.ok(!/\$\d|\$\{/.test(snip.insertText!), 'no raw placeholder syntax ships');
+  assert.match(snip.insertText!, /BROKER SCHEMA /, 'real default content survives');
+});
+
+test('snippetSupport=true ships the raw bodies as real LSP snippets', () => {
+  const items = buildCompletionItems('general', '', '', [], undefined, true);
+  const snip = items.find((i) => i.label === 'module-compute')!;
+  assert.equal(snip.insertTextFormat, 2, 'InsertTextFormat.Snippet');
+  assert.ok(snip.insertText!.includes('${1:'), 'placeholder body passed through');
 });

@@ -288,6 +288,12 @@ test('full LSP session over stdio: diagnostics, completion, symbols', async () =
     assert.ok(labels2.includes('PROPAGATE'), 'offers keywords');
     assert.ok(labels2.includes('module-compute'), 'offers snippets');
     assert.ok(labels2.includes('myVar'), 'offers the variable declared in this routine');
+    // CODE_REVIEW.md C-4: this client never declared snippetSupport, so the
+    // body must arrive as de-placeholdered PlainText, not raw `${1:…}`.
+    const snipItem = (comp2.result ?? comp2).find((i: any) => i.label === 'module-compute');
+    assert.equal(snipItem.insertTextFormat, 1, 'PlainText when snippets are not declared');
+    assert.ok(!/\$\d|\$\{/.test(snipItem.insertText), 'no placeholder syntax for a non-snippet client');
+    assert.match(snipItem.insertText, /BROKER SCHEMA com\.example\.integrations/, 'placeholder text keeps its default value');
     assert.equal(
       new Set(labels2).size,
       labels2.length,
@@ -627,7 +633,7 @@ test('heuristic mode over stdio: diagnostics, symbols, definitions, hover', asyn
     const init = await client.request('initialize', {
       processId: process.pid,
       rootUri: null,
-      capabilities: {},
+      capabilities: { textDocument: { completion: { completionItem: { snippetSupport: true } } } },
       initializationOptions: {},
     });
     const caps = init.result.capabilities;
@@ -725,6 +731,13 @@ test('heuristic mode over stdio: diagnostics, symbols, definitions, hover', asyn
       insideLabels.length,
       'no label twice in one list'
     );
+
+    // C-4: this client DID declare snippetSupport, so snippet bodies come
+    // back as real LSP snippets — the capability plumbing, measured in
+    // heuristic mode (the flag path is mode-independent).
+    const snip = (inside.result ?? inside).find((i: any) => i.label === 'module-compute');
+    assert.equal(snip.insertTextFormat, 2, 'Snippet format when the capability is declared');
+    assert.ok(snip.insertText.includes('${1:'), 'placeholder body passed through untouched');
 
     const outside = await client.request('textDocument/completion', {
       textDocument: { uri },
