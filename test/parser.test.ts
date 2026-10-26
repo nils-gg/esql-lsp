@@ -258,9 +258,9 @@ test('recovered missing tokens (invisible insertions) are reported', async (t) =
   // (A previous version of this fixture used `DECLARE x INT 0` followed by
   // `SET x = 1;` and asserted the insertion message — that passed against a
   // STALE node_modules grammar copy, never against the real parser: with
-  // the parser the server actually loads, recovery skips `SET x` and
-  // reports plain 'Syntax error.' instead. The grammar-copy trap from
-  // AGENTS.md, applied to test greenness.)
+  // the parser the server actually loads, recovery pastes `SET x` into the
+  // declaration instead — the seam shape the E-8 test above owns. The
+  // grammar-copy trap from AGENTS.md, applied to test greenness.)
   const src = [
     'CREATE COMPUTE MODULE M',
     'CREATE FUNCTION Main() RETURNS BOOLEAN',
@@ -325,18 +325,44 @@ test('a recovered token is described by the construct that needed it', async (t)
 const i12wrap = (...body: string[]) =>
   ['CREATE COMPUTE MODULE M', 'CREATE FUNCTION Main() RETURNS BOOLEAN', 'BEGIN', ...body, 'END', 'END MODULE;'].join('\n');
 
-test('damage inside a statement names it and points at the statement line (I-12)', async (t) => {
+test('a statement that swallowed the next names the missing terminator (I-12, E-8)', async (t) => {
   if (!(await skipWithoutGrammar(t))) return;
-  // `;` missing after a DECLARE with an initial value: recovery skips
-  // `SET x` and reports from inside the expression — three lines of noise
-  // used to start mid-statement. The named point is the DECLARE line.
+  // `;` missing after a DECLARE with an initial value: recovery pastes
+  // `SET x` into the declaration. I-12 called that "a DECLARE statement"
+  // error; CODE_REVIEW.md E-8 adjudicated the phrasing as saying LESS than
+  // the heuristic Hint it replaced — the damage is the seam BETWEEN two
+  // statements, so the message names the `;` and the range is the slot it
+  // belongs in. (E-2's file-wide cascade is the same root cause, bigger.)
   const src = i12wrap('DECLARE x INT 0', 'SET x = 1;', 'RETURN TRUE;');
   const doc = analyzeDocument(parse(src)!, src);
   assert.equal(doc.syntaxIssues.length, 1, JSON.stringify(doc.syntaxIssues));
   const issue = doc.syntaxIssues[0];
-  assert.match(issue.message, /^Syntax error in a DECLARE statement\.$/);
-  assert.equal(issue.range.start.line, 3, 'the DECLARE line');
-  assert.equal(issue.range.end.line, 3, 'a single line');
+  assert.equal(issue.message, "Statement is not terminated — expected ';' here.");
+  assert.equal(issue.range.start.line, 3, 'at the end of the unterminated line...');
+  assert.equal(issue.range.start.character, 15, '...right past the final token...');
+  assert.equal(issue.range.end.line, 4, '...through the gap the `;` belongs in');
+
+  // The review's live variant one statement shape further down: the same
+  // message for `SET done = TRUE` followed by `RETURN TRUE;`.
+  const src2 = i12wrap('SET done = TRUE', 'RETURN TRUE;');
+  const ret = analyzeDocument(parse(src2)!, src2);
+  assert.equal(ret.syntaxIssues.length, 1);
+  assert.equal(ret.syntaxIssues[0].message, "Statement is not terminated — expected ';' here.");
+  assert.equal(ret.syntaxIssues[0].range.start.line, 3);
+  assert.equal(ret.syntaxIssues[0].range.end.line, 4);
+});
+
+test('damage opening an expression slot mid-statement still names the statement (I-12)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // The named-phrase path the seam reading must NOT eat: the region opens
+  // with a number (no statement keyword), the surviving set_statement names
+  // it, and the range clamps to the statement's first line.
+  const src = i12wrap('SET x = 1 2;', 'RETURN TRUE;');
+  const doc = analyzeDocument(parse(src)!, src);
+  const named = doc.syntaxIssues.find((i) => /^Syntax error in a SET statement\.$/.test(i.message));
+  assert.ok(named, JSON.stringify(doc.syntaxIssues.map((i) => i.message)));
+  assert.equal(named!.range.start.line, 3, 'the SET line');
+  assert.equal(named!.range.end.line, 3, 'a single line');
 });
 
 test('a statement that never formed is named from its own keyword (I-12)', async (t) => {
@@ -347,18 +373,66 @@ test('a statement that never formed is named from its own keyword (I-12)', async
   const doc = analyzeDocument(parse(src)!, src);
   const named = doc.syntaxIssues.find((i) => /IF statement/.test(i.message));
   assert.ok(named, JSON.stringify(doc.syntaxIssues.map((i) => i.message)));
+  // Exact: the region opens with the real keyword IF, so no did-you-mean
+  // suffix may decorate a correctly spelled (merely misplaced) word.
+  assert.equal(named!.message, 'Syntax error in an IF statement.');
   assert.equal(named!.range.start.line, 3, 'at the IF itself, not some enclosing header');
   assert.equal(named!.range.end.line, 3);
 });
 
-test('damage nothing can be said about keeps the bare message and its precise range (I-12)', async (t) => {
+test('the message builder never goes silent: garbage gets its token quoted (I-12, E-1)', async (t) => {
   if (!(await skipWithoutGrammar(t))) return;
   const src = i12wrap('%%% ***', 'RETURN TRUE;');
   const doc = analyzeDocument(parse(src)!, src);
   assert.ok(doc.syntaxIssues.length >= 1);
-  const plain = doc.syntaxIssues.find((i) => i.message === 'Syntax error.');
-  assert.ok(plain, JSON.stringify(doc.syntaxIssues.map((i) => i.message)));
-  assert.equal(plain!.range.start.line, 3, 'at the garbage, not at a named construct');
+  // E-1 adjudicated the bare fallthrough: the found token is always quoted
+  // when the region has one, so the reader never diffs a squiggle against
+  // the grammar by hand. (Only a region of pure comment damage — no token
+  // at all — may still print the bare text, and this is not one.)
+  const quoted = doc.syntaxIssues.find((i) => /^Unexpected '.*' here\.$/.test(i.message));
+  assert.ok(quoted, JSON.stringify(doc.syntaxIssues.map((i) => i.message)));
+  assert.equal(quoted!.message, "Unexpected '%%%' here.", 'the region opens with %%%');
+  assert.equal(quoted!.range.start.line, 3, 'at the garbage, not at a named construct');
+  assert.ok(
+    !doc.syntaxIssues.some((i) => i.message === 'Syntax error.'),
+    'no bare message survives this fixture'
+  );
+});
+
+// ── E-1/E-8/E-10 message corpus: the review's live cases, as tested surface ──
+
+/** The issues a body snippet produces inside the standard module wrapper. */
+const messagesFor = (...body: string[]) => {
+  const src = i12wrap(...body);
+  return analyzeDocument(parse(src)!, src).syntaxIssues;
+};
+
+test('the found token is quoted and a near-keyword is suggested (E-1)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // The review's headline reproduction: `SETN broken = 1;` answered bare
+  // `Syntax error.` The transposition distance to SET is right there —
+  // the message says it now.
+  const issues = messagesFor('SETN broken = 1;', 'RETURN TRUE;');
+  assert.equal(issues.length, 1, JSON.stringify(issues.map((i) => i.message)));
+  assert.equal(issues[0].message, "Unexpected 'SETN' here. Did you mean 'SET'?");
+  assert.equal(issues[0].range.start.line, 3, 'at the typo itself');
+});
+
+test('an inserted closing paren names its unclosed opener (E-10)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // Three surfaces of one shape — CALL parens, grouping parens, CAST parens.
+  // The grammar repairs all three by INSERTING `)`, and the message now
+  // points at the `(` the reader must close instead of making them count.
+  // Line numbers in the message are 1-based human counting (the body sits
+  // on 0-based row 3): ranges elsewhere in the issue stay 0-based LSP.
+  const expected = "Missing syntax: expected ')' here — this '(' on line 4 is unclosed.";
+  for (const line of ['SET x = COALESCE(1, 2;', 'SET x = (1;', 'SET x = CAST(1 AS INTEGER + 2;']) {
+    assert.deepEqual(
+      messagesFor(line, 'RETURN TRUE;').map((i) => i.message),
+      [expected],
+      line
+    );
+  }
 });
 
 test('a wholly collapsed module is reported on its definition line (I-12)', async (t) => {

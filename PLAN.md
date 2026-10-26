@@ -237,12 +237,12 @@ One coherent change: the feature modules gain a *workspace lookup* parameter;
 
 ### 10. E-1 + E-8 + E-10 — the message builder never goes silent  `[L]` → closes E-1, E-8, E-10 (shared util also serves 12–14)
 
-- [ ] New shared util `src/suggest.ts`: bounded Levenshtein +
+- [x] New shared util `src/suggest.ts`: bounded Levenshtein +
       `didYouMean(word, candidates, maxDist)`; candidate lists built from data
       the server already has (keywords, `ESQL_TYPES`, workspace routines,
       declared names in scope). Unit tests incl. case-insensitivity and the
       empty-list contract ("no suggestions" ≠ guessing).
-- [ ] `describeDamagedRegion()` in `src/parser.ts`: the bare `Syntax error.`
+- [x] `describeDamagedRegion()` in `src/parser.ts`: the bare `Syntax error.`
       fallthrough (line ~646) must become — in priority order —
       1. **Semicolon case (E-8)**: last token of the region completes a
          statement (`;`-terminated grammar shape) and the following token
@@ -255,13 +255,39 @@ One coherent change: the feature modules gain a *workspace lookup* parameter;
          (did-you-mean only against keywords within edit distance);
       3. **Last resort** (still no bare text): `Syntax error in <phrase>:
          unexpected '<token>' here.` — the region text is always quoted.
-- [ ] Corpus of message assertions: extend `test/parser.test.ts` with
+- [x] Corpus of message assertions: extend `test/parser.test.ts` with
       `messageFor(snippet)` expectations for the review's live cases (SETN,
       unclosed CAST, missing `;` variants) — messages become tested surface,
       not ad-hoc strings.
-- [ ] Keep `Missing syntax: expected …` paths; add the opening-paren position
+- [x] Keep `Missing syntax: expected …` paths; add the opening-paren position
       when the grammar exposes it (`expected ')' — this '(' on line 8 is
       unclosed`).
+
+  *Landed as:* `editDistance(a,b,maxDist)` aborts the DP row past the cap and
+  `didYouMean` excludes distance 0 (an exact match is not a suggestion) and
+  sorts closest-first so candidate lists can encode preference. The parser
+  suggests against `ESQL_KEYWORDS` only (the routines/declared lists join at
+  tasks 13–14); only NON-keyword words can be typos, and the distance-2
+  allowance is earned at 5 letters (`bad`→`BY` at 2 is why). Semicolon case:
+  region's first MASKED word (a word inside a comment is not a token) is a
+  statement opener AND the nearest `*_statement` ancestor — with containers
+  stopping the climb — ends its masked text in `;` (the swallowed second
+  statement's own terminator). Anchor: end of the first statement through the
+  gap before the region. Named `Syntax error in <phrase>.` messages stay
+  EXACTLY as written unless a did-you-mean suffix applies (the I-12 corpus
+  proves IF/SET/module-definition keep their bare named forms); the only
+  named message E-8 deliberately replaced is `Syntax error in a DECLARE
+  statement.` for the `DECLARE x INT 0` seam — adjudicated as saying less
+  than both the hint and the new message. Found-token/last-resort: quoted
+  word-or-punctuation-run `Unexpected 'tok' here.`; a region of pure comment
+  damage (no token at all) is the single honest `Syntax error.` residue.
+  Opening-paren clause applies to grammar-INSERTED `)`/`]` only (the review's
+  exact broken.esql wording reproduced); note the review's unclosed-CAST
+  line-with-`+` DOES insert `)` while the bare `CAST('1' AS INTEGER;` form
+  passes the permissive grammar silently — grammar strictness, not the
+  message builder, and VERIFICATION territory. Settings: no new check, same
+  `syntax-error` code — existing gating (`gated` unit + I-21 code-over-wire
+  e2e) covers the toggles unchanged.
 
 ### 11. E-2 + E-7 — damage-tolerant analysis, honest cascade message  `[L]` → closes E-2, E-7
 

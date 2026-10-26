@@ -600,13 +600,25 @@ test('grammar-backed session: syntax errors and semantic tokens', async (t) => {
 
     // Grammar init is async: wait for the grammar-backed error to arrive
     // (a heuristic-only publish would not contain it).
-    await client.waitFor(
+    const pub = await client.waitFor(
       'textDocument/publishDiagnostics',
       (p) =>
         p.uri === uri &&
         p.diagnostics.some(
           (d: any) => d.severity === 1 && /Syntax error|Missing syntax/.test(d.message)
         )
+    );
+
+    // E-10 over a real stdio session: the grammar inserted `)` to repair
+    // `SET x = (1;` and the message names WHICH `(` needs closing (message
+    // lines are 1-based for the human; the diagnostic's range stays 0-based).
+    const paren = pub.diagnostics.find(
+      (d: any) => d.code === 'syntax-error' && /Missing syntax/.test(d.message)
+    );
+    assert.ok(paren, JSON.stringify(pub.diagnostics.map((d: any) => d.message)));
+    assert.equal(
+      paren.message,
+      "Missing syntax: expected ')' here — this '(' on line 5 is unclosed."
     );
 
     // The grammar is ready by now -> tokens must be non-empty.
@@ -1088,6 +1100,61 @@ test('grammar mode keeps semantic checks inside a damaged file (I-6)', async (t)
     assert.match(syntax.message, /Syntax error in a module definition\./);
     assert.equal(syntax.range.start.line, 0, 'on the CREATE MODULE header line');
     assert.equal(syntax.range.end.line, 0, 'one line, not the whole damaged region');
+  } finally {
+    await client.close();
+  }
+});
+
+/**
+ * CODE_REVIEW.md E-1/E-8 over a real stdio session: the two messages that
+ * replaced the bare `Syntax error.` and the hint grammar mode used to lose,
+ * read off a live publishDiagnostics. Grammar-only — both phrasings come off
+ * the tree; heuristic mode keeps its own Hint (asserted in the units).
+ */
+test('grammar mode quotes the typo and names the missing semicolon (E-1, E-8)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const src = [
+    'BROKER SCHEMA com.test;',
+    'CREATE COMPUTE MODULE ELM',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    '  SETN broken = 1;',
+    '  SET done = TRUE',
+    '  RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e/Messages.esql';
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: { textDocument: { publishDiagnostics: {} } },
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: src },
+    });
+    const pub = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) =>
+        p.uri === uri &&
+        p.diagnostics.some((d: any) => /Did you mean/.test(d.message)) &&
+        p.diagnostics.some((d: any) => /not terminated/.test(d.message))
+    );
+    assert.deepEqual(
+      pub.diagnostics
+        .filter((d: any) => d.code === 'syntax-error')
+        .map((d: any) => d.message)
+        .sort(),
+      [
+        "Statement is not terminated — expected ';' here.",
+        "Unexpected 'SETN' here. Did you mean 'SET'?",
+      ].sort()
+    );
   } finally {
     await client.close();
   }

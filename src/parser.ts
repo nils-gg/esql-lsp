@@ -16,7 +16,9 @@
  */
 
 import { Range } from 'vscode-languageserver';
-import { linesOf, unquoteESQLName } from './scanner';
+import { linesOf, scan, unquoteESQLName } from './scanner';
+import { ESQL_KEYWORDS } from './data/esqlData';
+import { didYouMean } from './suggest';
 
 /** Minimal structural view of a tree-sitter node (avoids pulling the
  *  runtime's types into the server's compile). */
@@ -540,6 +542,71 @@ const DAMAGED_LEADING_KW_PHRASES: Record<string, string> = {
   kw_ROLLBACK: 'a ROLLBACK statement',
 };
 
+/**
+ * Words that BEGIN a statement. An ERROR region that opens with one of these
+ * while sitting inside a still-open, `;`-terminated statement is not damage
+ * INSIDE a statement — it is the seam BETWEEN two: the author dropped a `;`
+ * and error recovery swallowed the next statement's opening tokens into the
+ * unfinished one (CODE_REVIEW.md E-8; E-2's file-wide cascade is the same
+ * root cause one level up). BEGIN/END are deliberately absent: they close
+ * blocks rather than open statements, and `SET x = 1` followed by `END;` is
+ * repaired as a token INSERTION (`Missing syntax: expected ';'`), so a region
+ * opening with them never reaches this test.
+ */
+const STATEMENT_OPENERS: ReadonlySet<string> = new Set<string>([
+  ...Object.keys(DAMAGED_LEADING_KW_PHRASES).map((k) => k.slice('kw_'.length)),
+  'CREATE',
+  'BROKER',
+]);
+
+/**
+ * The keyword a damaged region's opening word was probably reaching for
+ * (E-1's did-you-mean; the move E-10 wants everywhere). Only a NON-keyword
+ * word can be a typo — `IF` in the wrong place is a misplaced statement, not
+ * a misspelling, and guessing around it is noise. Short words sit within two
+ * edits of unrelated keywords (`bad`→`BY` at distance 2), so the transposition
+ * allowance (distance 2, which covers DELCARE→DECLARE) is earned at five
+ * letters; shorter words must be one edit away.
+ */
+function keywordSuggestion(word: string): string | undefined {
+  if (!word || ESQL_KEYWORDS.includes(word.toUpperCase())) return undefined;
+  return didYouMean(word, ESQL_KEYWORDS, word.length < 5 ? 1 : 2)[0];
+}
+
+/**
+ * E-10's unclosed-paren pointer. When the grammar INSERTS a `)` or `]` to
+ * repair an expression, the matching opener is a visible child of the node
+ * the insertion landed in — so say where it is rather than leaving the reader
+ * to count parens (PLAN task 10: `expected ')' here — this '(' on line 8 is
+ * unclosed`). Only what the grammar EXPOSES is claimed: the parent's own
+ * children are scanned, and an opener it hid deeper stays unmentioned. The
+ * inserted token itself is zero-width and must not pair with its opening.
+ */
+function unclosedParenClause(token: SyntaxNode, parent: SyntaxNode | undefined): string {
+  const openType = token.type === ')' ? '(' : token.type === ']' ? '[' : undefined;
+  if (!openType || !parent) return '';
+  let depth = 0;
+  let unclosed: SyntaxNode | undefined;
+  for (const c of parent.children) {
+    if (c.type === openType) {
+      depth++;
+      unclosed = c;
+    } else if (c.type === token.type && c.endIndex > c.startIndex && depth > 0) {
+      depth--;
+      if (depth === 0) unclosed = undefined;
+    }
+  }
+  // 1-based for a human-readable message (ranges stay 0-based LSP).
+  return unclosed ? ` — this '${openType}' on line ${unclosed.startPosition.row + 1} is unclosed.` : '';
+}
+
+/** Full message for a grammar-inserted token: the phrase plus any paren pointer. */
+function insertionMessage(token: SyntaxNode, parent: SyntaxNode | undefined): string {
+  const phrase = expectedPhrase(token.type, parent?.type);
+  const clause = unclosedParenClause(token, parent);
+  return clause ? `${phrase.replace(/\.$/, '')}${clause}` : phrase;
+}
+
 /** `a`/`an` before a derived uppercase phrase like `INSERT statement`. */
 function articleFor(phrase: string): string {
   return /^[AEIOU]/.test(phrase) ? 'an' : 'a';
@@ -592,20 +659,114 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
     };
   };
 
+  // Masked document text (comments and string contents blanked, byte offsets
+  // identical — see scanner.ts): the word a message quotes or measures must
+  // be a token the parser saw, never a word inside a comment. Computed once
+  // per analysis and only when there is damage to describe.
+  let maskedText: string | undefined;
+  const masked = (): string => (maskedText ??= scan(text()).masked);
+
+  /** The masked text of `node`'s span. */
+  const maskedRegion = (node: SyntaxNode): string =>
+    masked().slice(node.startIndex, node.endIndex);
+
+  /** The word a region opens with; '' when it opens with anything else. */
+  const regionFirstWord = (node: SyntaxNode): string =>
+    maskedRegion(node).match(/^\s*([A-Za-z_]\w*)/)?.[1] ?? '';
+
+  /** The first quotable thing in a region: a word or a punctuation run. */
+  const regionQuotedToken = (node: SyntaxNode): string =>
+    maskedRegion(node).match(/^\s*([A-Za-z_]\w*|[^\w\s]+)/)?.[1] ?? '';
+
+  /** {row, column} of a character offset, matching node positions. */
+  const positionAt = (src: string, offset: number): { row: number; column: number } => {
+    let row = 0;
+    let lineStart = 0;
+    for (let i = 0; i < offset; i++) {
+      if (src.charCodeAt(i) === 10) {
+        row++;
+        lineStart = i + 1;
+      }
+    }
+    return { row, column: offset - lineStart };
+  };
+
   /**
-   * Report an ERROR region as a diagnostic (ISSUES.md I-12): a bare
-   * `Syntax error.` spanning multiple lines from the middle of a statement
-   * is not actionable, so name the construct it sits in and underline that
-   * construct's first line instead. Two readings, in order: a surviving
-   * statement ancestor names the context (`SET x = 1` swallowed as a
-   * DECLARE's initial value → point at the DECLARE line); with no statement
-   * node at all, the damaged region's own opening keyword says what it was
-   * trying to be (`IF x = THEN` → an IF statement). Neither → the old
-   * honest message over the full region.
+   * The E-8 shape read off the tree: the region opens with a statement
+   * keyword, sits inside a `*_statement` node whose masked text ENDS with
+   * `;`, and no container stands between — the signature of recovery pasting
+   * the FOLLOWING statement's opening tokens into the statement that never
+   * got its terminator (the swallowed shape closes with the second
+   * statement's own `;`). The fix is not inside either statement: it is the
+   * point where the missing `;` belongs. Heuristic mode's Hint already said
+   * this (diagnostics.ts); grammar mode replying `Syntax error in a SET
+   * statement.` said less (E-8), so this reading runs before the naming ones.
+   */
+  const unterminatedStatement = (node: SyntaxNode): { message: string; range: Range } | null => {
+    const first = regionFirstWord(node);
+    if (!first || !STATEMENT_OPENERS.has(first.toUpperCase())) return null;
+    for (let a = node.parent; a && a.type !== 'source_file'; a = a.parent) {
+      // Containers stop the climb: a module/routine's trailing `;` closes
+      // its END/END MODULE, not a swallowed statement, and a region sitting
+      // loose in a body belongs to the naming paths, not to this one.
+      if (
+        a.type === 'routine_body' ||
+        a.type === 'create_module_statement' ||
+        a.type === 'create_routine_statement'
+      )
+        return null;
+      if (a.type === 'esql_statement' || !a.type.endsWith('_statement')) continue;
+      if (!masked().slice(a.startIndex, a.endIndex).trimEnd().endsWith(';')) return null;
+      // The terminator's slot: from just past the last non-blank character
+      // before the region, through the whitespace the `;` belongs in.
+      const src = text();
+      let idx = node.startIndex - 1;
+      while (idx > a.startIndex && /\s/.test(src[idx])) idx--;
+      if (idx <= a.startIndex || /\s/.test(src[idx])) return null;
+      const from = positionAt(src, idx + 1);
+      return {
+        message: "Statement is not terminated — expected ';' here.",
+        range: Range.create(
+          from.row,
+          from.column,
+          node.startPosition.row,
+          node.startPosition.column
+        ),
+      };
+    }
+    return null;
+  };
+
+  /**
+   * Report an ERROR region as a diagnostic (ISSUES.md I-12; CODE_REVIEW.md
+   * E-1/E-8). A bare `Syntax error.` spanning lines is not actionable, so
+   * the builder never goes silent — readings in priority order:
+   *   0. the region is the SEAM between two statements: name the missing
+   *      `;` and point at its slot (E-8);
+   *   1. the region's own opening keyword says what it was trying to be
+   *      (`IF x = THEN` → an IF statement), at its own precise position;
+   *   2. a surviving statement ancestor names what the damage sits in,
+   *      clamped to that construct's first line (`SET x = 1 2` → the SET
+   *      line);
+   *   3. failing all of that, the region's opening token is QUOTED
+   *      (`Unexpected 'SETN' here.`) — E-1's complaint was that the found
+   *      token was never said, and `SETN`→`SET` is one transposition the
+   *      reader used to have to spot by hand.
+   * Every message built here carries a did-you-mean suffix when the region's
+   * opening word is a near-miss for a keyword (E-10's move). The only shape
+   * that keeps the bare text is a region of pure comment damage: nothing to
+   * name, nothing to quote.
    */
   const describeDamagedRegion = (node: SyntaxNode): { message: string; range: Range } => {
+    const seam = unterminatedStatement(node);
+    if (seam) return seam;
+    // E-1: measured against the keyword table once per region.
+    const hint = (() => {
+      const s = keywordSuggestion(regionFirstWord(node));
+      return s ? ` Did you mean '${s}'?` : '';
+    })();
     const named = (phrase: string, anchor: SyntaxNode) => ({
-      message: `Syntax error in ${phrase}.`,
+      message: `Syntax error in ${phrase}.${hint}`,
       range: Range.create(
         anchor.startPosition.row,
         anchor.startPosition.column,
@@ -657,7 +818,12 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
           : undefined);
       if (derived) return named(stored ? derived : `${articleFor(derived)} ${derived}`, a);
     }
-    // 3. Nothing to say beyond the truth: the bare message, own range.
+    // 3. Nothing names the region, but its opening token still says what the
+    //    parser tripped over — quote it (E-1).
+    const tok = regionQuotedToken(node);
+    if (tok) return { message: `Unexpected '${tok}' here.${hint}`, range: rangeOf(node) };
+    // A region whose masked text holds no token (comment-only damage) has no
+    // name and nothing to quote: the one residue where bare text is honest.
     return { message: 'Syntax error.', range: rangeOf(node) };
   };
 
@@ -704,7 +870,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
   };
 
 
-  const visit = (node: SyntaxNode, scope: WalkScope, parentType?: string, underDamaged = false): void => {
+  const visit = (node: SyntaxNode, scope: WalkScope, parent?: SyntaxNode, underDamaged = false): void => {
     // Read the child list ONCE per node. `node.children` allocates a fresh array
     // of fresh node wrappers on every read, and this walk looks at several fields
     // of the same node, so reading it per field multiplied the work: a full walk
@@ -715,7 +881,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
       if (!underDamaged) {
         syntaxIssues.push(
           isInsertedNode(node)
-            ? { message: expectedPhrase(node.type, parentType), range: rangeOf(node) }
+            ? { message: insertionMessage(node, parent), range: rangeOf(node) }
             : describeDamagedRegion(node)
         );
       }
@@ -741,7 +907,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
       const damagedScope: WalkScope = moduleInfo
         ? { visible: moduleInfo.range, moduleName: moduleInfo.name }
         : inner;
-      for (const child of kids) visit(child, damagedScope, node.type, true);
+      for (const child of kids) visit(child, damagedScope, node, true);
       return;
     }
 
@@ -750,7 +916,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
       case 'create_module_statement':
       case 'create_routine_statement': {
         const inner = openScope(node, kids, scope);
-        for (const child of kids) visit(child, inner, node.type, underDamaged);
+        for (const child of kids) visit(child, inner, node, underDamaged);
         return; // handled: do not descend twice
       }
       case 'declare_statement': {
@@ -896,7 +1062,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
       }
     }
 
-    for (const child of kids) visit(child, scope, node.type, underDamaged);
+    for (const child of kids) visit(child, scope, node, underDamaged);
   };
 
   visit(tree.rootNode, { visible: rangeOf(tree.rootNode) });
