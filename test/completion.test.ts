@@ -94,12 +94,20 @@ test('multi-name DECLARE offers every variable', () => {
   assert.match(second!.detail ?? '', /INTEGER/);
 });
 
-test('general context filters by word being typed', () => {
+test('general context ships the whole context-relevant list (C-3)', () => {
   assert.equal(wordBeingTyped('SET x = COA'), 'COA');
   const items = buildCompletionItems('general', 'SET x = COA', '');
   assert.ok(items.length > 0);
-  assert.ok(items.every((i) => i.label.toLowerCase().startsWith('coa')));
-  assert.ok(items.map((i) => i.label).includes('COALESCE'));
+  const labels = items.map((i) => i.label);
+  assert.ok(labels.includes('COALESCE'), 'the match the prefix was typed for is in it');
+  assert.ok(
+    labels.some((l) => !l.toLowerCase().startsWith('coa')),
+    'non-matches ship too — pruning was deleting candidates fuzzy clients could match'
+  );
+  // The client can only do that job because every item says how to match it.
+  const snip = items.find((i) => i.kind === CompletionItemKind.Snippet)!;
+  assert.equal(snip.filterText, snip.label, 'snippets match on the trigger, not the body');
+  assert.equal(items.find((i) => i.label === 'CAST')!.sortText, undefined, 'built-ins carry no rank');
 });
 
 test('function items carry signature and markdown documentation', () => {
@@ -517,9 +525,17 @@ test('the file\'s own routines are completion items (C-1)', () => {
   );
   assert.ok(inside.some((i) => i.label === 'Main'), 'callable from inside another routine');
 
-  // Prefix filtering applies to them like anything else.
+  // Prefix is no longer pruning here (C-3): the client's matcher gets the
+  // whole list, and Main is where the ranks say to look for it.
   const typed = buildCompletionItems('general', '  CALL Mai', C12_SOURCE);
-  assert.deepEqual(typed.map((i) => i.label), ['Main'], 'CALL Mai completes Main');
+  const typedMain = typed.find((i) => i.label === 'Main')!;
+  assert.ok(typedMain, 'CALL Mai still sees its target');
+  assert.equal(typedMain.filterText, 'Main', 'matched on the bare name');
+  assert.equal(typedMain.sortText, '1:Main', 'ranked in the user-name group');
+  assert.ok(
+    typed.some((i) => !i.label.toLowerCase().startsWith('mai')),
+    'and the non-matching rest ships too — the client filters'
+  );
 });
 
 test('sibling routines and SHARED names join the general list (C-1/C-2)', () => {
@@ -544,7 +560,13 @@ test('sibling routines and SHARED names join the general list (C-1/C-2)', () => 
     true,
     C12_FACTS
   );
-  assert.deepEqual(typed.map((i) => i.label), ['Helper'], 'CALL Hel completes the sibling');
+  const typedHelper = typed.find((i) => i.label === 'Helper');
+  assert.ok(typedHelper, 'the sibling CALL target is in the typed list');
+  assert.equal(typedHelper!.sortText, '1:Helper', 'ranked with the user names (C-3)');
+
+  // Shipping the whole general list per keystroke must stay bounded — this
+  // is the tripwire for future data-table growth (C-3 perf guard).
+  assert.ok(typed.length <= 300, `general list bounded (got ${typed.length})`);
 });
 
 test('same-file names win over same-named workspace facts (C-2)', () => {

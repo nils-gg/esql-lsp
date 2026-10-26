@@ -1407,7 +1407,14 @@ test('cross-file definition, references and hover over stdio (G-1/G-2/G-3)', asy
       assert.ok(helperItem, `the sibling CALL target completes: ${items.map((i) => i.label).join(',')}`);
       assert.equal(helperItem.kind, 3, 'CompletionItemKind.Function');
       assert.match(helperItem.detail, /in helper\.esql/, 'the detail names the file');
-      assert.ok(!items.some((i) => i.label === 'Main'), 'the prefix still filters the rest');
+      // C-3 contract over stdio: the server ships the whole context list and
+      // says how to match/rank it; the client does the filtering.
+      assert.equal(helperItem.filterText, 'Helper', 'matched on the bare name');
+      assert.equal(helperItem.sortText, '1:Helper', 'ranked in the user-name group');
+      assert.ok(
+        items.some((i) => i.label === 'MODULE'),
+        'non-matching built-ins ship too (' + items.length + ' items)'
+      );
 
       // The unfiltered general list carries the file's own routine (signature
       // detail) and the sibling SHARED variable (declaring file in detail).

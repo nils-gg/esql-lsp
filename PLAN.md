@@ -210,17 +210,26 @@ One coherent change: the feature modules gain a *workspace lookup* parameter;
 
 ### 9. C-3 — let the client do fuzzy matching  `[S/M]` → closes C-3 (touches 8's output)
 
-- [ ] Drop the `startsWith` pruning in `filterByPrefix` for the **general**
+- [x] Drop the `startsWith` pruning in `filterByPrefix` for the **general**
       list; keep the clause-table narrowing (that is context, not prefix).
-- [ ] Set `filterText = label` on items whose label can fool matchers (quoted
+- [x] Set `filterText = label` on items whose label can fool matchers (quoted
       names → the bare name; snippets keep the label as typed).
-- [ ] `sortText`: put clause-rule items and in-scope declared names first so
+- [x] `sortText`: put clause-rule items and in-scope declared names first so
       label-alphabetical clients still rank sensibly.
-- [ ] Re-run `scripts/record_demo.sh` in **both** modes — the README demo
+- [x] Re-run `scripts/record_demo.sh` in **both** modes — the README demo
       drives omnifunc with explicit C-n/C-y and asserts pane content; verify
       the asserted selections still land.
-- [ ] Perf guard: list-size assertion in a test (general list bounded, ≤ ~300
+- [x] Perf guard: list-size assertion in a test (general list bounded, ≤ ~300
       items as today).
+
+  *Landed as:* clause lists keep their own prefix pruning (`DELETE F` still
+  means F — the T-1 expectations stand untouched); the additive merge prunes
+  only its clause head. `filterText` goes on the user-name items and every
+  snippet (quoted names are already bare labels since task 5, so nothing to
+  translate). `sortText` = `0:`-clause / `1:`user-names + label — digits
+  float both groups above the unranked built-ins for string-sorting clients;
+  nvim ignores it and uses list order, which did not change. Measured general
+  list: 242 items. Both demo tours green with and without the addon.
 
 ---
 

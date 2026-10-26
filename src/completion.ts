@@ -96,6 +96,29 @@ function ci(label: string, kind: CompletionItemKind): CompletionItem {
   return item;
 }
 
+/**
+ * `sortText` ranks for C-3: the server stopped pruning the general list by
+ * prefix, so ranking is the client's job — and a client that ranks by plain
+ * string comparison at least sees the RIGHT things on top: clause-rule words
+ * (`0:`), then the user's own names — declared, own routines, workspace
+ * facts (`1:`). Digits sort before letters, so both prefixes float those
+ * groups above the unranked built-ins and snippets (whose sortText defaults
+ * to their label). The label suffix keeps each group alphabetical inside
+ * itself.
+ */
+function rankClause(item: CompletionItem): CompletionItem {
+  item.sortText = `0:${item.label}`;
+  return item;
+}
+
+function rankUser(item: CompletionItem): CompletionItem {
+  item.sortText = `1:${item.label}`;
+  // The label IS the text a matcher should score (quoted declare names are
+  // stored bare; a client must never score the detail or the snippet body).
+  item.filterText = item.label;
+  return item;
+}
+
 function domainItems(doc: EsqlDomainDoc[]): CompletionItem[] {
   return doc.map((d) => {
     const item = ci(d.name, CompletionItemKind.Module);
@@ -171,6 +194,10 @@ function snippetItems(snippetSupport: boolean): CompletionItem[] {
   return ESQL_SNIPPETS.map((s) => {
     const item = ci(s.label, CompletionItemKind.Snippet);
     item.detail = s.description;
+    // Match on the TRIGGER, never on the expanded body (C-3): a client that
+    // would otherwise score `insertText` must still find `throw` by typing
+    // `throw`, not by typing the code it expands to.
+    item.filterText = s.label;
     if (snippetSupport) {
       // The client asked for snippets, so the placeholder bodies are honest
       // to send (ISSUES.md-style one-liner: without the flag, spec-correct
@@ -201,6 +228,7 @@ function declaredItemsFromTree(declarations: DeclaredName[]): CompletionItem[] {
     seen.add(upper);
     const item = ci(d.name, CompletionItemKind.Variable);
     item.detail = `Declared: ${d.detail}`;
+    rankUser(item);
     items.push(item);
   }
   return items;
@@ -255,6 +283,7 @@ function routineItems(routines: RoutineInfo[]): CompletionItem[] {
     seen.add(upper);
     const item = ci(r.name, CompletionItemKind.Function);
     item.detail = routineSignature(r);
+    rankUser(item);
     items.push(item);
   }
   return items;
@@ -275,6 +304,7 @@ function workspaceFactItems(facts: CompletionFacts): CompletionItem[] {
     seen.add(key);
     const item = ci(r.name, CompletionItemKind.Function);
     item.detail = `in ${r.file} · ${r.detail}`;
+    rankUser(item);
     items.push(item);
   }
   for (const v of facts.sharedVars ?? []) {
@@ -284,6 +314,7 @@ function workspaceFactItems(facts: CompletionFacts): CompletionItem[] {
     const item = ci(v.name, CompletionItemKind.Variable);
     item.detail = `SHARED, declared in ${v.file}`;
     if (v.detail) item.documentation = markdown(`Type: ${v.detail}`);
+    rankUser(item);
     items.push(item);
   }
   return items;
@@ -332,6 +363,7 @@ function nextWordItems(rule: NextWordRule): CompletionItem[] {
       w === '=' ? CompletionItemKind.Operator : CompletionItemKind.Keyword
     );
     item.detail = rule.detail;
+    rankClause(item);
     items.push(item);
   }
   for (const t of rule.types ?? []) {
@@ -339,6 +371,7 @@ function nextWordItems(rule: NextWordRule): CompletionItem[] {
     item.detail = 'ESQL data type';
     const doc = ESQL_TYPES.find((d) => d.name === t)?.description;
     if (doc) item.documentation = markdown(doc);
+    rankClause(item);
     items.push(item);
   }
   return items;
@@ -499,14 +532,20 @@ export function buildCompletionItems(
         );
       };
       if (rule) {
+        // Clause narrowing is CONTEXT, not prefix: it stays, and the clause
+        // words keep their own prefix pruning (a `DELETE F` still means F).
         const narrowed = nextWordItems(rule);
         if (!rule.additive) return filterByPrefix(narrowed, prefix);
-        return filterByPrefix(
-          dedupeByLabel([...narrowed, ...generalItems()], new Set(narrowed)),
-          prefix
-        );
+        const head = filterByPrefix(narrowed, prefix);
+        return dedupeByLabel([...head, ...generalItems()], new Set(head));
       }
-      return filterByPrefix(generalItems(), prefix);
+      // C-3: the general list ships WHOLE. `startsWith` server-side was
+      // deleting the candidates the client's fuzzy/subsequence matcher could
+      // have matched (`datetype` → `DATETIME` never arrived); the protocol's
+      // intent is to send the context-relevant set and let the client
+      // filter — items carry filterText/sortText for that contract, and the
+      // clause table above is the context cut instead of the prefix.
+      return generalItems();
     }
   }
 }

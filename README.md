@@ -97,8 +97,13 @@ problem". The codes mirror the setting names below: `syntax-error`,
   lists stay closed)
 - 43 snippets (module skeletons, IF/CASE/WHILE, THROW, PASSTHRU, JSON
   responses, …) — triggered like `module-compute`, `throw`, `trycatch`
-- Filtered by the word you are typing; one item per label, so a word that is
-  both a keyword and a data type (`INTEGER`) is offered once
+- The **whole** context-relevant list ships on every keystroke — the server
+  stopped pruning by prefix, so your client's fuzzy/subsequence matcher sees
+  every candidate (`datetype` can still find `DATETIME`); items carry
+  `filterText`/`sortText` so clients know how to match and rank them, and
+  clause positions (`DELETE F…`) stay narrowed and prefix-filtered as the
+  context permits. One item per label, so a word that is both a keyword and
+  a data type (`INTEGER`) is offered once
 
 ### Hover
 
