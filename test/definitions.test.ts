@@ -371,6 +371,38 @@ test('quoted names resolve the same in grammar mode (G-5/T-2)', async (t) => {
 });
 
 /**
+ * G-6: `BROKER SCHEMA com.acme.main` put a schema SEGMENT next to a `Main()`
+ * ROUTINE — a click on `main` in the schema line jumped to the routine (the
+ * dotted lookup spells both the same). Inside the schema name only the
+ * schema may answer; a click on the routine's own name still finds it.
+ */
+test('a schema segment spelled like the routine resolves to the schema (G-6)', async (t) => {
+  const src = [
+    'BROKER SCHEMA com.acme.main;', //                   0  cursor on `main` at char 25
+    'CREATE COMPUTE MODULE M', //                        1
+    'CREATE FUNCTION Main() RETURNS BOOLEAN', //         2
+    'BEGIN', //                                          3
+    '  RETURN TRUE;', //                                 4
+    'END;', //                                           5
+    'END MODULE;', //                                    6
+    '',
+  ].join('\n');
+
+  assert.deepEqual(format(definitionAt(src, 0, 25, undefined)), ['0:14-0:27'], 'schema segment (heuristic)');
+  // The routine click keeps its long-standing extra schema hit (the segment
+  // match is pre-existing behavior); G-6 only needs the routine to be found.
+  assert.ok(format(definitionAt(src, 2, 18, undefined)).includes('2:16-2:20'), 'the routine itself (heuristic)');
+
+  if (!(await initGrammar())) {
+    t.skip('tree-sitter addon unavailable — no DocAnalysis to feed');
+    return;
+  }
+  const doc = analyzeDocument(parse(src)!, src);
+  assert.deepEqual(format(definitionAt(src, 0, 25, doc)), ['0:14-0:27'], 'schema segment (grammar)');
+  assert.ok(format(definitionAt(src, 2, 18, doc)).includes('2:16-2:20'), 'the routine itself (grammar)');
+});
+
+/**
  * I-15/I-16: the fallback has to know *scopes*, not just names. Hover, completion
  * and go-to-definition all ask these helpers where a name lives, and while the
  * pattern path answered with the whole file as every declaration's scope, a

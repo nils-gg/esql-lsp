@@ -776,11 +776,22 @@ export function definitionAt(
   const at = wordAtPosition(lines, rawLines, line, character);
   if (!at) return [];
 
+  // G-6: a schema segment is never a routine click. `BROKER SCHEMA
+  // com.acme.main` next to `CREATE FUNCTION Main()` used to answer a click on
+  // `main` with the ROUTINE — two different names the dotted lookup happens
+  // to spell the same. Inside a schema name only the schema may answer.
+  // (Definition only — hover resolves differently and the review measured no
+  // hover mis-jump here.)
+  const cursorInSchema = (schemas: { range: Range }[]): boolean =>
+    schemas.some((s) => rangeContains(s.range, line, character));
+
   if (doc) {
     const found: Range[] = [];
 
-    for (const routine of doc.routines) {
-      if (eqName(routine.name, at.word)) found.push(routine.range);
+    if (!cursorInSchema(doc.schemas)) {
+      for (const routine of doc.routines) {
+        if (eqName(routine.name, at.word)) found.push(routine.range);
+      }
     }
 
     const declarations = doc.declaredNames.filter((d) => eqName(d.name, at.word));
@@ -804,8 +815,11 @@ export function definitionAt(
 
   // ── heuristic mode ──
   const found: Range[] = [];
-  for (const routine of routinesFromSource(source)) {
-    if (eqName(routine.name, at.word)) found.push(routine.range);
+  const schema = schemaFromSource(source);
+  if (!cursorInSchema(schema ? [schema] : [])) {
+    for (const routine of routinesFromSource(source)) {
+      if (eqName(routine.name, at.word)) found.push(routine.range);
+    }
   }
   for (const d of declarationsFromSource(source)) {
     if (eqName(d.name, at.word)) found.push(d.range);
@@ -813,7 +827,6 @@ export function definitionAt(
   for (const mod of modulesFromSource(source)) {
     if (eqName(mod.name, at.word)) found.push(mod.nameRange);
   }
-  const schema = schemaFromSource(source);
   if (schema && matchesSchemaName(schema.name, at.word)) found.push(schema.range);
   return normalize(found);
 }

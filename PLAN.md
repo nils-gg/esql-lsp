@@ -165,12 +165,17 @@ One coherent change: the feature modules gain a *workspace lookup* parameter;
 
 ### 7. G-6 — schema segment vs `Main()` routine  `[S]` → closes G-6
 
-- [ ] In the tree path of `definitionAt`, when the cursor's word sits inside a
+- [x] In the tree path of `definitionAt`, when the cursor's word sits inside a
       `schema_name` node, drop routine matches; heuristic path: same rule when
       the line matches `BROKER SCHEMA …` within the cursor span.
-- [ ] Unit: `BROKER SCHEMA com.acme.main` with a `Main()` routine in view →
+- [x] Unit: `BROKER SCHEMA com.acme.main` with a `Main()` routine in view →
       exactly one location (the schema), and clicking `Main` still finds the
       routine.
+
+  *Found while testing:* clicking the ROUTINE's own name also long included
+  the schema (segment match, pre-existing, both modes). Left as is — G-6's
+  claim is the schema-segment click resolving to exactly one location, and
+  the routine click still lists the routine.
 
 ---
 
