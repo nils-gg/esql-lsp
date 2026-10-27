@@ -341,11 +341,32 @@ export function wordBeingTyped(linePrefix: string): string {
  * prefix keeps offsets identical to the raw text, so removing the trailing
  * word afterwards is exact. FIRST MATCH WINS: the table is ordered specific
  * to general.
+ *
+ * C-6: callers holding a parse tree also pass the clause prefix it read
+ * (`clausePrefixAt` — masked and whitespace-collapsed, so it needs no second
+ * mask). A rule matched on that TRUE prefix wins outright: a continuation
+ * line `DELETE ` inside a PROPAGATE would otherwise pick the line-anchored
+ * `delete-statement` instead of `propagate-delete`. When the clause prefix
+ * matches no rule the line prefix still decides, which is how a line-anchored
+ * clause whose statement text sits further back (typing `END ` inside a long
+ * IF body, where the clause prefix is the whole IF) keeps narrowing as it
+ * always did. The WORDS never come from the tree — one table, both modes.
  */
-export function nextWordRuleFor(linePrefix: string): NextWordRule | undefined {
-  const word = wordBeingTyped(linePrefix);
-  const masked = scan(linePrefix).masked;
-  const beforeWord = word ? masked.slice(0, masked.length - word.length) : masked;
+export function nextWordRuleFor(
+  linePrefix: string,
+  clausePrefix?: string
+): NextWordRule | undefined {
+  if (clausePrefix) {
+    const rule = ruleForMaskedPrefix(clausePrefix);
+    if (rule) return rule;
+  }
+  return ruleForMaskedPrefix(scan(linePrefix).masked);
+}
+
+/** One prefix — already masked — through the table, trailing word removed. */
+function ruleForMaskedPrefix(maskedPrefix: string): NextWordRule | undefined {
+  const word = wordBeingTyped(maskedPrefix);
+  const beforeWord = word ? maskedPrefix.slice(0, maskedPrefix.length - word.length) : maskedPrefix;
   return NEXT_WORD_RULES.find((r) => r.pattern.test(beforeWord));
 }
 
@@ -455,8 +476,33 @@ export function buildCompletionItems(
   snippetSupport = true,
   /** The file's own routines and the workspace's SHARED names for the
    * GENERAL list (C-1/C-2). They never enter a clause-narrowed list. */
-  facts?: CompletionFacts
+  facts?: CompletionFacts,
+  /** C-6: the clause prefix the parse tree read at the cursor (masked,
+   * collapsed; `clausePrefixAt`). Grammar mode only; it re-anchors BOTH the
+   * clause narrowing and the dotted/DECLARE contexts onto the full clause
+   * when the cursor's own line is only part of it. */
+  clausePrefix?: string
 ): CompletionItem[] {
+  // C-6 context remap: the cursor line can end in `.JSON.` or `DECLARE x `
+  // just as truly when the clause began on an earlier line. Only the GENERAL
+  // line verdict is overridden, and the clause prefix then serves as the
+  // linePrefix of that call so the branch's own position tests — and the
+  // prefix filter — read the clause, not the fragment.
+  if (context === 'general' && clausePrefix) {
+    const clauseContext = detectCompletionContext(clausePrefix);
+    if (clauseContext !== 'general') {
+      return buildCompletionItems(
+        clauseContext,
+        clausePrefix,
+        source,
+        declarations,
+        position,
+        snippetSupport,
+        facts,
+        clausePrefix
+      );
+    }
+  }
   const prefix = wordBeingTyped(linePrefix);
 
   switch (context) {
@@ -522,11 +568,13 @@ export function buildCompletionItems(
       return filterByPrefix(items, prefix);
     }
     case 'general': {
-      // Clause-aware narrowing: a line prefix that ends at a clause position
-      // in the next-words table offers only the words that legally continue
-      // that clause (additive rules keep the general list alongside them).
-      // The table is pure prefix analysis, so both parse modes narrow alike.
-      const rule = nextWordRuleFor(linePrefix);
+      // Clause-aware narrowing: a clause prefix that ends at a clause
+      // position in the next-words table offers only the words that legally
+      // continue it (additive rules keep the general list alongside them).
+      // The table is the same in both parse modes; grammar mode additionally
+      // hands it the clause the tree read, so a wrapped clause narrows like
+      // its single-line form (C-6).
+      const rule = nextWordRuleFor(linePrefix, clausePrefix);
       const generalItems = (): CompletionItem[] => {
         const declared = declarations
           ? declarationsInScope(declarations, position)

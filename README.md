@@ -91,6 +91,14 @@ problem". The codes mirror the setting names below: `syntax-error`,
   `Data` plus a Properties copy-hint after `.JSON.`, common
   `LocalEnvironment` fields, an honest datasource placeholder after
   `Database.`, types after `DECLARE <name>` / `RETURNS`
+- Clause-aware narrowing (`PROPAGATE TO ` → TERMINAL/LABEL, `SET ref ` →
+  `= TYPE NAMESPACE NAME VALUE`, …) is **clause**-aware in grammar mode, not
+  line-aware: the parse tree hands the table the true multi-line prefix, so
+  a clause wrapped across lines (`SET`⏎`x `) narrows exactly like its
+  single-line form — asserted for every rule in the table. The words always
+  come from that one shared table, so heuristic mode is untouched, and where
+  the tree cannot be trusted (damage before the cursor, a mid-typed clause
+  recovery swallowed) the line table answers exactly as before
 - Variables declared in the current document (each name of a multi-name
   `DECLARE a, b, c` included), **in scope at the cursor only** — a name
   declared in another routine is not offered, and one declared outside the

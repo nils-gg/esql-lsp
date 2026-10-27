@@ -8,7 +8,9 @@ import {
   nextWordRuleFor,
   plainSnippetText,
 } from '../src/completion';
-import { initGrammar, parse, analyzeDocument } from '../src/parser';
+import { initGrammar, parse, analyzeDocument, clausePrefixAt, Tree } from '../src/parser';
+import { scan } from '../src/scanner';
+import { skipWithoutGrammar } from './grammarStatus';
 import { declarationsFromSource } from '../src/definitions';
 
 test('detects parser-domain context after message tree root', () => {
@@ -304,9 +306,11 @@ test('without a position nothing is filtered (the documented fallback contract)'
 });
 
 // ─── Next-word (clause-aware) completion ─────────────────────────────────────
-// The NEXT_WORD_RULES table is pure prefix analysis — grammar mode and
-// heuristic mode narrow identically — so these cases run in BOTH modes and
-// must never skip.
+// NEXT_WORD_RULES is a pure prefix analysis: line-local narrowing is
+// identical in both parse modes, so these cases run in BOTH modes and must
+// never skip. What the grammar adds on top — handing the table the TRUE
+// multi-line clause instead of just the cursor line — is the C-6 section
+// further down; only that section skips without the addon.
 
 const labelSet = (linePrefix: string, source = '') =>
   buildCompletionItems('general', linePrefix, source).map((i) => i.label);
@@ -638,4 +642,277 @@ test('closed clause lists stay closed to names (C-1/C-2)', () => {
   assert.ok(!items.some((i) => i.label === 'Helper'), 'no sibling routine');
   assert.ok(!items.some((i) => i.label === 'FailureCount'), 'no SHARED name');
   assert.ok(!items.some((i) => i.kind === CompletionItemKind.Snippet), 'still just the clause words');
+});
+
+// ─── Tree-backed clause state (C-6, PLAN task 19) ────────────────────────────
+// The WORDS always come from NEXT_WORD_RULES — one table, both modes; the
+// tree's contribution is the CLAUSE STATE: everything the statement actually
+// contains before the cursor, not just what sits on the cursor's line. The
+// PLAN suggested deriving the words from `node-types.json` next-sibling edges;
+// that file carries no sibling ordering at all (its entries only have
+// children/extra/fields — verified), so the mechanism is: the tree supplies
+// the clause prefix, the shared table supplies the words, and the collapse to
+// single spaces makes the multi-line prefix byte-identical to the single-line
+// sample the patterns were authored against. Parity is therefore asserted,
+// per rule, with probe-recorded fixtures: `prefix` below is the EXACT string
+// clausePrefixAt returns for the rendered two-line form (strings masked,
+// whitespace collapsed).
+
+interface ClauseParityCase {
+  /** The rule id the single-line sample must select. */
+  id: string;
+  /** The single-line prefix the table is documented with. */
+  line: string;
+  /** Where the two-line rendering lives: a routine body, or top level. */
+  host: 'body' | 'top';
+  /** Legal continuation after the cursor that makes the render complete. */
+  tail: string;
+  /** Recorded clausePrefixAt output for that render (null = refused). */
+  prefix: string | null;
+}
+
+const CLAUSE_PARITY: ClauseParityCase[] = [
+  { id: 'broker-schema', line: 'BROKER ', host: 'top', tail: 'SCHEMA m;\n', prefix: 'BROKER ' },
+  { id: 'create-target-clauses', line: 'CREATE FIELD zz ', host: 'body', tail: "TYPE 'x';\n", prefix: 'CREATE FIELD zz ' },
+  {
+    id: 'create-module-type',
+    line: 'CREATE COMPUTE ',
+    host: 'top',
+    tail: 'MODULE M2\n  CREATE FUNCTION Main() RETURNS BOOLEAN\n  BEGIN\n  END;\nEND MODULE\n',
+    prefix: 'CREATE COMPUTE ',
+  },
+  { id: 'create-direction-of', line: 'CREATE FIRSTCHILD ', host: 'body', tail: 'OF y;\n', prefix: 'CREATE FIRSTCHILD ' },
+  { id: 'create-statement', line: 'CREATE ', host: 'top', tail: 'FUNCTION F() RETURNS BOOLEAN\n  BEGIN\n  END;\n', prefix: 'CREATE ' },
+  { id: 'declare-handler-for', line: 'DECLARE CONTINUE HANDLER ', host: 'body', tail: "FOR SQLSTATE '00000' SET q = 1;\n", prefix: 'DECLARE CONTINUE HANDLER ' },
+  { id: 'declare-handler-sqlstate', line: 'DECLARE CONTINUE HANDLER FOR ', host: 'body', tail: "SQLSTATE '00000' SET q = 1;\n", prefix: 'DECLARE CONTINUE HANDLER FOR ' },
+  { id: 'declare-handler-condition', line: 'DECLARE CONTINUE HANDLER FOR SQLSTATE ', host: 'body', tail: "'00000' SET q = 1;\n", prefix: 'DECLARE CONTINUE HANDLER FOR SQLSTATE ' },
+  { id: 'declare-handler-keyword', line: 'DECLARE CONTINUE ', host: 'body', tail: "HANDLER FOR SQLSTATE '00000' SET q = 1;\n", prefix: 'DECLARE CONTINUE ' },
+  { id: 'declare-types', line: 'DECLARE x ', host: 'body', tail: 'INTEGER;\n', prefix: 'DECLARE x ' },
+  { id: 'for-as', line: 'FOR c ', host: 'body', tail: 'AS r DO SET q = 1; END FOR;\n', prefix: 'FOR c ' },
+  { id: 'for-do', line: 'FOR c AS r ', host: 'body', tail: 'DO SET q = 1; END FOR;\n', prefix: 'FOR c AS r ' },
+  { id: 'set-clauses', line: 'SET x ', host: 'body', tail: '= 1;\n', prefix: 'SET x ' },
+  { id: 'delete-direction-of', line: 'DELETE FIRSTCHILD ', host: 'body', tail: 'OF y;\n', prefix: 'DELETE FIRSTCHILD ' },
+  { id: 'delete-from', line: 'DELETE FROM ', host: 'body', tail: 'Database.ds;\n', prefix: 'DELETE FROM ' },
+  { id: 'delete-statement', line: 'DELETE ', host: 'body', tail: 'FIRSTCHILD OF y;\n', prefix: 'DELETE ' },
+  { id: 'attach-as', line: 'ATTACH x TO y ', host: 'body', tail: 'AS LASTCHILD;\n', prefix: 'ATTACH x TO y ' },
+  { id: 'attach-to', line: 'ATTACH x ', host: 'body', tail: 'TO y AS LASTCHILD;\n', prefix: 'ATTACH x ' },
+  { id: 'attach-position', line: 'ATTACH x TO y AS ', host: 'body', tail: 'LASTCHILD;\n', prefix: 'ATTACH x TO y AS ' },
+  { id: 'move-direction-clauses', line: 'MOVE x PARENT ', host: 'body', tail: "TYPE 'a';\n", prefix: 'MOVE x PARENT ' },
+  { id: 'move-target', line: 'MOVE x ', host: 'body', tail: 'TO y;\n', prefix: 'MOVE x ' },
+  // The masked strings (`'a'`, `'SELECT 1'`) are gone from the prefix by
+  // design — the blanking is what keeps string content from matching rules.
+  { id: 'propagate-finalize', line: "PROPAGATE TO TERMINAL 'a' FINALIZE ", host: 'body', tail: 'NONE DELETE DEFAULT;\n', prefix: 'PROPAGATE TO TERMINAL FINALIZE ' },
+  { id: 'propagate-delete', line: "PROPAGATE TO TERMINAL 'a' DELETE ", host: 'body', tail: 'DEFAULT;\n', prefix: 'PROPAGATE TO TERMINAL DELETE ' },
+  { id: 'propagate-to', line: 'PROPAGATE TO ', host: 'body', tail: "TERMINAL 'a';\n", prefix: 'PROPAGATE TO ' },
+  { id: 'propagate-statement', line: 'PROPAGATE ', host: 'body', tail: "TO TERMINAL 'a' DELETE DEFAULT;\n", prefix: 'PROPAGATE ' },
+  { id: 'log-user-trace', line: 'LOG USER ', host: 'body', tail: 'TRACE VALUES (1);\n', prefix: 'LOG USER ' },
+  { id: 'log-options', line: 'LOG EVENT ', host: 'body', tail: 'FULL VALUES (1);\n', prefix: 'LOG EVENT ' },
+  { id: 'log-statement', line: 'LOG ', host: 'body', tail: 'EVENT VALUES (1);\n', prefix: 'LOG ' },
+  { id: 'throw-exception-clauses', line: 'THROW USER EXCEPTION ', host: 'body', tail: "CATALOG 'c';\n", prefix: 'THROW USER EXCEPTION ' },
+  { id: 'throw-user', line: 'THROW USER ', host: 'body', tail: 'EXCEPTION;\n', prefix: 'THROW USER ' },
+  { id: 'throw-statement', line: 'THROW ', host: 'body', tail: 'USER EXCEPTION;\n', prefix: 'THROW ' },
+  { id: 'passthru-to', line: "PASSTHRU 'SELECT 1' TO ", host: 'body', tail: 'Database.ds;\n', prefix: 'PASSTHRU TO ' },
+  { id: 'insert-into', line: 'INSERT INTO ', host: 'body', tail: 'Database.ds (a) VALUES (1);\n', prefix: 'INSERT INTO ' },
+  { id: 'insert-statement', line: 'INSERT ', host: 'body', tail: 'INTO Database.ds (a) VALUES (1);\n', prefix: 'INSERT ' },
+  { id: 'update-table', line: 'UPDATE ', host: 'body', tail: 'Database.ds SET a = 1;\n', prefix: 'UPDATE ' },
+  { id: 'routine-external-name', line: 'CREATE PROCEDURE P () LANGUAGE ESQL EXTERNAL ', host: 'top', tail: 'NAME "a.b(c)";\n', prefix: 'CREATE PROCEDURE P () LANGUAGE ESQL EXTERNAL ' },
+  // Recovery refused THIS render (damage inside the header before the
+  // cursor) — the fallback line rule is what produces the parity. Recorded
+  // as null so the refusal itself is pinned, not silently re-forked.
+  { id: 'routine-language', line: 'CREATE PROCEDURE P () LANGUAGE ', host: 'top', tail: 'ESQL;\n', prefix: null },
+  { id: 'cast-as', line: 'SET x = CAST(y AS ', host: 'body', tail: 'INTEGER);\n', prefix: 'SET x = CAST(y AS ' },
+  { id: 'extract-unit-from', line: 'SET x = EXTRACT(YEAR ', host: 'body', tail: 'FROM CURRENT_DATE);\n', prefix: 'SET x = EXTRACT(YEAR ' },
+  { id: 'extract-unit', line: 'SET x = EXTRACT(', host: 'body', tail: 'YEAR FROM CURRENT_DATE);\n', prefix: 'SET x = EXTRACT(' },
+  { id: 'trim-direction', line: 'SET x = TRIM(LEADING ', host: 'body', tail: "' ' FROM y);\n", prefix: 'SET x = TRIM(LEADING ' },
+  { id: 'trim-paren', line: 'SET x = TRIM(', host: 'body', tail: 'y);\n', prefix: 'SET x = TRIM(' },
+  { id: 'is-not-values', line: 'SET x = CASE WHEN a IS NOT ', host: 'body', tail: 'NULL THEN 1 ELSE 2 END;\n', prefix: 'SET x = CASE WHEN a IS NOT ' },
+  { id: 'is-values', line: 'SET x = CASE WHEN a IS ', host: 'body', tail: 'NULL THEN 1 ELSE 2 END;\n', prefix: 'SET x = CASE WHEN a IS ' },
+  { id: 'between-qualifier', line: 'SET x = CASE WHEN a BETWEEN ', host: 'body', tail: '1 AND 2 THEN 1 ELSE 2 END;\n', prefix: 'SET x = CASE WHEN a BETWEEN ' },
+];
+
+const MODULE_BODY = (inner: string) =>
+  `CREATE COMPUTE MODULE M\n  CREATE FUNCTION Main() RETURNS BOOLEAN\n  BEGIN\n${inner}    RETURN TRUE;\n  END;\nEND MODULE\n`;
+
+/** The first-space split rendering with the cursor at the sample's end. */
+function twoLineRender(c: ClauseParityCase): { tree: Tree; linePrefix: string; offset: number; text: string } {
+  const sp = c.line.indexOf(' ');
+  const l1 = c.line.slice(0, sp);
+  const l2 = c.line.slice(sp + 1); // keeps the sample's trailing space
+  const indent = c.host === 'body' ? '      ' : '';
+  const marked =
+    c.host === 'body'
+      ? MODULE_BODY(`    ${l1}\n${indent}${l2}|${c.tail}`)
+      : `    ${l1}\n${indent}${l2}|${c.tail}`;
+  const offset = marked.indexOf('|');
+  const text = marked.slice(0, offset) + marked.slice(offset + 1);
+  const tree = parse(text);
+  assert.ok(tree, `parse failed for ${c.id}`);
+  const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+  return { tree: tree!, linePrefix: text.slice(lineStart, offset), offset, text };
+}
+
+test('every clause narrows across two lines exactly as on one (C-6)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  for (const c of CLAUSE_PARITY) {
+    assert.equal(nextWordRuleFor(c.line)?.id, c.id, `single line ${JSON.stringify(c.line)}`);
+    const { tree, text, linePrefix, offset } = twoLineRender(c);
+    const prefix = clausePrefixAt(tree, scan(text).masked, offset);
+    assert.equal(prefix, c.prefix, `clause prefix for ${c.id}`);
+    assert.equal(
+      nextWordRuleFor(linePrefix, prefix ?? undefined)?.id,
+      c.id,
+      `two-line rendering of ${c.id} (line prefix ${JSON.stringify(linePrefix)})`
+    );
+  }
+});
+
+test('the two-line clause completes the same items the single line does (C-6)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const labels = (ctx: ReturnType<typeof detectCompletionContext>, linePrefix: string, clause?: string) =>
+    buildCompletionItems(ctx, linePrefix, '', [], undefined, true, undefined, clause).map((i) => i.label);
+  for (const c of CLAUSE_PARITY) {
+    const { tree, text, linePrefix, offset } = twoLineRender(c);
+    const prefix = clausePrefixAt(tree, scan(text).masked, offset) ?? undefined;
+    assert.deepEqual(
+      labels(detectCompletionContext(linePrefix), linePrefix, prefix),
+      labels(detectCompletionContext(c.line), c.line, undefined),
+      c.id
+    );
+  }
+});
+
+// ─── C-6 guarantees that need NO tree: they run in both modes, never skip ────
+// The fallback promise is a pure-function property: the clause prefix can
+// only ever ADD a match or be ignored, so heuristic behaviour is a subset.
+
+test('a rule matched on the clause prefix outranks the line rule (C-6)', () => {
+  // A continuation line `DELETE ` inside a PROPAGATE is the clause's own
+  // DELETE — the line-anchored `delete-statement` would narrow to the wrong
+  // words (FIELD/FIRSTCHILD/FROM). Recorded from the probe: that is exactly
+  // what flat analysis picks on the same line, so the tree must win.
+  assert.equal(nextWordRuleFor('      DELETE ')?.id, 'delete-statement', 'flat would misfire');
+  assert.equal(
+    nextWordRuleFor('      DELETE ', 'PROPAGATE TO TERMINAL DELETE ')?.id,
+    'propagate-delete',
+    'the clause prefix corrects it'
+  );
+});
+
+test('a clause prefix that matches nothing leaves the line rule in charge (C-6)', () => {
+  // `END ` closing a block sits inside the IF statement's text; no rule
+  // matches the whole-IF prefix, so the line keeps narrowing as it always
+  // did — end-block stays reachable in grammar mode.
+  assert.equal(nextWordRuleFor('END ', 'IF q = 1 THEN SET q = 1; END ')?.id, 'end-block');
+});
+
+test('only the general line verdict is remapped onto the clause (C-6)', () => {
+  // A dotted-ref/DECLARE position whose clause began a line earlier still
+  // gets its context…
+  assert.deepEqual(
+    buildCompletionItems('general', '   ', '', [], undefined, true, undefined, 'SET x = InputRoot.JSON.').map(
+      (i) => i.label
+    ),
+    ['Data', 'Properties']
+  );
+  // …but a line-local context is never overridden by the clause…
+  assert.deepEqual(
+    buildCompletionItems('json-data', 'SET x = InputRoot.JSON.', '', [], undefined, true, undefined, 'SET x = ').map(
+      (i) => i.label
+    ),
+    ['Data', 'Properties']
+  );
+  // …and an empty or absent clause prefix changes nothing at all.
+  const flat = buildCompletionItems('general', '', '').map((i) => i.label);
+  assert.deepEqual(buildCompletionItems('general', '', '', [], undefined, true, undefined, '').map((i) => i.label), flat);
+});
+
+// ─── C-6 edge battery: the damage policy and the honest limits ───────────────
+
+const at = (marked: string) => {
+  const offset = marked.indexOf('|');
+  const text = marked.slice(0, offset) + marked.slice(offset + 1);
+  const tree = parse(text);
+  assert.ok(tree, marked);
+  return { tree: tree!, text, offset };
+};
+
+test('grammar: the tree reads what the line cannot see (C-6 wins)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const wins: Array<[string, string | null, string | undefined]> = [
+    // cursor mid-typing, statement still unterminated at EOF of the body:
+    // recovery keeps the clause clean → the table narrows it.
+    [MODULE_BODY('    SET x |'), 'SET x ', 'set-clauses'],
+    // a second statement sharing a line: the tree reads only THAT statement
+    // (flat sees the whole line and matches no rule at all).
+    [MODULE_BODY('    SET a = 1; SET b |= 2;'), 'SET b ', 'set-clauses'],
+    // the `IS` operator ends line 1, the cursor sits on an empty line 2:
+    // the value set still arrives.
+    [MODULE_BODY('    SET x = CASE WHEN a IS\n      |NULL THEN 1 ELSE 2 END;\n'), 'SET x = CASE WHEN a IS ', 'is-values'],
+  ];
+  for (const [marked, wantPrefix, wantRule] of wins) {
+    const { tree, text, offset } = at(marked);
+    const prefix = clausePrefixAt(tree, scan(text).masked, offset);
+    assert.equal(prefix, wantPrefix, marked);
+    const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+    const linePrefix = text.slice(lineStart, offset);
+    assert.equal(nextWordRuleFor(linePrefix, prefix ?? undefined)?.id, wantRule, marked);
+  }
+});
+
+test('grammar: damage before the cursor refuses the reading, damage after does not (C-6)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const cases: Array<[string, string | null]> = [
+    [MODULE_BODY('    SET x = = 1;|'), null], // ERROR inside the statement, before the cursor
+    [MODULE_BODY('    SET x | = = ;'), 'SET x '], // the junk is ahead: what precedes stays trustworthy
+    [MODULE_BODY('    SET a = 1;|'), 'SET a = 1;'], // finished clause: no rule matches a `;` end → general
+    [MODULE_BODY('    SET\n      x|= 1;'), 'SET x'], // cursor before a token: the token is not part of the clause yet
+  ];
+  for (const [marked, want] of cases) {
+    const { tree, text, offset } = at(marked);
+    assert.equal(clausePrefixAt(tree, scan(text).masked, offset), want, marked);
+  }
+  const empty = at('CREATE COMPUTE MODULE M\n  CREATE FUNCTION Main() RETURNS BOOLEAN\n  BEGIN\n  END;\nEND MODULE\n');
+  assert.equal(clausePrefixAt(empty.tree, scan(empty.text).masked, 0), null, 'offset 0: nothing precedes');
+});
+
+test('grammar: the honest limits fall back instead of guessing (C-6)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // Mid-typed PROPAGATE split at EOF: recovery swallows the clause → null,
+  // and the line answer (also no rule) keeps the general list — today's
+  // behaviour, not a regression.
+  {
+    const { tree, text, offset } = at(MODULE_BODY('    PROPAGATE\n    TO |'));
+    const prefix = clausePrefixAt(tree, scan(text).masked, offset);
+    assert.equal(prefix, null);
+    assert.equal(nextWordRuleFor('    TO ', prefix ?? undefined)?.id, undefined);
+  }
+  // `END` then a newline before its block word: the flat rule is line-anchored
+  // and the tree prefix runs from the statement's head, so neither can fire —
+  // a general list, recorded rather than pretended away. (Typing `END ` on
+  // one line — the realistic case — works: asserted in the next block.)
+  {
+    const { tree, text, offset } = at(MODULE_BODY('    END\n  |IF;'));
+    const prefix = clausePrefixAt(tree, scan(text).masked, offset);
+    assert.equal(nextWordRuleFor('  ', prefix ?? undefined)?.id, undefined);
+  }
+  // Cursor resting before `END IF;` / after `BEGIN`: the reading never
+  // misfires a clause rule.
+  for (const marked of [
+    MODULE_BODY('    SET a = 1;\n    -- note\n  |END;\n'),
+    'CREATE COMPUTE MODULE M\n  CREATE FUNCTION Main() RETURNS BOOLEAN\n  BEGIN|\n  END;\nEND MODULE\n',
+  ]) {
+    const { tree, text, offset } = at(marked);
+    const prefix = clausePrefixAt(tree, scan(text).masked, offset);
+    const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+    assert.equal(nextWordRuleFor(text.slice(lineStart, offset), prefix ?? undefined)?.id, undefined, marked);
+  }
+  // The realistic END: same line, inside a long multi-line IF — the tree
+  // prefix matches nothing, the fallback fires end-block.
+  {
+    const { tree, text, offset } = at(MODULE_BODY('    IF q = 1 THEN\n      SET q = 1;\n    END |IF;'));
+    const prefix = clausePrefixAt(tree, scan(text).masked, offset);
+    assert.equal(prefix, 'IF q = 1 THEN SET q = 1; END ');
+    const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+    assert.equal(nextWordRuleFor(text.slice(lineStart, offset), prefix ?? undefined)?.id, 'end-block');
+  }
 });

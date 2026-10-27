@@ -77,6 +77,7 @@ import { mergeSettings, unwrapSettings, EsqlSettings, DEFAULT_SETTINGS } from '.
 import {
   initGrammar,
   parse,
+  clausePrefixAt,
   analyzeDocument,
   semanticTokensForTree,
   SEMANTIC_TOKEN_TYPES,
@@ -861,7 +862,15 @@ connection.onCompletion((params: CompletionParams): CompletionItem[] => {
   // Exact declared names/parameters from the parse tree when available; the
   // pattern fallback from definitions.ts keeps them offered without it.
   const text = doc.getText();
-  const analysis = parsedDocument(doc.uri, text).analysis;
+  const pd = parsedDocument(doc.uri, text);
+  const analysis = pd.analysis;
+  // C-6: what clause the TREE says the cursor sits in. Null without the
+  // addon, outside any statement, or wherever damage before the cursor makes
+  // the reading untrustworthy — every one of those keeps today's line-prefix
+  // answer, which is the degradation promise, not an accident.
+  const clausePrefix = pd.tree
+    ? clausePrefixAt(pd.tree, scan(text).masked, doc.offsetAt(pos)) ?? undefined
+    : undefined;
   const declarations = analysis ? analysis.declaredNames : declarationsFromSource(text);
   // C-1/C-2: the file's own routines plus the workspace's sibling routines and
   // SHARED names. The current file's entries are EXCLUDED — its own
@@ -881,7 +890,7 @@ connection.onCompletion((params: CompletionParams): CompletionItem[] => {
   return buildCompletionItems(context, linePrefix, text, declarations, {
     line: pos.line,
     character: pos.character,
-  }, clientWantsSnippets, completionFacts);
+  }, clientWantsSnippets, completionFacts, clausePrefix);
 });
 
 connection.onHover((params: HoverParams): Hover | null => {

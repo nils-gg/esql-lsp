@@ -703,16 +703,48 @@ implement second, and record the decision either way in `VERIFICATION.md`
 
 ### 19. C-6 — tree-backed clause state (grammar mode only)  `[L]` → closes C-6
 
-- [ ] In grammar mode, resolve the cursor's enclosing node from the parse tree
+- [x] In grammar mode, resolve the cursor's enclosing node from the parse tree
       and derive the legal next words from the grammar (`node-types.json`
       `next` sibling edges) instead of the current-line table; multi-line
       clauses then narrow correctly.
-- [ ] Heuristic mode (and damaged regions, incl. mid-edit files the parser
+- [x] Heuristic mode (and damaged regions, incl. mid-edit files the parser
       hasn't recovered): keep the `NEXT_WORD_RULES` table — it stays the
       fallback, per the project's degradation promise.
-- [ ] Parity tests: every clause the table covers, written across two lines,
+- [x] Parity tests: every clause the table covers, written across two lines,
       narrows the same in tree mode as the table does on one line; demo
       re-run both modes (this changes what users see while typing).
+  *Landed as:* the specified derivation source does not exist — verified
+  against the generated `node-types.json` (281 entries, keys
+  children/extra/fields/named/root/type only, zero `next` edges anywhere), so
+  no rule was ever going to be "read off" it. The shipped mechanism keeps the
+  WORDS in `NEXT_WORD_RULES` (one table, both modes — parity by construction,
+  not by luck) and lets the tree supply what it actually knows: the CLAUSE
+  STATE. `clausePrefixAt()` in `parser.ts` (the only tree-sitter consumer, per
+  the architecture pin) descends to the deepest node starting strictly before
+  the cursor, climbs to the nearest `*_statement`, refuses (→ today's
+  line-prefix answer) when ERROR/MISSING damage overlaps the region before
+  the cursor — damage AFTER it is the normal shape of a statement being typed
+  and is forgiven — and returns the masked slice whitespace-collapsed, which
+  is exactly the single-line form the patterns were authored against.
+  `nextWordRuleFor(linePrefix, clausePrefix?)`: a rule matched on the clause
+  prefix WINS (a `DELETE ` continuation inside a PROPAGATE would otherwise
+  pick the wrong line-anchored rule — probed, pinned); no match falls back to
+  the line rule, which is how `END ` inside a long IF keeps working;
+  `buildCompletionItems` additionally remaps only the GENERAL line verdict
+  onto the clause (split `DECLARE x ` gets its type list, split `…JSON.` its
+  Data/Properties pair). Nodes starting exactly AT the cursor are "after it"
+  (strict `<`: a cursor resting before `END IF;` must not read it as clause
+  text); routine/module headers count as statements on purpose —
+  LANGUAGE/EXTERNAL NAME continue on next lines.
+  Parity: 45 probe-recorded fixtures (every rule except `end-block`, whose
+  first-space render `END⏎<cursor>` is an illegal clause span — its honest
+  limits test records both the same-line fallback that keeps it working and
+  the split case that stays general). `prefix` outputs are asserted EXACT
+  (masked strings, collapsed whitespace); label lists asserted equal one-line
+  vs two-line for all 45. E2E over stdio waits for the tree-only
+  `syntax-error` as the grammar-ready gate, then requests the wrapped-`SET`
+  position and gets the closed `= TYPE NAMESPACE NAME VALUE` list. Demo
+  re-run in both modes.
 
 ---
 

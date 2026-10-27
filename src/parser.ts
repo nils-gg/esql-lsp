@@ -1370,3 +1370,70 @@ export function semanticTokensForTree(tree: Tree, source: string): number[] | nu
   }
   return data;
 }
+
+// ─── Clause state for completion (CODE_REVIEW.md C-6) ─────────────────────
+
+/**
+ * The clause the cursor sits in, as TEXT: enclosing statement start through
+ * the cursor, masked (strings/comments blanked — caller passes `scan()`'s
+ * output, offsets are identical) and whitespace-collapsed to single spaces;
+ * null when the tree has nothing trustworthy to say.
+ *
+ * C-6 asked for next-word sets derived from `node-types.json`, but that file
+ * carries no next-sibling edges (its entries only have children/extra/fields
+ * — verified against the generated file), so the WORDS stay in the shared
+ * NEXT_WORD_RULES table and the tree contributes what it actually knows: the
+ * CLAUSE STATE. The line-prefix table can only see the cursor's line, so a
+ * clause wrapped across lines stops narrowing; this returns the true
+ * multi-line prefix, and the collapsed form is exactly the single-line
+ * sample the table's patterns were authored against — multi-line and
+ * single-line then narrow identically, asserted rule-by-rule in
+ * test/completion.test.ts.
+ *
+ * Each half of the policy is verified against real recoveries (mid-edit
+ * buffers routinely have no terminating `;` yet):
+ *  - descend to the deepest node starting STRICTLY before the cursor (a node
+ *    starting AT the cursor is what comes AFTER it: a cursor resting before
+ *    `END IF;` must report the clause before it), then climb to the nearest
+ *    `*_statement`; routine/module headers count, since their LANGUAGE /
+ *    EXTERNAL NAME clauses are exactly what completes on a next line;
+ *  - refuse (null → the caller keeps the line-prefix answer, i.e. today's
+ *    behaviour) when an ERROR or MISSING node overlaps the prefix region:
+ *    damage BEFORE the cursor means the tree may have read the clause wrong.
+ *    Damage at or after the cursor is the normal shape of a statement being
+ *    typed and does not poison what precedes it;
+ *  - empty prefixes and undamaged-but-headless cursors (offset at or before
+ *    the statement's first token) return null: nothing to report.
+ */
+export function clausePrefixAt(tree: Tree, maskedText: string, offset: number): string | null {
+  if (offset <= 0) return null;
+  let node = tree.rootNode;
+  descend: while (node.childCount > 0) {
+    for (let i = node.childCount - 1; i >= 0; i--) {
+      const child = node.children[i];
+      if (child.startIndex < offset) {
+        node = child;
+        continue descend;
+      }
+    }
+    break;
+  }
+  let statement: SyntaxNode | null = null;
+  for (let n: SyntaxNode | null = node; n; n = n.parent) {
+    if (n.type.endsWith('_statement')) {
+      statement = n;
+      break;
+    }
+  }
+  if (!statement || offset <= statement.startIndex) return null;
+  if (hasDamageBetween(tree.rootNode, statement.startIndex, offset)) return null;
+  const collapsed = maskedText.slice(statement.startIndex, offset).replace(/\s+/g, ' ');
+  return collapsed === '' ? null : collapsed;
+}
+
+/** True when an ERROR node or a zero-width MISSING repair overlaps [start, end). */
+function hasDamageBetween(node: SyntaxNode, start: number, end: number): boolean {
+  if (node.startIndex >= end || node.endIndex <= start) return false;
+  if (node.type === 'ERROR' || node.isMissing) return true;
+  return node.children.some((child) => hasDamageBetween(child, start, end));
+}

@@ -2724,3 +2724,64 @@ test('switched-off checks hand out no fixes, even to an echo (E-9)', async () =>
     await client.close();
   }
 });
+
+/**
+ * CODE_REVIEW.md C-6 (PLAN task 19) over a real stdio session: a clause
+ * wrapped across two lines narrows on the CONTINUATION LINE — the line
+ * prefix alone cannot know `SET` is above, so heuristic mode hands the
+ * general list here (asserted by every non-gated run above) and only the
+ * tree-backed path narrows. The `%%%` line is the grammar-ready gate:
+ * `syntax-error` only ever comes off the tree, so waiting for it also
+ * proves the grammar took over this document before the completion is
+ * asked; its damage sits in another statement, which the clause reading
+ * ignores (damage policy: only what precedes the cursor disqualifies).
+ */
+test('grammar mode completes a wrapped clause on the continuation line (C-6)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  const src = [
+    'CREATE COMPUTE MODULE T19E2E',
+    '  CREATE FUNCTION Main() RETURNS BOOLEAN',
+    '  BEGIN',
+    '    DECLARE x INTEGER;',
+    '    %%% junk;',
+    '    SET',
+    '      x ',
+    '    ;',
+    '  END;',
+    'END MODULE',
+    '',
+  ].join('\n');
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e/WrappedClauseC6.esql';
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: { textDocument: { publishDiagnostics: {} } },
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: src },
+    });
+    await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.some((d: any) => d.code === 'syntax-error')
+    );
+
+    // line 6 (`      x `), cursor after the trailing space: flat analysis
+    // sees only whitespace-plus-`x` and offers the general list.
+    const comp = await client.request('textDocument/completion', {
+      textDocument: { uri },
+      position: { line: 6, character: 8 },
+    });
+    const labels: string[] = (comp.result ?? comp).map((i: any) => i.label);
+    assert.deepEqual(
+      labels,
+      ['=', 'TYPE', 'NAMESPACE', 'NAME', 'VALUE'],
+      'the closed set-clauses list — the tree read `SET` from the line above'
+    );
+  } finally {
+    await client.close();
+  }
+});
