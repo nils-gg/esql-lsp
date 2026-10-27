@@ -26,20 +26,23 @@ and **OpenCode**.
 
 ![asciicast](docs/demo.gif)
 
-The ~30-second recording drives real Neovim against the real server
+The ~2-minute recording drives real Neovim against the real server
 ([`scripts/demo/`](scripts/demo/) holds its throwaway config, a fixture with
 deliberate mistakes and a sibling file that declares what the flow shares):
 diagnostics land inline on open, typing the missing `DECLARE` clears the
 warning live, hover on `OutputRoot` shows the reference docs, omnifunc
 completion offers the names this file declares, references and document
 symbols come as lists — and `workspace/symbol` finds `CopyMessageHeaders`
-in the **sibling** file, then jumps into it: with a workspace root, sibling
-`DECLARE … SHARED` names silence undeclared false positives (a typed
-`SET FailureConceal = 1;` still warns — the check kept its teeth), and
-finishing the file with `END MODULE;` clears the structure errors. Every
-feature shown works identically without the grammar addon — the heuristic
-fallback is the same tour, asserted green (`ESQL_LSP_NO_GRAMMAR=1
-scripts/record_demo.sh`).
+in the **sibling** file, then jumps into it. A typed `CALL` and a `SET` of
+the sibling's `SHARED` variable resolve with no warning (the workspace index
+says they exist; a mistyped `SET FailureConceal = 1;` still warns — the check
+kept its teeth), and the quick fix from the code-action picker inserts the
+missing `DECLARE` and clears that warning. Go-to-definition then walks the
+`CALL` into the sibling file, where renaming the `SHARED` declaration sweeps
+**both** files and says so on screen; finishing the flow with `END MODULE;`
+clears the structure errors. Every feature shown works identically without
+the grammar addon — the heuristic fallback is the same tour, asserted green
+(`ESQL_LSP_NO_GRAMMAR=1 scripts/record_demo.sh`).
 
 Replay the committed cast locally with `asciinema play docs/demo.cast`, and
 re-record it with `scripts/record_demo.sh` (needs tmux + asciinema; every

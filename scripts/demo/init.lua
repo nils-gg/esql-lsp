@@ -44,5 +44,17 @@ vim.api.nvim_create_autocmd("FileType", {
 			vim.lsp.buf.workspace_symbol("Copy")
 			vim.defer_fn(function() pcall(vim.cmd, "botright copen 6") end, 1200)
 		end, { buffer = buf, desc = "workspace symbol: Copy" })
+		-- Quick fixes, rename and go-to-definition for the tour's fix-up,
+		-- cross-file SHARED rename and definition-jump shots. <space> prefixes
+		-- so no normal-motion (gd as "find word") is shadowed by accident.
+		vim.keymap.set("n", "<Space>ca", function()
+			vim.lsp.buf.code_action()
+		end, { buffer = buf, desc = "quick fixes (code actions)" })
+		vim.keymap.set("n", "<Space>rn", function()
+			vim.lsp.buf.rename()
+		end, { buffer = buf, desc = "rename" })
+		vim.keymap.set("n", "<Space>gd", function()
+			vim.lsp.buf.definition()
+		end, { buffer = buf, desc = "go to definition" })
 	end,
 })
