@@ -352,7 +352,9 @@ implement second, and record the decision either way in `VERIFICATION.md`
       ("legacy synonym — prefer INTEGER/BOOLEAN") so completion offers it;
       optionally a *hint*-severity `deprecated-type` note (new code, setting,
       unit + e2e + toggle case per ground rules).
-- [ ] **If rejected**: keep the error, fix the lie in the message:
+- [ ] **If rejected**: *(voided branch — the accept path shipped; recorded in
+      the landing note below. Left unchecked for the record: no work owed.)*
+      keep the error, fix the lie in the message:
       `Unknown data type 'LOGICAL' — ESQL knows CHARACTER, INTEGER, … ;
       did you mean 'BOOLEAN'?` (uses task 10's util), and keep `LOGICAL` out
       of `ESQL_TYPES`.
