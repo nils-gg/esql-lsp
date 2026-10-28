@@ -23,9 +23,12 @@ vim.lsp.config("esql", {
   -- IMPORTANT: always resolve a root. If no root can be found,
   -- vim.lsp.enable() silently does nothing — no client, no error.
   -- The dirname() fallback below makes lone files (e.g. in /tmp) work.
-  root_dir = function(bufnr)
-    return vim.fs.root(bufnr, { ".git", "opencode.json", "project.xml" })
-      or vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr))
+  -- A root_dir FUNCTION must call on_dir(root_dir); vim.lsp.enable()
+  -- ignores return values, so returning the root silently never starts
+  -- the server (verified on Neovim 0.11.5, lua/vim/lsp.lua).
+  root_dir = function(bufnr, on_dir)
+    on_dir(vim.fs.root(bufnr, { ".git", "opencode.json", "project.xml" })
+      or vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr)))
   end,
 
   -- Optional per-check toggles (all default to true). These are sent as
@@ -59,7 +62,9 @@ vim.api.nvim_create_autocmd("LspAttach", {
     vim.keymap.set("n", "<leader>eo", "<cmd>Symbols<cr>",
       { buffer = ev.buf, desc = "ESQL: outline (modules/functions/vars)" })
 
-    -- Note: gd/gr (definition/references) are on the roadmap, not wired yet.
+    -- Definition/references/rename are live server features: Neovim ≥ 0.11
+    -- already maps grn (rename), gra (code action) and grr (references);
+    -- map gd yourself if you want it (it collides with operator-pending d).
   end,
 })
 

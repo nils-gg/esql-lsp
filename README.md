@@ -88,7 +88,7 @@ problem". The codes mirror the setting names below: `syntax-error`,
 
 ### Completion
 
-- ~70 built-in ESQL functions with signature + markdown documentation
+- 46 built-in ESQL functions with signature + markdown documentation
 - Keywords, data types, message tree variables (`InputRoot`, `Environment`, …)
 - Context-sensitive: parser domains after `InputRoot.`/`OutputRoot.`,
   `Data` plus a Properties copy-hint after `.JSON.`, common
@@ -113,7 +113,7 @@ problem". The codes mirror the setting names below: `syntax-error`,
   `SHARED, declared in helper.esql`). Same-file names win the dedupe, and
   these names never leak into a clause-narrowed list (`=`, types, VALUE
   lists stay closed)
-- 43 snippets (module skeletons, IF/CASE/WHILE, THROW, PASSTHRU, JSON
+- 44 snippets (module skeletons, IF/CASE/WHILE, THROW, PASSTHRU, JSON
   responses, …) — triggered like `module-compute`, `throw`, `trycatch`
 - **Deferred deliberately: model-driven field completion.** Deeper message
   tree paths (`XMLNSC.<root>`, `MRM.<model>.…`, BDF/XSD-derived structures)
@@ -320,7 +320,7 @@ npm package (and directly consumable by nvim-treesitter):
 ```sh
 cd tree-sitter-esql
 npm install          # builds the Node addon (N-API) from binding.gyp
-tree-sitter test     # 71 corpus tests in test/corpus/
+tree-sitter test     # 86 corpus tests in test/corpus/
 ```
 
 - [`tree-sitter-esql/grammar.js`](tree-sitter-esql/grammar.js) — permissive
@@ -336,15 +336,15 @@ tree-sitter test     # 71 corpus tests in test/corpus/
 ### Development
 
 ```sh
-npm test                       # build + 83 unit/e2e tests (real stdio sessions)
-npm run grammar:test           # 71 grammar corpus tests (tree-sitter test)
+npm test                       # build + 240 unit/e2e tests (real stdio sessions)
+npm run grammar:test           # 86 grammar corpus tests (tree-sitter test)
 ESQL_LSP_NO_GRAMMAR=1 npm test # heuristic mode: grammar-only cases skip, the rest must pass
 npm run smoke:stdio            # start the built server and check that it answers
 npm run verify:package         # pack, install the tarball, use the installed server
 
 cd tree-sitter-esql
 tree-sitter generate           # grammar.js -> src/parser.c (committed output!)
-tree-sitter test               # 71 corpus tests
+tree-sitter test               # 86 corpus tests
 ```
 
 Generated grammar sources (`src/parser.c`, `src/node-types.json`, …) are
@@ -376,9 +376,11 @@ The essentials:
      filetypes = { "esql" },
      -- IMPORTANT: fall back to the file's own directory. If no root can be
      -- resolved, vim.lsp.enable() silently never starts the server.
-     root_dir = function(bufnr)
-       return vim.fs.root(bufnr, { ".git", "opencode.json", "project.xml" })
-         or vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr))
+     -- A root_dir FUNCTION must call on_dir(); vim.lsp.enable() ignores
+     -- return values, so a returning function silently never starts.
+     root_dir = function(bufnr, on_dir)
+       on_dir(vim.fs.root(bufnr, { ".git", "opencode.json", "project.xml" })
+         or vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr)))
      end,
    })
    vim.lsp.enable('esql')
@@ -443,8 +445,9 @@ feeds published diagnostics back to the agent as feedback while it edits.
   [Neovim setup](#neovim-setup).
 - **Which analysis mode is the server in?** At startup it logs either
   `esql-lsp: tree-sitter grammar loaded — grammar syntax errors + semantic
-  tokens active` or `esql-lsp: tree-sitter grammar unavailable — heuristic mode
-  only`. Heuristic mode still gives every Phase 1 check plus symbols, hover,
+  tokens active` or `esql-lsp: tree-sitter grammar unavailable, heuristics
+  only: <reason>` (forced off prints `esql-lsp: ESQL_LSP_NO_GRAMMAR is set —
+  heuristics only`). Heuristic mode still gives every Phase 1 check plus symbols, hover,
   definitions and references from patterns, but no grammar syntax errors or
   semantic tokens; it happens when the native addon could not build (needs a C
   toolchain at `npm install` time) or was skipped (`--ignore-scripts`).
@@ -508,16 +511,18 @@ standard `workspace/didChangeConfiguration` notification (section form
 bin/esql-lsp.js        # executable entrypoint (requires dist/src/server.js)
 src/server.ts          # LSP wiring (stdio JSON-RPC)
 src/parser.ts          # tree-sitter integration (grammar, tokens; degrades gracefully)
+src/suggest.ts         # bounded edit-distance "did you mean" candidates
 src/scanner.ts         # comment/string-aware masking scanner
-src/diagnostics.ts     # the seven diagnostic checks
+src/diagnostics.ts     # the diagnostic checks (12 published codes, 9 switches)
 src/completion.ts      # context-sensitive completion
 src/hover.ts           # hover documentation
 src/symbols.ts         # document symbols (parse tree + pattern fallback)
 src/definitions.ts     # declarations/routines/references, go-to-definition, find-references
+src/codeActions.ts     # quick fixes, recomputed from the document's current text
 src/workspaceIndex.ts  # bounded workspace scan: sibling SHARED names, workspace/symbol
 src/settings.ts        # initializationOptions / didChangeConfiguration handling
 src/data/esqlData.ts   # keywords, types, tree vars, domains, functions
-src/data/snippets.ts   # 43 LSP snippets
+src/data/snippets.ts   # 44 LSP snippets
 scripts/               # prepack vendoring, addon build, packaging + stdio smoke checks
 scripts/record_demo.sh # feature demo tour: verify run = e2e UI test, --record = cast
 scripts/demo/          # recorded demo's nvim/tmux config + fixtures
@@ -572,7 +577,7 @@ ESQL railroad diagrams**. Full credits: [ATTRIBUTION.md](ATTRIBUTION.md).
 
 This repository is what people now call **vibe-coded**: an AI coding agent,
 in close iterative sessions with a human, produced essentially all of it —
-the server, the tree-sitter grammar, the 120+ corpus/unit/e2e tests, and
+the server, the tree-sitter grammar, the 320+ corpus/unit/e2e tests, and
 the documentation. Practical consequences:
 
 - **The tests are green, but the same tool wrote the code and the tests.**

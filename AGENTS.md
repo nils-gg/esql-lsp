@@ -3,9 +3,10 @@
 ESQL (IBM ACE/IIB) language server in TypeScript, plus a tree-sitter grammar for
 the same language. Two npm packages in one repo: the repo root is the LSP server,
 `tree-sitter-esql/` is a standalone grammar package consumed as a `file:`
-**dev**Dependency. Crucial detail: npm installs that dep as a *snapshot copy* in
-`node_modules/tree-sitter-esql/`, and the server plus the root tests load the
-native addon from **that copy** — not from `tree-sitter-esql/`.
+**dev**Dependency. On the current toolchain (npm 10.9.x / Node 22, verified
+2026-10) npm **symlinks** that dep: `node_modules/tree-sitter-esql` →
+`../tree-sitter-esql`, so generated sources update instantly but the compiled
+native addon does not (see "Grammar staleness trap").
 
 ## Commands
 
@@ -36,22 +37,32 @@ native addon from **that copy** — not from `tree-sitter-esql/`.
   fallback with `ESQL_LSP_NO_GRAMMAR=1 scripts/record_demo.sh`.
 - `npm run verify:package` — packs, installs the tarball twice (without and with
   lifecycle scripts) and drives both installed servers. Needs `tar`; ~2 npm installs.
+- `npm run probe:*` (corpus, scope-hover, scope-completion, line-endings,
+  malformed-requests, …) — ad-hoc live harnesses against the built server, not
+  part of CI green.
 
 There is **no linter or formatter** configured (no eslint/prettier/biome config or
 devDependency). The `eslint-disable-next-line` comments in `src/parser.ts` are
 decorative — do not add eslint just to satisfy them.
 
-## The grammar-copy trap (biggest time sink in this repo)
+## Grammar staleness trap (biggest time sink in this repo)
 
 After editing `grammar.js`: `cd tree-sitter-esql && npx tree-sitter generate`
 regenerates the *committed* `src/parser.c`, `src/node-types.json`,
-`src/grammar.json`, but the copy in `node_modules/tree-sitter-esql/` keeps the old
-parser **and** its own `build/*.node`. Verified on npm 9: neither `npm rebuild`
-(in either directory) nor a plain `npm install` re-copies the changed `file:` dep.
-**`npm ci` at the repo root is the reliable refresh** (it re-copies the sources and
-runs the grammar's `install` → `node-gyp-build`, ~5 s here). Symptom of skipping
-this: corpus tests pass against the new grammar while the server and root tests
-still parse with the stale one.
+`src/grammar.json` — and because the `file:` dep is a symlink, the server's copy
+of those **sources** is instantly current. The trap is the compiled addon:
+`node-gyp-build` loads `tree-sitter-esql/build/Release/*.node` if it exists and
+**never checks it against parser.c**. Symptom: corpus tests and `tree-sitter
+parse` pass against the new grammar while the server and root tests keep running
+the old parser — or `new Query()` throws `TSQueryErrorNodeType` against a
+highlights.scm the stale addon can't see, and all grammar features go dark.
+
+**`npm ci` does NOT fix this** (verified on npm 10.9.8: error survived `npm ci`
+— nothing to re-copy when the dep is a symlink). The reliable refresh is:
+`rm -rf tree-sitter-esql/build && npm rebuild tree-sitter-esql`, then confirm
+with `npm run smoke:stdio -- --expect-grammar`.
+(Historical note: on older npm the dep was a snapshot copy and `npm ci` did
+refresh it — that machinery is gone; don't trust the old recipe.)
 
 `grammar.js` has to be `export default grammar({...})`, not `module.exports = ...`:
 the grammar package is `"type": "module"` and tree-sitter-cli 0.27 loads the file
@@ -63,15 +74,26 @@ inside `src/parser.c`.)
 
 Never hand-edit `parser.c` / `node-types.json` / `grammar.json` — regenerate.
 
+## Stale `dist/` trap
+
+`npm run build` never deletes output. A renamed/deleted `test/*.ts` leaves an
+orphan `dist/test/*.test.js` that the `npm test` glob still runs — and it can
+fail with `"<fn> is not a function"` for exports that exist **nowhere** in the
+current tree. If suite failures mention symbols `grep -rn` can't find in
+`src/`/`test/`, the `dist/` state is stale: `rm -rf dist && npm test`. (Real
+case, 2026-10: orphan `dist/test/crossrefs.test.js` + its `fixtures.js` faked 29
+failures on a green tree.)
+
 ## Silent-degradation traps
 
 - `analyzeDocument()` in `src/parser.ts` mines specific grammar node types
   (declared names + scope, SET targets, modules, routines, schemas, references,
   ERROR/inserted-token regions). Renaming a node type breaks extraction silently.
-- Corpus files embed full s-expression trees, and the runtime reads
-  `tree-sitter-esql/queries/highlights.scm` at startup for semantic tokens. A node
-  type that no longer exists makes `new Query()` throw (`TSQueryErrorNodeType`),
-  `doInit()` catches it, and **all** grammar features go dark with one stderr line.
+- The runtime reads `tree-sitter-esql/queries/highlights.scm` at startup for
+  semantic tokens. A node type that no longer exists (or a stale addon, see
+  above) makes `new Query()` throw (`TSQueryErrorNodeType`), `doInit()` catches
+  it, and **all** grammar features go dark with one stderr line:
+  `esql-lsp: tree-sitter grammar unavailable, heuristics only: …`.
   Confirm with `npm run smoke:stdio -- --expect-grammar`.
 - The grammar's package is `"type": "module"` with a top-level-await binding, and
   the server compiles to CommonJS — so a literal `import()` in `parser.ts` becomes
@@ -83,9 +105,10 @@ Never hand-edit `parser.c` / `node-types.json` / `grammar.json` — regenerate.
 ## Architecture pins
 
 - Protocol wiring lives only in `src/server.ts`; analysis in the feature modules
-  (`diagnostics.ts`, `completion.ts`, `hover.ts`, `symbols.ts`, `definitions.ts`, `codeActions.ts`);
-  ESQL reference data in `src/data/`. `parser.ts` is the only tree-sitter consumer
-  and must degrade to the Phase 1 heuristics (`scanner.ts` + regex checks).
+  (`diagnostics.ts`, `completion.ts`, `hover.ts`, `symbols.ts`, `definitions.ts`,
+  `codeActions.ts`, `suggest.ts`); ESQL reference data in `src/data/`.
+  `parser.ts` is the only tree-sitter consumer and must degrade to the Phase 1
+  heuristics (`scanner.ts` + regex checks).
 - Every grammar-backed feature needs a heuristic fallback **and a test for it**.
   Tests asserting *fallback* behaviour must not skip when the addon is missing —
   only grammar-only expectations skip, via `skipWithoutGrammar()` in
@@ -143,6 +166,16 @@ new/changed construct gets a corpus test (`test/corpus/*.txt`, two-`===` name
 format, CLI 0.27). LR conflicts during `generate` are the hard part; document
 rule-level conflict tricks in grammar comments.
 
+## Client examples (`clients/`) are user-facing code
+
+The README's Neovim snippet and `clients/neovim/init-example.lua` are copied
+verbatim by users — keep them correct against real Nvim ≥ 0.11. Verified
+pitfall (2026-10, Nvim 0.11.5): a `root_dir` **function** under
+`vim.lsp.enable()` is called as `root_dir(bufnr, on_dir)` and MUST call
+`on_dir(...)`; a returning function is silently ignored and the server never
+starts. The legacy `clients/neovim/lsp/esql.lua` (plain `vim.lsp.start`, string
+root) is the 0.8–0.10 path and is correct as-is.
+
 ## Packaging
 
 The grammar is not on npm, so a published tarball must carry it: `prepack` runs
@@ -185,11 +218,7 @@ generated `vendor/` sitting in the checkout; it is git-ignored, do not commit it
   `ESQL_LSP_NO_GRAMMAR=1 npm test` when touching degradation and
   `npm run verify:package` when touching packaging.
 - The lockfile must satisfy **npm 10**, the version `setup-node` ships on the CI
-  matrix. npm 9 tolerates a lock whose root `packages[""]` entry omits the `file:`
-  devDependency; npm 10 refuses it and every CI job dies in `npm ci` with
-  *"Missing: tree-sitter-esql@… from lock file"*. After touching dependencies,
-  check with `npx npm@10 ci --dry-run` — plain `npm ls --package-lock-only` on npm 9
-  will not catch it.
+  matrix. After touching dependencies, check with `npx npm@10 ci --dry-run`.
 - CI (`.github/workflows/ci.yml`) triggers on `main` (the branch is not `master`).
   Jobs: grammar (regenerate + `git diff` guard on `tree-sitter-esql/src` + corpus),
   the root suite on Node 18/20/22 plus `smoke-stdio.js --expect-grammar` (proves the
