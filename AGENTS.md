@@ -240,7 +240,10 @@ generated `vendor/` sitting in the checkout; it is git-ignored, do not commit it
   Jobs: grammar (regenerate + `git diff` guard on `tree-sitter-esql/src` + corpus),
   the root suite on Node 18/20/22 plus `smoke-stdio.js --expect-grammar` (proves the
   tree path really loaded), a no-toolchain job (`npm ci --ignore-scripts`, asserts
-  cases really do skip), and the install-from-tarball job. The `# skipped` greps only
+  cases really do skip), the install-from-tarball job, and a platform job
+  (Windows + macOS, Node 22 only: `npm test`, both smoke modes, and the tarball
+  install — the list.md 9 coverage; its steps run under `shell: bash` on every
+  OS). The `# skipped` greps only
   run on Node 22 — that is the reporter format that prints `# skipped N`; Node 18's
   default tap reporter does not. Those skip assertions are the point of the jobs —
   fix the change, not the assertion. Any step that pipes `npm test` into `tee` needs

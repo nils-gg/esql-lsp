@@ -30,11 +30,20 @@ function compiledAddonExists(dir) {
 
 /** Prefer a resolvable node-gyp; npm also puts its own node-gyp on PATH. */
 function nodeGypCommand() {
+  // In a consumer install node-gyp is NOT a dependency of ours, so the resolve
+  // below usually fails — but npm points every lifecycle script at its own
+  // bundled node-gyp through this env var, and that is the copy that exists.
+  if (process.env.npm_config_node_gyp && fs.existsSync(process.env.npm_config_node_gyp)) {
+    return { cmd: process.execPath, args: [process.env.npm_config_node_gyp] };
+  }
   try {
     const bin = require.resolve('node-gyp/bin/node-gyp.js');
     return { cmd: process.execPath, args: [bin] };
   } catch {
-    return { cmd: 'node-gyp', args: [] };
+    // Last resort, and it has to carry the .cmd suffix on Windows: spawnSync
+    // without a shell will not resolve the npm-installed shim, and the addon —
+    // grammar mode for every Windows user — would silently never build.
+    return { cmd: process.platform === 'win32' ? 'node-gyp.cmd' : 'node-gyp', args: [] };
   }
 }
 

@@ -103,3 +103,37 @@ jobs:
       - run: npm ci
       - name: Pack, install, and use the installed server
         run: node scripts/verify-package.js --expect-grammar
+
+  platform:
+    name: Platform (${{ matrix.os }})
+    # list.md 9: paths, URIs, the native addon and line endings must be proven
+    # on the OSes we claim to support, not inferred from Linux. The suite runs
+    # here too — the CRLF line model and the win32 path branches earn their
+    # keep on the machine that actually has CRLF files and case-insensitive NTFS.
+    # Node 22 only: the `npm test` glob is expanded by the shell on POSIX but by
+    # node itself on Windows, which needs the >=21 glob support in --test.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash # git-bash on the Windows runner; keeps the steps identical
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Install (native addons must build on this OS)
+        run: npm ci
+      - name: Test
+        run: |
+          set -o pipefail # without it a failing suite would report tee's exit 0
+          npm test | tee test-output.txt
+      - name: The parse-tree path must really be loaded here too
+        run: node scripts/smoke-stdio.js --expect-grammar
+      - name: Server starts and answers in heuristic mode on this OS
+        run: node scripts/smoke-stdio.js --expect-heuristic
+      - name: Pack, install, and use the installed server
+        run: node scripts/verify-package.js --expect-grammar

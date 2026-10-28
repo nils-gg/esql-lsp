@@ -34,9 +34,23 @@ function check(label, ok, detail) {
   if (!ok) failures++;
 }
 
+/**
+ * npm's real name on this platform. `spawnSync('npm')` works on POSIX because npm
+ * ships a shell script there; on Windows npm is `npm.cmd`, and `spawnSync` without
+ * a shell will not resolve `.cmd` — it fails with ENOENT and looks exactly like a
+ * missing npm install. The CI platform matrix exists to exercise this path.
+ */
+function npmCommand() {
+  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+}
+
 function run(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { cwd: root, encoding: 'utf8', ...opts });
-  if (r.error) throw r.error;
+  if (r.error) {
+    throw new Error(`${cmd} ${args.join(' ')} could not be started: ${r.error.message}`, {
+      cause: r.error,
+    });
+  }
   return r;
 }
 
@@ -93,13 +107,15 @@ function main() {
   console.log(`esql-lsp packaging check (work dir ${work})`);
 
   // ── 1. pack ──────────────────────────────────────────────────────────────
-  const packed = run('npm', ['pack', '--pack-destination', work]);
+  const packed = run(npmCommand(), ['pack', '--pack-destination', work]);
   if (packed.status !== 0) {
     console.error(packed.stderr);
     throw new Error('npm pack failed');
   }
-  const tarball = path.join(work, packed.stdout.trim().split('\n').pop());
-  const listed = run('tar', ['-tzf', tarball]).stdout.split('\n');
+  // /\r?\n/ everywhere output is split: Windows' bsdtar and npm print CRLF, and a
+  // stray \r silently breaks the tarball-name/regex comparisons downstream.
+  const tarball = path.join(work, packed.stdout.trim().split(/\r?\n/).pop());
+  const listed = run('tar', ['-tzf', tarball]).stdout.split(/\r?\n/);
 
   check('tarball carries the compiled server', listed.some((l) => /dist\/src\/server\.js$/.test(l)), 'bin/esql-lsp.js requires dist/src/server.js, so prepack must build');
   check('tarball carries the vendored grammar parser', listed.some((l) => /vendor\/tree-sitter-esql\/src\/parser\.c$/.test(l)));
@@ -117,8 +133,8 @@ function main() {
   // ── 2. install without running scripts (no-toolchain user) ───────────────
   const degraded = path.join(work, 'consumer-no-scripts');
   fs.mkdirSync(degraded, { recursive: true });
-  run('npm', ['init', '-y'], { cwd: degraded });
-  const installDegraded = run('npm', ['install', '--no-audit', '--no-fund', '--ignore-scripts', tarball], {
+  run(npmCommand(), ['init', '-y'], { cwd: degraded });
+  const installDegraded = run(npmCommand(), ['install', '--no-audit', '--no-fund', '--ignore-scripts', tarball], {
     cwd: degraded,
   });
   if (installDegraded.status !== 0) {
@@ -146,8 +162,8 @@ function main() {
   // ── 3. install with the addon built (normal user) ────────────────────────
   const built = path.join(work, 'consumer-built');
   fs.mkdirSync(built, { recursive: true });
-  run('npm', ['init', '-y'], { cwd: built });
-  const installBuilt = run('npm', ['install', '--no-audit', '--no-fund', tarball], { cwd: built });
+  run(npmCommand(), ['init', '-y'], { cwd: built });
+  const installBuilt = run(npmCommand(), ['install', '--no-audit', '--no-fund', tarball], { cwd: built });
   check('installing the tarball runs the grammar build', installBuilt.status === 0);
   const builtOut = probe(built, probeInstalled);
   let builtResult = {};
