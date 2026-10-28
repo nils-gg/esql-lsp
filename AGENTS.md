@@ -3,10 +3,15 @@
 ESQL (IBM ACE/IIB) language server in TypeScript, plus a tree-sitter grammar for
 the same language. Two npm packages in one repo: the repo root is the LSP server,
 `tree-sitter-esql/` is a standalone grammar package consumed as a `file:`
-**dev**Dependency. On the current toolchain (npm 10.9.x / Node 22, verified
-2026-10) npm **symlinks** that dep: `node_modules/tree-sitter-esql` →
-`../tree-sitter-esql`, so generated sources update instantly but the compiled
-native addon does not (see "Grammar staleness trap").
+**dev**Dependency. How npm materialises that dep depends on the npm version —
+npm 10.x **symlinks** it, npm 9.x makes a **snapshot copy** (this machine was
+npm 9.2.0 / Node 22 as of 2026-10-28) — and the two regimes refresh differently,
+so check `ls -ld node_modules/tree-sitter-esql` before trusting anything
+(see "Grammar staleness trap").
+
+`PLAN.md` (tasks 1–19) and `ISSUES.md` (rounds 1–3) are **closed history, not a
+to-do list** — the only unchecked box in PLAN.md is a recorded voided branch.
+Findings and grammar adjudications live there; nothing there asks for work.
 
 ## Commands
 
@@ -37,9 +42,10 @@ native addon does not (see "Grammar staleness trap").
   fallback with `ESQL_LSP_NO_GRAMMAR=1 scripts/record_demo.sh`.
 - `npm run verify:package` — packs, installs the tarball twice (without and with
   lifecycle scripts) and drives both installed servers. Needs `tar`; ~2 npm installs.
-- `npm run probe:*` (corpus, scope-hover, scope-completion, line-endings,
-  malformed-requests, …) — ad-hoc live harnesses against the built server, not
-  part of CI green.
+- `npm run probe:*` (corpus, grammar-scan, scope-hover, scope-completion,
+  line-endings, malformed-requests, cache-latency, bench, …) — ad-hoc live
+  harnesses against the built server, not part of CI green;
+  `scripts/probe/README.md` says what each proves.
 
 There is **no linter or formatter** configured (no eslint/prettier/biome config or
 devDependency). The `eslint-disable-next-line` comments in `src/parser.ts` are
@@ -49,20 +55,25 @@ decorative — do not add eslint just to satisfy them.
 
 After editing `grammar.js`: `cd tree-sitter-esql && npx tree-sitter generate`
 regenerates the *committed* `src/parser.c`, `src/node-types.json`,
-`src/grammar.json` — and because the `file:` dep is a symlink, the server's copy
-of those **sources** is instantly current. The trap is the compiled addon:
-`node-gyp-build` loads `tree-sitter-esql/build/Release/*.node` if it exists and
+`src/grammar.json` — but the **server** runs the copy under
+`node_modules/tree-sitter-esql/`, and the compiled addon is the part that goes
+stale unnoticed: `node-gyp-build` loads `build/Release/*.node` if it exists and
 **never checks it against parser.c**. Symptom: corpus tests and `tree-sitter
 parse` pass against the new grammar while the server and root tests keep running
 the old parser — or `new Query()` throws `TSQueryErrorNodeType` against a
 highlights.scm the stale addon can't see, and all grammar features go dark.
 
-**`npm ci` does NOT fix this** (verified on npm 10.9.8: error survived `npm ci`
-— nothing to re-copy when the dep is a symlink). The reliable refresh is:
-`rm -rf tree-sitter-esql/build && npm rebuild tree-sitter-esql`, then confirm
-with `npm run smoke:stdio -- --expect-grammar`.
-(Historical note: on older npm the dep was a snapshot copy and `npm ci` did
-refresh it — that machinery is gone; don't trust the old recipe.)
+The refresh depends on which regime `ls -ld node_modules/tree-sitter-esql` shows
+(confirm with `npm run smoke:stdio -- --expect-grammar` either way):
+
+- **symlink** (npm 10.x): the copied sources are instantly current, the addon is
+  not. Refresh with `rm -rf tree-sitter-esql/build && npm rebuild tree-sitter-esql`.
+  `npm ci` does NOT fix this (verified npm 10.9.8 — nothing to re-copy through a
+  symlink).
+- **directory / snapshot copy** (npm 9.x): the copied sources AND the addon under
+  `node_modules/tree-sitter-esql/` are what load. `npm ci` refreshes both.
+  Verify by md5-matching the two `src/parser.c` files and checking that
+  `node_modules/tree-sitter-esql/build/Release/*.node` is newer than `parser.c`.
 
 `grammar.js` has to be `export default grammar({...})`, not `module.exports = ...`:
 the grammar package is `"type": "module"` and tree-sitter-cli 0.27 loads the file
@@ -175,6 +186,12 @@ pitfall (2026-10, Nvim 0.11.5): a `root_dir` **function** under
 `on_dir(...)`; a returning function is silently ignored and the server never
 starts. The legacy `clients/neovim/lsp/esql.lua` (plain `vim.lsp.start`, string
 root) is the 0.8–0.10 path and is correct as-is.
+
+`clients/opencode/opencode.jsonc` is the OpenCode path: OpenCode disables LSP by
+default, so its `lsp` entry is what activates the server for `.esql` files. The
+`initialization` blocks in every client example must carry real keys from
+`src/settings.ts` — a new settings key belongs there too (the full toggle set
+lives in settings.ts; examples may show a subset, never a wrong key).
 
 ## Packaging
 
