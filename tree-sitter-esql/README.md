@@ -15,9 +15,13 @@ e.g. with nvim-treesitter (see the wiring example in
   anything the railroads accept should parse; several constructs the
   diagrams underspecify (terminator placement, clause order) are accepted
   liberally on purpose.
-- 87 corpus tests (`test/corpus/`), all passing on tree-sitter CLI 0.27.
+- 89 corpus tests (`test/corpus/`), all passing on tree-sitter CLI 0.27.
 - Construct-by-construct verification evidence, found gaps and known
   limitations: [VERIFICATION.md](VERIFICATION.md).
+- Differentially checked against a real ACE 13.0.9 ESQL compiler, probe by
+  probe (methodology and verdict ledger:
+  [ACE-COMPILER-DIFFERENTIAL.md](ACE-COMPILER-DIFFERENTIAL.md); harness:
+  [`scripts/ace-differential/`](../scripts/ace-differential/)).
 - Node bindings only; the other template bindings were pruned. The C
   sources (`src/parser.c`) compile standalone, which is all an editor
   needs.

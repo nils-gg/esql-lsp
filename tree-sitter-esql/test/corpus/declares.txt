@@ -610,3 +610,61 @@ END MODULE;
         (kw_END)))
     (kw_END)
     (kw_MODULE)))
+
+===
+bare INTERVAL datatype without qualifier
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE iv INTERVAL;
+  SET iv = INTERVAL '1-2' YEAR TO MONTH;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (declare_statement
+            (kw_DECLARE)
+            (identifier)
+            (datatype
+              (kw_INTERVAL))))
+        (esql_statement
+          (set_statement
+            (kw_SET)
+            (field_reference
+              (identifier))
+            (expression
+              (primary_expression
+                (typed_literal
+                  (kw_INTERVAL)
+                  (string_literal)
+                  (kw_YEAR)
+                  (kw_TO)
+                  (kw_MONTH))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))

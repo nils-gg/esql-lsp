@@ -33,8 +33,8 @@ END MODULE;
             (kw_CONTINUE)
             (kw_HANDLER)
             (kw_FOR)
-            (kw_SQLSTATE)
             (sqlstate_value
+              (kw_SQLSTATE)
               (string_literal))
             (sqlstate_value
               (kw_LIKE)
@@ -94,8 +94,8 @@ END MODULE;
             (kw_EXIT)
             (kw_HANDLER)
             (kw_FOR)
-            (kw_SQLSTATE)
             (sqlstate_value
+              (kw_SQLSTATE)
               (kw_VALUE)
               (string_literal))
             (esql_statement
@@ -153,8 +153,8 @@ END MODULE;
             (kw_CONTINUE)
             (kw_HANDLER)
             (kw_FOR)
-            (kw_SQLSTATE)
             (sqlstate_value
+              (kw_SQLSTATE)
               (kw_LIKE)
               (string_literal)
               (kw_ESCAPE)
@@ -610,3 +610,61 @@ END MODULE;
     (kw_END)
     (kw_MODULE)))
 
+===
+handler with multiple SQLSTATE conditions
+===
+
+CREATE COMPUTE MODULE M
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  DECLARE EXIT HANDLER FOR SQLSTATE '38522', SQLSTATE '38523'
+  SET x = 1;
+  RETURN TRUE;
+END
+END MODULE;
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (declare_handler_statement
+            (kw_DECLARE)
+            (kw_EXIT)
+            (kw_HANDLER)
+            (kw_FOR)
+            (sqlstate_value
+              (kw_SQLSTATE)
+              (string_literal))
+            (sqlstate_value
+              (kw_SQLSTATE)
+              (string_literal))
+            (esql_statement
+              (set_statement
+                (kw_SET)
+                (field_reference
+                  (identifier))
+                (expression
+                  (primary_expression
+                    (number_literal)))))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))

@@ -42,6 +42,12 @@ Findings and grammar adjudications live there; nothing there asks for work.
   fallback with `ESQL_LSP_NO_GRAMMAR=1 scripts/record_demo.sh`.
 - `npm run verify:package` — packs, installs the tarball twice (without and with
   lifecycle scripts) and drives both installed servers. Needs `tar`; ~2 npm installs.
+- `npm run verify:ace` — the ACE compiler differential (`scripts/ace-differential/`):
+  compiles 55 probe fixtures with a real Toolkit's `mqsicreatebar -compileOnly`,
+  parses them with the grammar, and checks BOTH verdicts against
+  `scripts/ace-differential/manifest.json` (the adjudication ledger; findings in
+  `tree-sitter-esql/ACE-COMPILER-DIFFERENTIAL.md`). Needs an ACE install (`$ACE_HOME`
+  or `--ace-dir`) and a `DISPLAY` (Xvfb); skips with exit 0 without either.
 - `npm run probe:*` (corpus, grammar-scan, scope-hover, scope-completion,
   line-endings, malformed-requests, cache-latency, bench, …) — ad-hoc live
   harnesses against the built server, not part of CI green;

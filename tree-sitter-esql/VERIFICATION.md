@@ -169,6 +169,11 @@ open one is the plural interval qualifier: its diagram page could not be reached
 that day (the ibm.com egress window closed mid-session after the six pages
 above); per the ground rule the grammar does **not** loosen without it. Each row
 says what the grammar does today, so adjudication starts from a known state.
+**Update 2026-10-29 (same day):** the one open row was closed against the real
+compiler instead — an ACE Toolkit installation became available and the
+differential round (`ACE-COMPILER-DIFFERENTIAL.md`) adjudicated it plus the
+unreachable bare-`CREATE MODULE` question from the LOG fix round. No row of
+this table is open any more.
 
 | Construct | Today | Why it happens in the grammar |
 |---|---|---|
@@ -179,7 +184,7 @@ says what the grammar does today, so adjudication starts from a known state.
 | ~~`BEGIN ATOMIC … END;`~~ | **accepted since 2026-10-24** | resolved by round 3 (family K): `ATOMIC` bare + optional labels are in the diagram; see the adjudication table below |
 | `DECLARE nums LIST OF INTEGER;` | rejected — **NOT-ESQL (2026-10-29)** | the DECLARE page (ak04980_, fetched verbatim 2026-10-29) enumerates DataType **exhaustively** ("The values that you can specify for DataType are:"): BOOLEAN, INT, INTEGER, FLOAT, DECIMAL, DATE, TIME, TIMESTAMP, GMTTIME, GMTTIMESTAMP, INTERVAL, CHAR, CHARACTER, BLOB, BIT, ROW, REFERENCE TO — **no LIST**. The `LIST` mentions on the CREATE PROCEDURE page are negative only ("Parameters cannot be of the ESQL REFERENCE, ROW, LIST, or INTERVAL data types"); the `LIST{…}` literal is reachable as an expression only, as the grammar has it |
 | ~~`DECLARE x LOGICAL [value];`~~ | **accepted since 2026-10-26 (E-3)** | adjudicated against the ACE 12.0.x DECLARE statement page (ak04980_, Syntax railroads + notes) **and** the ESQL non-reserved keywords page, both fetched verbatim 2026-10-26: `LOGICAL` is in neither — it is pre-ACE vocabulary. Real legacy files carry it and ACE 12 still compiles it (round-3 review measurement), so permissive-grammar rule: `kw_LOGICAL` joins `datatype` (no new LR conflicts); the analyzer's `deprecated-type` hint carries the modern preference. Rev-2's `DECLARE TraceEnabled LOGICAL SHARED TRUE;` was a confounded repro: the diagram puts `SHARED` **before** the datatype, and SHARED-after is rejected for every datatype including INTEGER — correct strictness, unrelated to `LOGICAL` |
-| `SET d = CURRENT_DATE + INTERVAL '1' DAYS;` (plural qualifier) | rejected — ERROR over the interval text, the qualifier survives as a bare identifier | `_interval_qualifier` models only singular forms (DAY/MONTH/HOUR/MINUTE/SECOND, TO-ranges); the plurals (DAYS, MONTHS, YEARS, WEEKS, QUARTERS …) ARE on the ESQL non-reserved keywords page (fetched 2026-10-26), so the qualifier rule plausibly misses them — awaiting the interval-literal diagram before loosening. Found 2026-10-26 by the E-5 false-positive sweep; the check's keyword-union skip stops the recovered identifier from being reported as an undeclared read |
+| `SET d = CURRENT_DATE + INTERVAL '1' DAYS;` (plural qualifier) | rejected — ERROR over the interval text, the qualifier survives as a bare identifier | `_interval_qualifier` models only singular forms (DAY/MONTH/HOUR/MINUTE/SECOND, TO-ranges); the plurals (DAYS, MONTHS, YEARS, WEEKS, QUARTERS …) ARE on the ESQL non-reserved keywords page (fetched 2026-10-26), so the qualifier rule plausibly misses them — awaiting the interval-literal diagram before loosening. Found 2026-10-26 by the E-5 false-positive sweep; the check's keyword-union skip stops the recovered identifier from being reported as an undeclared read. **CLOSED 2026-10-29 by the ACE compiler differential: ACE 13.0.9 rejects the plural (`Valid options include: DAY HOUR MINUTE MONTH SECOND YEAR.`), so nothing real requires the loosening and the singular-only rule stands — probe `no_interval_plural` in `scripts/ace-differential`** |
 | `CALL AddTwo(IN a, OUT b);` | rejected — **NOT-ESQL (2026-10-29)** | the CALL page (ak04920_, fetched verbatim 2026-10-29) shows `ParameterList` as comma-separated **Expression** only; direction indicators live on the routine *definition* ("Parameters that have been defined as IN or INOUT **on the routine's definition** …"), and the page's own calls are plain expressions (`CALL navigate(InputRoot.XMLNS, answer);`). `INTO` and the qualifier clauses are modelled; modes in CALL args stay rejected |
 | `CREATE FUNCTION F() RETURNS INTEGER DETERMINISTIC` / `NO SQL` | rejected — **NOT-ESQL (2026-10-29)** | the CREATE PROCEDURE/FUNCTION diagram (ak04970_, fetched verbatim 2026-10-29) ends after the parameter list with exactly `[ReturnType] [Language] [ResultSet] [RoutineBody]` — `[NOT] DETERMINISTIC`, `NO SQL`, `READS SQL DATA`, `MODIFIES SQL DATA` are DB2 routine characteristics and appear nowhere in the ESQL reference. Stays rejected |
 
@@ -233,6 +238,22 @@ Implementation notes worth keeping:
   variable-vs-alias is the analyzer's distinction.
 - `TRIM(x)`/`SUBSTRING(x)`/`ASBITSTREAM(t)` overlap with the one-argument
   `function_call`; prec/repeat1 assign the overlap as noted in grammar.js.
+
+## ACE compiler differential (2026-10-29 round)
+
+An IBM ACE Toolkit installation (13.0.9.0) made it possible to check the
+grammar against the real ESQL compiler, not just the docs. The full method,
+environment caveats (13 EVALUATION vs the 12.0.x target) and the verdict per
+probe family live in **`ACE-COMPILER-DIFFERENTIAL.md`**; the runnable harness
+is `scripts/ace-differential/` (`npm run verify:ace`, skips cleanly without an
+ACE install or a display). Outcomes that touched this file's ledger: two
+compiler-confirmed grammar fixes (per-condition `SQLSTATE` keywords in handler
+condition lists; qualifier-less `DECLARE x INTERVAL;`), the plural-interval
+open item closed (row above), the unreachable bare-`CREATE MODULE` question
+closed (not ESQL — the compiler demands a module kind), and one earlier probe
+misreading corrected (`LOG USER TRACE VALUES (…)` is legal; `FULL` without
+`EXCEPTION` is not). Everything else the compiler rejected was already a
+recorded deliberate-permissiveness adjudication.
 
 ## Known limitations (backlog)
 

@@ -553,12 +553,22 @@ CONTRIBUTING.md        # dev setup, ground rules, PR guide
    `DECLARE … LIST OF`, `CALL r(IN a, OUT b)` and DB2 routine characteristics
    (`DETERMINISTIC`, `NO SQL`, …) are not ESQL — while the grammar's one real
    bug in that set shipped fixed: `LOG … ;` without the optional `VALUES`
-   clause is now accepted. Left open: the plural interval qualifiers
-   (`INTERVAL '1' DAYS`) — that diagram page could not be reached during the
-   pass, and per the ground rule the grammar does not loosen without the
-   reference. The no-12.0.x-page group (`DECIDEMODE`-style `PROPAGATE`
-   clauses, `ASJSON`/`TOMIME` options) stays as the grammar has it. Deciding
-   each one needs the reference, not the test suite.
+   clause is now accepted. The no-12.0.x-page group (`DECIDEMODE`-style
+   `PROPAGATE` clauses, `ASJSON`/`TOMIME` options) stays as the grammar has
+   it. Deciding each one needs the reference, not the test suite.
+- **ACE compiler differential.** ✅ First round complete (2026-10-29): with a
+   real ACE Toolkit installation, the grammar was checked probe-by-probe
+   against the headless ESQL compiler (`npm run verify:ace`, methodology and
+   full verdict ledger in
+   [`tree-sitter-esql/ACE-COMPILER-DIFFERENTIAL.md`](tree-sitter-esql/ACE-COMPILER-DIFFERENTIAL.md)).
+   It found and fixed two real grammar bugs (per-condition `SQLSTATE`
+   keywords in handler condition lists; the qualifier-less `DECLARE x
+   INTERVAL;` datatype), closed the last open adjudications (plural interval
+   qualifiers are singular-only; bare `CREATE MODULE` is not ESQL), and
+   pinned every deliberate permissiveness in `scripts/ace-differential/manifest.json`.
+   The compiler there was 13.0.9 while the grammar targets 12.0.x — running
+   the differential against a 12.x install remains useful, as does extending
+   the probe set.
  - **Phase 3 — model-driven features.** MRM/XSD schema import for message-tree
    field completion, formatting. The workspace index now exists and is used:
    `workspace/symbol`, SHARED-aware undeclared check, cross-file
@@ -567,8 +577,9 @@ CONTRIBUTING.md        # dev setup, ground rules, PR guide
    file), cross-file find-references across every visible file, and
    workspace-wide rename of `SHARED` variables and routines (with the
    application-scope approximation surfaced in the message, not hidden).
-- Longer term: optional integration with the ACE ESQL compiler for
-  authoritative validation.
+- Longer term: deeper integration with the ACE ESQL compiler for authoritative
+  validation (the differential harness in `scripts/ace-differential/` is the
+  first step — extend it toward an in-editor compile-on-save story).
 
 ## Attribution
 
@@ -590,10 +601,13 @@ the documentation. Practical consequences:
 - **The tests are green, but the same tool wrote the code and the tests.**
   They encode its understanding of ESQL: strong evidence, not a proof.
 - **The grammar was validated against the published IBM railroad diagrams
-  and a hand-built corpus — never against the ACE compiler itself.** Known
-  deviations are listed in `tree-sitter-esql/VERIFICATION.md`; unknown ones
-  certainly exist. Treat "no diagnostics" as *probably fine*; the ESQL
-  compiler remains the only authority.
+  and a hand-built corpus, and (since 2026-10-29) differentially probed
+  against a real ACE 13.0.9 compiler on 55 constructs — that is coverage, not
+  proof.** Known deviations are listed in
+  `tree-sitter-esql/VERIFICATION.md` and the probe ledger in
+  `scripts/ace-differential/manifest.json`; unknown ones certainly exist.
+  Treat "no diagnostics" as *probably fine*; the ESQL compiler remains the
+  only authority.
 - Naming, structure and prose are machine-templated; expect seams.
 
 The human role was direction, scope and correctness judgment — including

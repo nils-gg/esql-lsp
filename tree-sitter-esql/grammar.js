@@ -693,22 +693,32 @@ export default grammar({
       ';',
     ),
 
-    // DECLARE (CONTINUE | EXIT) HANDLER FOR SQLSTATE
-    //   ('v' | VALUE 'v' | LIKE 'p' [ESCAPE 'e']) (, ...)* statement
+    // DECLARE (CONTINUE | EXIT) HANDLER FOR condition (, condition)* statement
+    // Each condition carries its own SQLSTATE keyword: the canonical ACE
+    // form is `FOR SQLSTATE '38522', SQLSTATE '38523'` — the 12.0.x page
+    // documents the condition as `SQLSTATE [VALUE] value |
+    // LIKE pattern [ESCAPE pattern]`, and the ACE 13.0.9 compiler accepts
+    // that multi-condition list verbatim (scripts/ace-differential). The
+    // keyword is optional on every item so the shorthand our earlier rule
+    // emitted (`FOR SQLSTATE 'a', 'b'`) keeps parsing as the permissive
+    // legacy reading.
     declare_handler_statement: $ => seq(
       $.kw_DECLARE,
       choice($.kw_CONTINUE, $.kw_EXIT),
-      $.kw_HANDLER, $.kw_FOR, $.kw_SQLSTATE,
+      $.kw_HANDLER, $.kw_FOR,
       $.sqlstate_value,
       repeat(seq(',', $.sqlstate_value)),
       $.esql_statement,
     ),
 
-    sqlstate_value: $ => choice(
-      seq(optional($.kw_VALUE), $.string_literal),
-      seq(
-        $.kw_LIKE, $.string_literal,
-        optional(seq($.kw_ESCAPE, $.string_literal)),
+    sqlstate_value: $ => seq(
+      optional($.kw_SQLSTATE),
+      choice(
+        seq(optional($.kw_VALUE), $.string_literal),
+        seq(
+          $.kw_LIKE, $.string_literal,
+          optional(seq($.kw_ESCAPE, $.string_literal)),
+        ),
       ),
     ),
 
@@ -1467,7 +1477,11 @@ export default grammar({
         $.kw_INTEGER, $.kw_INT,
         $.kw_DATE, $.kw_TIME, $.kw_TIMESTAMP, $.kw_GMTTIME,
         $.kw_GMTTIMESTAMP,
-        seq($.kw_INTERVAL, $._interval_qualifier),
+        // Bare INTERVAL (no qualifier) is a permissive superset: the 12.0.x
+        // pages always show a qualifier, but the ACE 13.0.9 compiler
+        // compiles `DECLARE iv INTERVAL;` (scripts/ace-differential probe
+        // ok_set_interval_literal), so real code exists that says it.
+        seq($.kw_INTERVAL, optional($._interval_qualifier)),
         $.kw_ROW, $.kw_NAME, $.kw_NAMEVALUE, $.kw_NONE,
         $.kw_REFERENCE,
         seq($.kw_REFERENCE, $.kw_TO),

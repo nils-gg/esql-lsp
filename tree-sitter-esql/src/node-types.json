@@ -796,10 +796,6 @@
           "named": true
         },
         {
-          "type": "kw_SQLSTATE",
-          "named": true
-        },
-        {
           "type": "sqlstate_value",
           "named": true
         }
@@ -2385,6 +2381,10 @@
         },
         {
           "type": "kw_LIKE",
+          "named": true
+        },
+        {
+          "type": "kw_SQLSTATE",
           "named": true
         },
         {
