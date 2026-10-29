@@ -11,6 +11,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { extractFileFacts, WorkspaceIndex } from '../src/workspaceIndex';
 
 const RECEIVER = [
@@ -213,6 +214,216 @@ test('name-keyed disk lookups: case-insensitive, per-file excludable (N-2)', asy
       1,
       'located SHARED facts exclude a live file per-file, like the name set'
     );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── list.md 7 + 8: watched-file freshness and multi-root indexing ───────────
+// LSP FileChangeType, spelled out so the tests read like the protocol:
+const CREATED = 1;
+const CHANGED = 2;
+const DELETED = 3;
+
+const LIB = (name: string, shared?: string) =>
+  [
+    `CREATE FUNCTION ${name}() RETURNS BOOLEAN`,
+    'BEGIN',
+    shared ? `  DECLARE ${shared} SHARED INTEGER 0;` : '  RETURN TRUE;',
+    'END;',
+    '',
+  ].join('\n');
+
+test('setRoots indexes EVERY folder, and an overlapping folder counts a file once (L8)', async () => {
+  const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-rootA-'));
+  const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-rootB-'));
+  try {
+    fs.mkdirSync(path.join(dirA, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(dirA, 'A.esql'), LIB('RoutineA', 'VarA'));
+    fs.writeFileSync(path.join(dirB, 'B.esql'), LIB('RoutineB', 'VarB'));
+    fs.writeFileSync(path.join(dirA, 'sub', 'Nested.esql'), LIB('RoutineN', 'VarN'));
+
+    const idx = new WorkspaceIndex();
+    idx.setRoots([dirA, dirB]);
+    await idx.rescan();
+    assert.deepEqual(idx.rootPaths(), [dirA, dirB], 'both folders are roots now');
+    assert.equal(idx.stats().files, 3, 'one per file across both roots');
+    for (const n of ['RoutineA', 'RoutineB', 'RoutineN'])
+      assert.equal(idx.routinesNamed(n).length, 1, n);
+    for (const n of ['VarA', 'VarB', 'VarN'])
+      assert.ok(idx.sharedNamesFromDisk().has(n.toUpperCase()), n);
+
+    // A folder nested inside another is not a second index of the same files.
+    idx.setRoots([dirA, dirB, path.join(dirA, 'sub')]);
+    await idx.rescan();
+    assert.equal(idx.stats().files, 3, 'the nested folder adds nothing twice');
+    assert.equal(idx.routinesNamed('RoutineN').length, 1, 'no duplicate symbol for one file');
+  } finally {
+    fs.rmSync(dirA, { recursive: true, force: true });
+    fs.rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
+test('watch events update the index incrementally: created, changed, deleted (L7)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-watch-'));
+  try {
+    const idx = new WorkspaceIndex();
+    idx.setRoot(dir);
+    await idx.rescan(); // an empty workspace: nothing to find yet
+    assert.equal(idx.stats().files, 0);
+
+    const late = path.join(dir, 'Late.esql');
+    fs.writeFileSync(late, LIB('LateR', 'LateShared'));
+    const lateUri = pathToFileURL(late).href;
+    assert.equal(await idx.applyWatchEvent(lateUri, CREATED), true, 'event applied');
+    assert.equal(idx.stats().files, 1, 'no rescan needed — the event IS the update');
+    assert.equal(idx.routinesNamed('LateR').length, 1, 'routine visible immediately');
+    assert.ok(idx.sharedNamesFromDisk().has('LATESHARED'), 'SHARED name visible immediately');
+    assert.match(idx.factsFromDisk()[0].text, /LateR/, 'occurrence-scan text is the fresh file');
+
+    fs.writeFileSync(late, LIB('LaterR', 'LaterShared'));
+    await idx.applyWatchEvent(lateUri, CHANGED);
+    assert.deepEqual(idx.routinesNamed('LateR'), [], 'the old routine is gone');
+    assert.equal(idx.routinesNamed('LaterR').length, 1, 'the replacement is in');
+    assert.ok(!idx.sharedNamesFromDisk().has('LATESHARED'), 'old SHARED name dropped');
+    assert.ok(idx.sharedNamesFromDisk().has('LATERSHARED'), 'new SHARED name in');
+
+    fs.rmSync(late);
+    await idx.applyWatchEvent(lateUri, DELETED);
+    assert.deepEqual(idx.routinesNamed('LaterR'), [], 'deleted file leaves nothing behind');
+    assert.equal(idx.stats().files, 0);
+    assert.equal(await idx.applyWatchEvent(lateUri, DELETED), false, 'a second delete is a no-op');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('foreign, malformed and non-.esql watch events are refused (L7)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-watch-bounds-'));
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-watch-outside-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'In.esql'), LIB('InR'));
+    const idx = new WorkspaceIndex();
+    idx.setRoot(dir);
+    await idx.rescan();
+
+    const outside = path.join(elsewhere, 'Out.esql');
+    fs.writeFileSync(outside, LIB('OutR'));
+    assert.equal(await idx.applyWatchEvent(pathToFileURL(outside).href, CREATED), false, 'outside the root');
+    assert.equal(await idx.applyWatchEvent('file:///nonroot/Stranger.esql', CREATED), false, 'a different tree entirely');
+    assert.equal(await idx.applyWatchEvent('file:///%-invalid', CREATED), false, 'malformed URI');
+    assert.equal(await idx.applyWatchEvent('untitled:Untitled-1', CREATED), false, 'non-file scheme');
+
+    fs.writeFileSync(path.join(dir, 'notes.txt'), LIB('NotEsql'));
+    assert.equal(
+      await idx.applyWatchEvent(pathToFileURL(path.join(dir, 'notes.txt')).href, CREATED),
+      false,
+      'the watcher asked for .esql only — do not trust the client filter'
+    );
+    assert.equal(idx.stats().files, 1, 'only the real .esql file is in the index');
+    assert.deepEqual(idx.routinesNamed('OutR'), []);
+    assert.deepEqual(idx.routinesNamed('NotEsql'), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+test('an over-cap watched file raises skipped — the rename gate widens, never over-trusts (L7)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-watch-big-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'ok.esql'), LIB('OkR'));
+    const idx = new WorkspaceIndex();
+    idx.setRoot(dir);
+    await idx.rescan();
+    assert.deepEqual(idx.stats(), { files: 1, skipped: 0 });
+
+    const big = path.join(dir, 'Big.esql');
+    fs.writeFileSync(big, LIB('BigR') + '-- pad '.repeat(60 * 1024));
+    assert.equal(
+      await idx.applyWatchEvent(pathToFileURL(big).href, CREATED),
+      true,
+      'the event is relevant even though the file cannot be indexed'
+    );
+    assert.deepEqual(idx.stats(), { files: 1, skipped: 1 }, 'the skip is COUNTED, not silent');
+    assert.deepEqual(idx.routinesNamed('BigR'), [], 'but its facts are genuinely unknown');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('removing the last root clears the index; addRoot/removeRoot answer honestly (L8)', async () => {
+  const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-rm-A-'));
+  const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-rm-B-'));
+  try {
+    fs.writeFileSync(path.join(dirA, 'A.esql'), LIB('RoutineA'));
+    const idx = new WorkspaceIndex();
+    idx.setRoot(dirA);
+    await idx.rescan();
+
+    assert.equal(idx.addRoot(dirA), false, 'already a root');
+    assert.equal(idx.removeRoot('/no/such/folder'), false, 'never indexed');
+    assert.equal(idx.addRoot(dirB), true);
+    assert.equal(idx.rootPaths().length, 2);
+    assert.equal(idx.routinesNamed('RoutineB').length, 0, 'the add is not effective until the rescan');
+    await idx.rescan();
+    assert.equal(idx.routinesNamed('RoutineB').length, 0, 'still: dirB is empty on disk');
+    fs.writeFileSync(path.join(dirB, 'B.esql'), LIB('RoutineB'));
+    await idx.rescan();
+    assert.equal(idx.routinesNamed('RoutineB').length, 1);
+
+    assert.equal(idx.removeRoot(dirB), true);
+    await idx.rescan();
+    assert.equal(idx.routinesNamed('RoutineB').length, 0, 'folder removed: its symbols leave the index');
+    assert.equal(idx.routinesNamed('RoutineA').length, 1, 'the surviving root is intact');
+
+    assert.equal(idx.removeRoot(dirA), true);
+    await idx.rescan();
+    assert.equal(idx.hasRoot(), false);
+    assert.deepEqual(idx.stats(), { files: 0, skipped: 0 }, 'no roots: the index is inert, not stale');
+    assert.deepEqual(idx.routinesNamed('RoutineA'), []);
+    assert.equal(idx.sharedNamesFromDisk().size, 0);
+  } finally {
+    fs.rmSync(dirA, { recursive: true, force: true });
+    fs.rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
+test('roots that change mid-scan REPLACE the stale walk instead of merging into it (L8)', async () => {
+  const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-gen-A-'));
+  const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-gen-B-'));
+  try {
+    fs.writeFileSync(path.join(dirA, 'A.esql'), LIB('RoutineA'));
+    fs.writeFileSync(path.join(dirB, 'B.esql'), LIB('RoutineB'));
+    const idx = new WorkspaceIndex();
+    idx.setRoot(dirA);
+    const first = idx.rescan(); // walk of A starts
+    idx.setRoots([dirB]); // …and the workspace moves while it runs
+    const second = idx.rescan(); // must be a FRESH walk of B, not a join of A's
+    await Promise.all([first, second]);
+    await idx.whenSettled();
+    assert.equal(idx.routinesNamed('RoutineB').length, 1, 'the new roots are indexed');
+    assert.deepEqual(idx.routinesNamed('RoutineA'), [], "the stale A-walk's result is discarded");
+    assert.equal(idx.stats().files, 1);
+  } finally {
+    fs.rmSync(dirA, { recursive: true, force: true });
+    fs.rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
+test('a watch event arriving mid-scan lands on top of the scan, not under it (L7)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-watch-race-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'Scan.esql'), LIB('ScanR'));
+    const idx = new WorkspaceIndex();
+    idx.setRoot(dir);
+    const scan = idx.rescan();
+    const late = path.join(dir, 'MidScan.esql');
+    fs.writeFileSync(late, LIB('MidR'));
+    const event = idx.applyWatchEvent(pathToFileURL(late).href, CREATED);
+    await Promise.all([scan, event]);
+    assert.equal(idx.routinesNamed('ScanR').length, 1, 'the scanned file survived');
+    assert.equal(idx.routinesNamed('MidR').length, 1, 'the event survived on top of the scan');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

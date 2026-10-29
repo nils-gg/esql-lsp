@@ -14,7 +14,7 @@
  */
 
 import { Range } from 'vscode-languageserver';
-import { scan, wordAt, findBeginToken, findEndToken, unquoteESQLName } from './scanner';
+import { scan, wordAt, findBeginToken, findEndToken, unquoteESQLName, QuotedToken } from './scanner';
 import type { DocAnalysis, DeclaredName, RoutineInfo, SetTarget } from './parser';
 
 /** `SET bareName =` / `:=`, rejecting dotted message-tree paths (see bareTargetsFromSource). */
@@ -48,7 +48,11 @@ const FN_RE =
 /** `DECLARE name[, name…] [CONSTANT|SHARED|EXTERNAL] type …` — group 1 is the
  * FULL comma-separated name list (a multi-name declaration declares every
  * name), group 2 the type word. Handler declarations (`DECLARE CONTINUE|EXIT
- * HANDLER …`) declare no variable and are excluded.
+ * HANDLER …`) declare no variable and are excluded; so are routine headers
+ * (`DECLARE PROCEDURE|FUNCTION …`), which `routinesFromSource` owns — without
+ * that guard `DECLARE PROCEDURE Main()` declared a variable named PROCEDURE
+ * of type Main, exactly like a mid-edit buffer that stopped at the word after
+ * DECLARE (found via issue 3's cross-module fixture).
  *
  * The type word must not be another flag word: mid-edit `DECLARE x SHARED `
  * (buffer being typed, no datatype yet) then declares NOTHING, which is what
@@ -56,7 +60,7 @@ const FN_RE =
  * is the namespace-alias form and is not indexed (CODE_REVIEW.md C-7: without
  * the guard the heuristic indexed x typed `SHARED` and the modes drifted). */
 const DECLARE_RE =
-  /\bDECLARE\s+(?!CONTINUE\b|EXIT\b)((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+(?:CONSTANT\s+|SHARED\s+|EXTERNAL\s+)*(?!(?:SHARED|EXTERNAL|CONSTANT)\b)([A-Za-z]+)/i;
+  /\bDECLARE\s+(?!CONTINUE\b|EXIT\b|PROCEDURE\b|FUNCTION\b)((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+(?:CONSTANT\s+|SHARED\s+|EXTERNAL\s+)*(?!(?:SHARED|EXTERNAL|CONSTANT)\b)([A-Za-z]+)/i;
 
 /**
  * `DECLARE "a name an identifier cannot hold" [SHARED|EXTERNAL|CONSTANT] type …`
@@ -145,14 +149,17 @@ export function matchesSchemaName(schemaName: string, word: string): boolean {
  * navigation: a quoted declare name (`DECLARE "script-encoded-hostname"
  * EXTERNAL CHARACTER;`) had no word at its own position, so definition,
  * references and hover all came back empty for a name the outline lists
- * (ISSUES.md I-10). Shared with hover.ts so all three agree on what the cursor
- * is on.
+ * (ISSUES.md I-10). The scanner's quoted-identifier TOKENS answer that
+ * (list.md issue 6 / enhancement 20): real `"…"` spans only — never a `"…"`
+ * inside a comment or a `'…'` string, and `""` escapes collapse to one
+ * character. Shared with hover.ts so all three agree on what the cursor is on.
  */
 export function wordAtPosition(
   maskedLines: string[],
   rawLines: string[],
   line: number,
-  character: number
+  character: number,
+  quoted: QuotedToken[]
 ): { word: string; range: Range } | null {
   const maskedLine = maskedLines[line];
   if (maskedLine === undefined) return null;
@@ -164,17 +171,15 @@ export function wordAtPosition(
     };
   }
 
-  const rawLine = rawLines[line] ?? '';
-  const quoted = /"([^"]*)"/g;
-  let m: RegExpExecArray | null;
-  while ((m = quoted.exec(rawLine)) !== null) {
-    const start = m.index;
-    const end = start + m[0].length;
-    if (character >= start && character <= end) {
+  for (const t of quoted) {
+    if (t.line !== line) continue;
+    // The quotes count as "on" the name: a cursor resting on either one
+    // still asks about the identifier.
+    if (character >= t.startCol && character <= t.endCol) {
       return {
-        word: m[1],
+        word: t.value,
         // The name without its quotes, which is what the declaration records.
-        range: Range.create(line, start + 1, line, end - 1),
+        range: Range.create(line, t.startCol + 1, line, t.endCol - 1),
       };
     }
   }
@@ -182,6 +187,319 @@ export function wordAtPosition(
 }
 
 // ─── Fallback extraction (no grammar) ────────────────────────────────────────
+
+/**
+ * A CALL target read from the masked text: the routine name a dotted call
+ * names plus the qualifier segments that say WHERE that routine lives
+ * (list.md issue 3 / issue 5 — a routine's identity is module + name, not
+ * the last word alone).
+ */
+export interface CallTarget {
+  /** The routine the call names (last dotted segment). */
+  name: string;
+  /** Qualifier segments left of the name, source order (e.g. schema, module). */
+  qualifier: string[];
+  /** True when the cursor sits on the name segment itself. */
+  cursorOnName: boolean;
+}
+
+const CALL_DOTTED_RE = /\bCALL\s+([A-Za-z_][\w]*(?:\s*\.\s*[A-Za-z_][\w]*)*)\s*\(/gi;
+
+/** One `CALL <dotted>(` region, segments with their masked string spans. */
+interface CallRegion {
+  segments: { name: string; from: number; to: number }[];
+}
+
+function callRegions(masked: string): CallRegion[] {
+  const out: CallRegion[] = [];
+  CALL_DOTTED_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = CALL_DOTTED_RE.exec(masked)) !== null) {
+    const groupStart = m.index + m[0].indexOf(m[1]);
+    const segs: { name: string; from: number; to: number }[] = [];
+    const re = /[A-Za-z_][\w]*/g;
+    let s: RegExpExecArray | null;
+    while ((s = re.exec(m[1])) !== null) {
+      segs.push({ name: s[0], from: groupStart + s.index, to: groupStart + s.index + s[0].length });
+    }
+    out.push({ segments: segs });
+  }
+  return out;
+}
+
+/**
+ * EVERY `CALL <name>(` / `CALL mod.<name>(` site for one routine name in this
+ * file, as {qualifier, range-of-name-segment}. The qualifier-qualified truth
+ * about WHO each site calls (list.md issue 3/5), readable in both modes
+ * because the mask preserves offsets.
+ */
+export function callSitesForName(
+  source: string,
+  name: string
+): Array<{ qualifier: string[]; range: Range }> {
+  const { masked } = scan(source);
+  const starts = rowStartsOf(masked);
+  const up = name.toUpperCase();
+  const out: Array<{ qualifier: string[]; range: Range }> = [];
+  for (const region of callRegions(masked)) {
+    const last = region.segments[region.segments.length - 1];
+    if (last.name.toUpperCase() !== up) continue;
+    out.push({
+      qualifier: region.segments.slice(0, -1).map((s) => s.name),
+      range: indexRange(starts, last.from, last.to),
+    });
+  }
+  return out;
+}
+
+/** Range (line/character) of a string-index span, from precomputed row starts. */
+function indexRange(starts: number[], from: number, to: number): Range {
+  const point = (idx: number): { line: number; character: number } => {
+    let line = starts.length - 1;
+    for (let i = 0; i < starts.length; i++) {
+      if (starts[i] > idx) {
+        line = i - 1;
+        break;
+      }
+    }
+    return { line, character: idx - starts[line] };
+  };
+  const s = point(from);
+  const e = point(to);
+  return Range.create(s.line, s.character, e.line, e.character);
+}
+
+/**
+ * Does this position sit on a `CALL a.b.c(` target's dotted name, and what
+ * does that call resolve to? Message-tree paths (`OutputRoot.JSON.Data`)
+ * are NOT CALL targets — only the name after the CALL keyword is. A quoted
+ * target (`CALL "name"(`) masks away and simply never matches: the caller
+ * keeps its existing behavior for it.
+ */
+export function callTargetAt(source: string, line: number, character: number): CallTarget | null {
+  const { masked } = scan(source);
+  const starts = rowStartsOf(source);
+  if (line < 0 || line >= starts.length) return null;
+  const offset = starts[line] + character;
+  for (const region of callRegions(masked)) {
+    const first = region.segments[0];
+    const last = region.segments[region.segments.length - 1];
+    if (offset < first.from || offset > last.to) continue;
+    const hit = region.segments.find((seg) => offset >= seg.from && offset <= seg.to);
+    if (!hit) return null; // whitespace between segments: no word there anyway
+    return {
+      name: last.name,
+      qualifier: region.segments.slice(0, -1).map((seg) => seg.name),
+      cursorOnName: hit === last,
+    };
+  }
+  return null;
+}
+
+/** String index where each line of `text` starts (client line conventions). */
+function rowStartsOf(text: string): number[] {
+  const starts = [0];
+  const re = /\r\n|\r|\n/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) starts.push(m.index + m[0].length);
+  return starts;
+}
+
+/** Does `qualifier` name the module `moduleName`? (any segment may carry it) */
+export function qualifierMatchesModule(qualifier: string[], moduleName: string): boolean {
+  if (!qualifier.length || !moduleName) return false;
+  const up = moduleName.toUpperCase();
+  return qualifier.some((seg) => seg.toUpperCase() === up);
+}
+
+/**
+ * The routines THIS file declares that the qualified call names: same name
+ * AND owned (by span containment) by a module the qualifier spells. Used by
+ * definition, references and hover so the three agree on which routine a
+ * dotted CALL means (they disagree visibly when they don't).
+ */
+export function moduleOwnedRoutines(
+  source: string,
+  doc: DocAnalysis | undefined,
+  call: CallTarget
+): Array<{ name: string; range: Range }> {
+  const routines: Array<{ name: string; range: Range }> = doc
+    ? (doc.routines as Array<{ name: string; range: Range }>)
+    : routinesFromSource(source);
+  const modules: Array<{ name: string; range: Range }> = doc
+    ? (doc.modules as Array<{ name: string; range: Range }>)
+    : modulesFromSource(source);
+  return routines.filter(
+    (r) =>
+      eqName(r.name, call.name) &&
+      modules.some(
+        (m) =>
+          qualifierMatchesModule(call.qualifier, m.name) &&
+          rangeContains(m.range, r.range.start.line, r.range.start.character)
+      )
+  );
+}
+
+/**
+ * A routine declaration as the qualification logic sees it — the shape both
+ * extraction paths produce (tree `RoutineInfo` and the heuristic one agree).
+ */
+export interface RoutineDecl {
+  name: string;
+  range: Range;
+  moduleName?: string;
+}
+
+/** Routine declarations from the shared extractor pair (tree first, pattern fallback). */
+function routineDecls(source: string, doc?: DocAnalysis): RoutineDecl[] {
+  return (doc ? doc.routines : routinesFromSource(source)) as RoutineDecl[];
+}
+
+/** Module spans from the shared extractor pair. */
+function moduleSpansForRefs(source: string, doc?: DocAnalysis): Array<{ name: string; range: Range }> {
+  return (doc ? doc.modules : modulesFromSource(source)) as Array<{ name: string; range: Range }>;
+}
+
+/**
+ * Which routine declaration(s) the cursor's use of `name` means
+ * (issue 3 / issue 5, the file-local mirror of the workspace filter):
+ *  - a QUALIFIED call (`CALL Alpha.Helper(`) means the routine the qualifier's
+ *    module owns — never a same-named routine living elsewhere;
+ *  - an UNQUALIFIED call sitting inside a module that owns a candidate means
+ *    that candidate (module-local resolution, which is why one module's call
+ *    site is not a reference to another module's routine);
+ *  - an unqualified call no candidate's module owns is genuinely AMBIGUOUS —
+ *    all candidates are returned, the same answer definition and hover give
+ *    (Enh 36: shown, not silently chosen);
+ *  - a cursor on a declaration name anchors on THAT declaration.
+ */
+export function routineTargetsFor(
+  source: string,
+  line: number,
+  character: number,
+  name: string,
+  atRange: Range,
+  doc?: DocAnalysis
+): RoutineDecl[] {
+  const candidates = routineDecls(source, doc).filter((r) => eqName(r.name, name));
+  if (!candidates.length) return [];
+  const onDecl = candidates.find((r) => rangeContains(r.range, line, character));
+  if (onDecl) return [onDecl];
+  const modules = moduleSpansForRefs(source, doc);
+  const call = callTargetAt(source, line, character);
+  if (call && call.cursorOnName && call.qualifier.length) {
+    const owned = moduleOwnedRoutines(source, doc, call);
+    return candidates.filter((r) => owned.some((o) => samePosition(o.range, r.range)));
+  }
+  const owners = candidates.filter((c) => {
+    if (!c.moduleName) return false;
+    const span = modules.find((m) => eqName(m.name, c.moduleName as string));
+    return !!span && rangeContains(span.range, line, character);
+  });
+  if (owners.length) return owners;
+  // Not a call site and not a declaration: a bare use inside a module that
+  // owns a candidate resolves there, same rule, else it is ambiguous.
+  void atRange;
+  return candidates;
+}
+
+/**
+ * The CALL sites of `anchors` that resolve to them (issue 3/5 + enhancement
+ * 17): the sites naming the anchor's module, unqualified sites inside that
+ * module, and — where the anchor can be reached without a qualifier —
+ * unqualified sites whose module declares nothing by that name. A site no
+ * rule can attach to the anchor is a DIFFERENT symbol (a rival module's own
+ * call site, or a rival-qualified spelling) and stays out of references,
+ * rename and hover alike. Mode-agnostic by construction: the qualifier of
+ * every site comes from the CALL-region reader, not from the tree.
+ */
+export function routineSitesForAnchors(
+  source: string,
+  anchors: RoutineDecl[],
+  doc?: DocAnalysis,
+  includeDeclaration = true
+): Range[] {
+  if (!anchors.length) return [];
+  const name = anchors[0].name;
+  const modules = moduleSpansForRefs(source, doc);
+  const candidates = routineDecls(source, doc).filter((r) => eqName(r.name, name));
+  const posKey = (r: Range) => `${r.start.line}:${r.start.character}`;
+  const candidatePos = new Set(candidates.map((c) => posKey(c.range)));
+  const moduleOwningName = (line: number, character: number) =>
+    modules.find(
+      (m) =>
+        rangeContains(m.range, line, character) &&
+        candidates.some(
+          (c) => c.moduleName && eqName(c.moduleName, m.name) && rangeContains(m.range, c.range.start.line, c.range.start.character)
+        )
+    );
+  const keep = (range: Range, qualifier: string[]): boolean => {
+    for (const a of anchors) {
+      if (qualifier.length) {
+        if (a.moduleName && qualifierMatchesModule(qualifier, a.moduleName)) return true;
+        continue;
+      }
+      const owner = moduleOwningName(range.start.line, range.start.character);
+      if (!owner) return true; // outside any declaring module: ambiguous → a use of every candidate
+      if (a.moduleName && eqName(owner.name, a.moduleName)) return true; // the anchor's own module
+      // otherwise: the site sits in a module that declares the name itself —
+      // it belongs to THAT module's routine, a different symbol.
+    }
+    return false;
+  };
+  const out: Range[] = [];
+  const seen = new Set<string>();
+  const push = (r: Range) => {
+    const k = posKey(r);
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(r);
+  };
+  // CALL regions carry the qualifier context; the plain sweep catches the
+  // EXPRESSION call form (`SET total = Round2(a, b)` — a routine use without
+  // the CALL keyword) the region reader cannot see. Dotted spellings arrive
+  // only through the region reader: the sweep skips dot-adjacent words.
+  for (const site of callSitesForName(source, name)) {
+    if (keep(site.range, site.qualifier)) push(site.range);
+  }
+  for (const occ of occurrences(source, name)) {
+    if (candidatePos.has(posKey(occ)) && !includeDeclaration) continue; // declaration slot, not a use
+    if (keep(occ, [])) push(occ);
+  }
+  return out;
+}
+
+/**
+ * The unqualified uses of `name` that NO module can attach to a routine:
+ * outside every module that declares the name (declaration slots excluded).
+ * Those uses are ambiguous between the same-named routines — a rename of ONE
+ * of them would silently retarget them at a rival, which is what the
+ * module-routine rename refusal counts. Mode-agnostic: scanner sweep, not
+ * the tree.
+ */
+export function unqualifiedUnguardedSites(source: string, name: string): Range[] {
+  const modules = modulesFromSource(source);
+  const candidates = routinesFromSource(source).filter((r) => eqName(r.name, name));
+  const posKey = (r: Range) => `${r.start.line}:${r.start.character}`;
+  const candidatePos = new Set(candidates.map((c) => posKey(c.range)));
+  // The sweep (not the CALL-region reader) so the EXPRESSION call form counts
+  // too; it skips dot-adjacent words, which is exactly the "spelled a module"
+  // exclusion this check needs.
+  return occurrences(source, name).filter(
+    (occ) =>
+      !candidatePos.has(posKey(occ)) &&
+      !modules.some(
+        (m) =>
+          rangeContains(m.range, occ.start.line, occ.start.character) &&
+          candidates.some(
+            (c) =>
+              c.moduleName &&
+              eqName(c.moduleName, m.name) &&
+              rangeContains(m.range, c.range.start.line, c.range.start.character)
+          )
+      )
+  );
+}
 
 /** Whole-file range used as the declaration scope when scoping is unknown. */
 function fileScope(lines: string[]): Range {
@@ -674,7 +992,7 @@ export function schemaFromSource(source: string): { name: string; range: Range }
  * same-file and sibling-file occurrence lists are then built by ONE finder.
  */
 export function occurrences(source: string, name: string): Range[] {
-  const { lines, rawLines } = scan(source);
+  const { lines, quotedTokens } = scan(source);
   const out: Range[] = [];
   const re = /[_a-zA-Z][_a-zA-Z0-9]*/g;
   let m: RegExpExecArray | null;
@@ -687,15 +1005,17 @@ export function occurrences(source: string, name: string): Range[] {
       if (before.endsWith('.') || after.startsWith('.')) continue;
       out.push(Range.create(i, m.index, i, m.index + m[0].length));
     }
-
-    // Quoted form: `"the-name"` is the same name to ESQL, and the mask erases
-    // it, so it has to be looked for in the raw text (range without quotes).
-    const quoted = new RegExp(`"${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g');
-    let q: RegExpExecArray | null;
-    while ((q = quoted.exec(rawLines[i] ?? '')) !== null) {
-      out.push(Range.create(i, q.index + 1, i, q.index + 1 + name.length));
-    }
   }
+
+  // Quoted spellings are the SAME name to ESQL (`"the-name"` names `the-name`,
+  // `"a""b"` names `a"b`). The scanner's tokens carry value + range already
+  // normalized (list.md issue 6 / enhancement 20) — no raw-line regex that a
+  // comment or a `'…'` string could fool.
+  for (const t of quotedTokens) {
+    if (t.value.toUpperCase() !== name.toUpperCase()) continue;
+    out.push(Range.create(t.line, t.startCol + 1, t.line, t.endCol - 1));
+  }
+  out.sort((a, b) => a.start.line - b.start.line || a.start.character - b.start.character);
   return out;
 }
 
@@ -723,6 +1043,62 @@ function rangeEndsBefore(a: DeclaredName, b: DeclaredName): number {
     a.scope.end.line - b.scope.end.line ||
     a.scope.end.character - b.scope.end.character ||
     b.scope.start.line - a.scope.start.line
+  );
+}
+
+/**
+ * The declaration a position RESOLVES to: the innermost same-named
+ * declaration whose scope covers it (shadowing order), or null when no
+ * declaration reaches it. Declarations of ONE name only — the caller has
+ * already filtered (enhancement 16's question at file scale).
+ */
+function resolveAmong(declarations: DeclaredName[], line: number, character: number): DeclaredName | null {
+  const covering = declarations.filter((d) => rangeContains(d.scope, line, character));
+  covering.sort(rangeEndsBefore);
+  return covering.length ? covering[0] : null;
+}
+
+/**
+ * Which declaration the cursor points at: the one whose NAME it sits on (a
+ * click on a declaration is about THAT declaration, even when an outer
+ * sibling shares the name), else what the position resolves to.
+ */
+function anchorDeclaration(declarations: DeclaredName[], at: Range): DeclaredName | null {
+  const onName = declarations.find(
+    (d) =>
+      rangeContains(d.range, at.start.line, at.start.character) ||
+      rangeContains(d.range, at.end.line, at.end.character)
+  );
+  if (onName) return onName;
+  return resolveAmong(declarations, at.start.line, at.start.character);
+}
+
+/** Does `use` resolve to `anchor` (rather than to a shadowing sibling)? */
+function resolvesToAnchor(
+  use: Range,
+  declarations: DeclaredName[],
+  anchor: DeclaredName | null
+): boolean {
+  if (!anchor) return false;
+  return resolveAmong(declarations, use.start.line, use.start.character) === anchor;
+}
+
+/**
+ * The declaration(s) at the NARROWEST scope among `decls` — all of them when
+ * they tie (two declarations sharing one scope is a genuine duplicate, and
+ * the reader should see both; one winner when one scope is strictly inside
+ * the others, i.e. the shadowing order).
+ */
+function narrowestScope(decls: DeclaredName[]): DeclaredName[] {
+  if (!decls.length) return [];
+  const sorted = decls.slice().sort(rangeEndsBefore);
+  const best = sorted[0].scope;
+  return decls.filter(
+    (d) =>
+      d.scope.start.line === best.start.line &&
+      d.scope.start.character === best.start.character &&
+      d.scope.end.line === best.end.line &&
+      d.scope.end.character === best.end.character
   );
 }
 
@@ -800,8 +1176,8 @@ export function definitionAt(
   character: number,
   doc?: DocAnalysis
 ): Range[] {
-  const { lines, rawLines } = scan(source);
-  const at = wordAtPosition(lines, rawLines, line, character);
+  const { lines, rawLines, quotedTokens } = scan(source);
+  const at = wordAtPosition(lines, rawLines, line, character, quotedTokens);
   if (!at) return [];
 
   // G-6: a schema segment is never a routine click. `BROKER SCHEMA
@@ -813,12 +1189,26 @@ export function definitionAt(
   const cursorInSchema = (schemas: { range: Range }[]): boolean =>
     schemas.some((s) => rangeContains(s.range, line, character));
 
+  // Issue 3 / issue 5: a CALL that spells its module (`CALL Sales.Util(`)
+  // names the OWNER as well as the routine — a same-named routine living in
+  // a different module is a different symbol and must not answer. Shared by
+  // both modes; the workspace half applies the same filter.
+  const call = callTargetAt(source, line, character);
+  if (call && call.cursorOnName && call.qualifier.length) {
+    const owned = moduleOwnedRoutines(source, doc, call);
+    return normalize(owned.map((r) => r.range)); // empty falls through to the workspace
+  }
+
   if (doc) {
     const found: Range[] = [];
 
     if (!cursorInSchema(doc.schemas)) {
-      for (const routine of doc.routines) {
-        if (eqName(routine.name, at.word)) found.push(routine.range);
+      // The QUALIFIED/owner/ambiguity rules of routineTargetsFor answer the
+      // click — not every same-named routine in the file (issue 3/5): two
+      // modules each declaring `Helper` are two symbols, and a call inside
+      // one of them never means the other.
+      for (const t of routineTargetsFor(source, line, character, at.word, at.range, doc)) {
+        found.push(t.range);
       }
     }
 
@@ -826,11 +1216,14 @@ export function definitionAt(
     // Cursor already on a declaration: stay there.
     const onDeclaration = declarations.filter((d) => rangeContains(d.range, line, character));
     if (onDeclaration.length) return normalize(onDeclaration.map((d) => d.range));
-    // Prefer the innermost visible declaration; if none is in scope (an
-    // undeclared name, or a declaration the recovery pass put elsewhere),
-    // offer them all rather than nothing.
+    // The INNERMOST visible declaration answers (issue 2/17): an outer
+    // sibling of the same name is shadowed and stays out — unless the two
+    // share the same scope (a real duplicate), then both are shown.
+    // If none is in scope (an undeclared name, or a declaration the recovery
+    // pass put elsewhere), offer them all rather than nothing.
     const inScope = declarations.filter((d) => rangeContains(d.scope, line, character));
-    for (const d of inScope.length ? inScope : declarations) found.push(d.range);
+    const chosen = narrowestScope(inScope);
+    for (const d of chosen.length ? chosen : declarations) found.push(d.range);
 
     for (const mod of doc.modules) {
       if (eqName(mod.name, at.word)) found.push(mod.nameRange);
@@ -845,13 +1238,16 @@ export function definitionAt(
   const found: Range[] = [];
   const schema = schemaFromSource(source);
   if (!cursorInSchema(schema ? [schema] : [])) {
-    for (const routine of routinesFromSource(source)) {
-      if (eqName(routine.name, at.word)) found.push(routine.range);
+    for (const t of routineTargetsFor(source, line, character, at.word, at.range, doc)) {
+      found.push(t.range);
     }
   }
-  for (const d of declarationsFromSource(source)) {
-    if (eqName(d.name, at.word)) found.push(d.range);
-  }
+  const sameName = declarationsFromSource(source).filter((d) => eqName(d.name, at.word));
+  // Same innermost-first answer as the tree path (issue 2/17); when nothing
+  // covers the cursor, offer them all rather than nothing.
+  const covered = sameName.filter((d) => rangeContains(d.scope, line, character));
+  const chosen = covered.length ? narrowestScope(covered) : sameName;
+  for (const d of chosen) found.push(d.range);
   for (const mod of modulesFromSource(source)) {
     if (eqName(mod.name, at.word)) found.push(mod.nameRange);
   }
@@ -871,44 +1267,77 @@ export function referencesAt(
   includeDeclaration = true,
   doc?: DocAnalysis
 ): Range[] {
-  const { lines, rawLines } = scan(source);
-  const at = wordAtPosition(lines, rawLines, line, character);
+  const { lines, rawLines, quotedTokens } = scan(source);
+  const at = wordAtPosition(lines, rawLines, line, character, quotedTokens);
   if (!at) return [];
 
+  // Issue 3 / issue 5: qualified CALLs resolve through the module too (see
+  // definitionAt). The in-file half is one mode-agnostic finder — the call
+  // SITES of this name, keeping the ones that mean THIS module's routine:
+  // sites that spell the qualifying module, and unqualified sites sitting
+  // inside that module (module-local resolution).
+  const call = callTargetAt(source, line, character);
+  if (call && call.cursorOnName && call.qualifier.length) {
+    const owned = moduleOwnedRoutines(source, doc, call);
+    const modules = doc ? doc.modules : modulesFromSource(source);
+    const sites = callSitesForName(source, call.name).filter((site) =>
+      site.qualifier.length
+        ? site.qualifier.some((seg) => qualifierMatchesModule(call.qualifier, seg))
+        : modules.some(
+            (m) =>
+              qualifierMatchesModule(call.qualifier, m.name) &&
+              rangeContains(m.range, site.range.start.line, site.range.start.character)
+          )
+    );
+    const found: Range[] = sites.map((site) => site.range);
+    if (includeDeclaration) for (const r of owned) found.push(r.range);
+    return normalize(found);
+  }
+
   if (doc) {
-    const routines = doc.routines.filter((r) => eqName(r.name, at.word));
+    const routines = routineDecls(source, doc).filter((r) => eqName(r.name, at.word));
     if (routines.length) {
-      const found = doc.references
-        .filter((r) => r.kind === 'routine' && eqName(r.name, at.word))
-        .map((r) => r.range);
-      if (includeDeclaration) for (const r of routines) found.push(r.range);
+      // Anchored + qualified like the definition: the sites that resolve to
+      // the anchor(s) — a sibling module's own call sites and rival-qualified
+      // spellings are different symbols and stay out (issue 3/5); the site
+      // list is CALL-region-driven, so the tree's dotted-reference list is
+      // not consulted here and cannot diverge from the fallback.
+      const anchors = routineTargetsFor(source, line, character, at.word, at.range, doc);
+      const list = anchors.length ? anchors : routines;
+      const found = routineSitesForAnchors(source, list, doc, includeDeclaration);
+      if (includeDeclaration) for (const a of list) found.push(a.range);
       return normalize(found);
     }
 
     const declarations = doc.declaredNames.filter((d) => eqName(d.name, at.word));
     if (declarations.length) {
-      // Widest visibility of any matching declaration: a module-level
-      // DECLARE is readable from every routine body inside it.
-      const scope = declarations
-        .map((d) => d.scope)
-        .reduce((widest, candidate) => (rangeCovers(candidate, widest) ? candidate : widest));
+      // Issue 2 / enhancement 17: the answer is ANCHORED on the declaration
+      // the cursor points at, and only the uses that resolve to that one are
+      // reported. The previous "widest visibility of any same-named
+      // declaration" merged sibling locals — renaming one routine's `total`
+      // rewrote another routine's unrelated `total` with it.
+      const anchor = anchorDeclaration(declarations, at.range);
       const found = doc.references
         .filter(
           (r) =>
             r.kind === 'variable' &&
             eqName(r.name, at.word) &&
-            rangeContains(scope, r.range.start.line, r.range.start.character)
+            resolvesToAnchor(r.range, declarations, anchor)
         )
         .map((r) => r.range);
-      // Always include the occurrence under the cursor — a name used in a
-      // region the recovery pass dropped still gets found — unless the cursor
-      // is on the declaration itself and the client asked for uses only.
-      const declarationRanges = declarations.map((d) => d.range);
-      const onDeclaration = declarationRanges.some((r) => samePosition(r, at.range));
-      if (!found.some((r) => samePosition(r, at.range)) && (includeDeclaration || !onDeclaration)) {
+      // The occurrence under the cursor joins only when it resolves to the
+      // anchor too: a click on an occurrence NO declaration covers is not a
+      // reference to this name, and renaming through it is what this guards.
+      const onDeclaration = declarations.some((d) => samePosition(d.range, at.range));
+      if (
+        anchor &&
+        !found.some((r) => samePosition(r, at.range)) &&
+        (includeDeclaration || !onDeclaration) &&
+        resolvesToAnchor(at.range, declarations, anchor)
+      ) {
         found.push(at.range);
       }
-      if (includeDeclaration) found.push(...declarationRanges);
+      if (anchor && includeDeclaration) found.push(anchor.range);
       return normalize(found);
     }
 
@@ -929,17 +1358,19 @@ export function referencesAt(
   }
 
   // ── heuristic mode ──
-  // The fallback has no use/declaration distinction: it takes every whole-word
-  // occurrence that is not a dotted-path part, then adds or strips the
-  // declaration ranges depending on `includeDeclaration`.
-  const declarationRanges = [
-    ...declarationsFromSource(source)
-      .filter((d) => eqName(d.name, at.word))
-      .map((d) => d.range),
-    ...routinesFromSource(source)
-      .filter((r) => eqName(r.name, at.word))
-      .map((r) => r.range),
-  ];
+  // A word that names a ROUTINE answers with the routine rules — anchored on
+  // the declaration(s) the cursor resolves to, keeping the CALL sites that
+  // mean them (issue 3/5; the tree path above orders the same way).
+  const varDecls = declarationsFromSource(source).filter((d) => eqName(d.name, at.word));
+  const routinesPat = routinesFromSource(source).filter((r) => eqName(r.name, at.word));
+  if (routinesPat.length) {
+    const anchors = routineTargetsFor(source, line, character, at.word, at.range);
+    const list = anchors.length ? anchors : routinesPat;
+    const found = routineSitesForAnchors(source, list, undefined, includeDeclaration);
+    if (includeDeclaration) for (const a of list) found.push(a.range);
+    return normalize(found);
+  }
+  const declarationRanges = varDecls.map((d) => d.range);
   if (!declarationRanges.length) {
     // Nothing declares the word: either a module name (no use sites inside the
     // file, only its declaration) or a built-in / path element, in which case
@@ -951,11 +1382,14 @@ export function referencesAt(
       includeDeclaration ? [...modules.map((m) => m.nameRange), ...schemas.map((s) => s.range)] : []
     );
   }
-  const declared = new Set(declarationRanges.map((r) => `${r.start.line}:${r.start.character}`));
-  const found = occurrences(source, at.word).filter(
-    (r) => includeDeclaration || !declared.has(`${r.start.line}:${r.start.character}`)
-  );
-  if (includeDeclaration) found.push(...declarationRanges);
+  const posKey = (r: Range) => `${r.start.line}:${r.start.character}`;
+  const anchor = anchorDeclaration(varDecls, at.range);
+  const declared = new Set(declarationRanges.map(posKey));
+  const found = occurrences(source, at.word).filter((r) => {
+    if (!resolvesToAnchor(r, varDecls, anchor)) return false;
+    return includeDeclaration || !declared.has(posKey(r));
+  });
+  if (anchor && includeDeclaration) found.push(anchor.range);
   return normalize(found);
 }
 

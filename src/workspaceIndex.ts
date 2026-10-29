@@ -19,15 +19,24 @@
  * Known approximations, on purpose:
  *   - "workspace-wide" stands in for ACE's application-wide SHARED scope;
  *     an LSP has no application boundary to consult.
- *   - no file watching: files created/edited outside the editor after the
- *     initial scan are invisible until the server restarts (open documents
- *     are live, everything else is the scan snapshot).
+ *   - file watching (list.md 7) is CLIENT cooperation: the server registers a
+ *     recursive watcher for `.esql` files when the client declares
+ *     `dynamicRegistration`, and applies `workspace/didChangeWatchedFiles`
+ *     events incrementally. A client
+ *     that never sends events gets exactly the old behaviour — the initial
+ *     scan plus live buffers — which is the promised degradation, not a new
+ *     failure mode.
+ *   - several workspace folders are all indexed (list.md 8); an editor
+ *     workspace is still treated as ONE flat namespace, the documented
+ *     stand-in for ACE's application boundary.
  *   - hard bounds below; a workspace with more files gets a partial index,
- *     and the counts are logged rather than silently truncated.
+ *     and the counts are logged rather than silently truncated. A watcher
+ *     event for an over-bound file raises `skipped` too, so the rename
+ *     refusal gate widens instead of pretending the file is unseen.
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { Range } from 'vscode-languageserver-types';
 import {
   declarationsFromSource,
@@ -85,6 +94,7 @@ export interface WorkspaceSymbol {
 const MAX_FILES = 500; // indexed .esql files
 const MAX_FILE_BYTES = 256 * 1024; // larger files are skipped (real ones are < 15 KB)
 const MAX_DEPTH = 12;
+const MAX_ROOTS = 16; // workspace folders indexed at once
 const SKIP_DIRS = new Set([
   '.git',
   '.svn',
@@ -149,8 +159,44 @@ function filterSkip<T>(
   return list.filter((item) => !skip.has(uriOf(item)));
 }
 
+/** Push into a name-keyed view, opening the bucket when needed (scan + incremental share this). */
+function addToNameKeyed<T>(map: Map<string, T[]>, name: string, item: T): void {
+  const key = name.toUpperCase();
+  const bucket = map.get(key) ?? [];
+  bucket.push(item);
+  if (!map.has(key)) map.set(key, bucket);
+}
+
+/** Drop matching entries from a name-keyed view, empty buckets deleted so lookups stay O(1)-clean. */
+function removeFromNameKeyed<T>(map: Map<string, T[]>, name: string, drop: (item: T) => boolean): void {
+  const key = name.toUpperCase();
+  const bucket = map.get(key);
+  if (!bucket) return;
+  const kept = bucket.filter((item) => !drop(item));
+  if (kept.length === 0) map.delete(key);
+  else map.set(key, kept);
+}
+
+/**
+ * Path equality that ignores case only where the filesystem does (Windows).
+ * Roots and watch-event URIs reach us from different client code paths, and
+ * drive-letter/case drift must not make a real event look foreign.
+ */
+function samePath(a: string, b: string): boolean {
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+}
+
 export class WorkspaceIndex {
-  private root: string | undefined;
+  /**
+   * Every workspace folder the client reported (list.md 8), absolute paths,
+   * in client order, deduplicated. Overlapping folders are tolerated: the
+   * scan keys files by absolute path, so a file inside two roots indexes once.
+   */
+  private roots: string[] = [];
+  /** bumped whenever `roots` actually changes — see the generation guard on scans */
+  private rootsGeneration = 0;
   /** absolute path -> facts (files that read but failed map to empty facts is WRONG; they are simply absent + counted). */
   private files = new Map<string, FileFacts>();
   /**
@@ -162,34 +208,84 @@ export class WorkspaceIndex {
   private sharedVarsByName = new Map<string, SharedVarFact[]>();
   private scannedCount = 0;
   private skippedCount = 0;
-  private scanning: Promise<void> | undefined;
+  private scanning: { gen: number; promise: Promise<void> } | undefined;
 
-  setRoot(rootPath: string | undefined): void {
-    this.root = rootPath;
+  /** Replace the root list (single-root callers just pass one entry). */
+  setRoots(roots: string[]): void {
+    const next: string[] = [];
+    for (const r of roots) {
+      if (r && !next.includes(r)) next.push(r);
+    }
+    if (next.length !== this.roots.length || next.some((r, i) => r !== this.roots[i])) {
+      this.roots = next;
+      this.rootsGeneration++;
+    }
   }
 
+  /** @deprecated single-root alias for `setRoots`; kept for existing callers. */
+  setRoot(rootPath: string | undefined): void {
+    this.setRoots(rootPath ? [rootPath] : []);
+  }
+
+  /** Add one folder; false when already present or at the MAX_ROOTS cap. */
+  addRoot(rootPath: string): boolean {
+    if (this.roots.includes(rootPath)) return false;
+    if (this.roots.length >= MAX_ROOTS) return false;
+    this.roots.push(rootPath);
+    this.rootsGeneration++;
+    return true;
+  }
+
+  /** Remove one folder; false when it was not indexed. Path comparison is case-folded on Windows. */
+  removeRoot(rootPath: string): boolean {
+    const idx = this.roots.findIndex((r) => samePath(r, rootPath));
+    if (idx === -1) return false;
+    this.roots.splice(idx, 1);
+    this.rootsGeneration++;
+    return true;
+  }
+
+  rootPaths(): readonly string[] {
+    return this.roots;
+  }
+
+  hasRoot(): boolean {
+    return this.roots.length > 0;
+  }
+
+  /** The first root, or undefined — "is there a workspace" for boolean callers. */
   rootPath(): string | undefined {
-    return this.root;
+    return this.roots[0];
   }
 
   /**
    * Kick off (or repeat) the bounded scan. Never rejects; a root that cannot
    * be read leaves the index empty — features behave exactly as before the
    * index existed, which is the degradation path this project promises.
+   * Empty roots RESET the index: removing the last workspace folder must not
+   * leave its symbols behind.
    */
   rescan(): Promise<void> {
-    if (!this.root) return Promise.resolve();
-    if (!this.scanning) {
-      this.scanning = this.scanNow().finally(() => {
-        this.scanning = undefined;
-      });
+    if (this.roots.length === 0) {
+      if (!this.scanning) this.resetEmpty();
+      return Promise.resolve();
     }
-    return this.scanning;
+    if (!this.scanning || this.scanning.gen !== this.rootsGeneration) {
+      // Either no scan is in flight, or the roots changed while one was —
+      // that walk no longer matches the workspace, so start a fresh one and
+      // let the generation guard discard the stale result.
+      const gen = this.rootsGeneration;
+      const promise = this.scanNow(gen).finally(() => {
+        if (this.scanning?.gen === gen) this.scanning = undefined;
+      });
+      this.scanning = { gen, promise };
+    }
+    return this.scanning.promise;
   }
 
   /** Scan-completion promise for callers that must wait before trusting results. */
   whenSettled(): Promise<void> {
-    return this.scanning ?? Promise.resolve();
+    return this.scanning?.promise ?? Promise.resolve();
   }
 
   stats(): { files: number; skipped: number } {
@@ -265,53 +361,167 @@ export class WorkspaceIndex {
     return out;
   }
 
-  private async scanNow(): Promise<void> {
-    const root = this.root;
-    if (!root) return;
+  /**
+   * Apply one `workspace/didChangeWatchedFiles` event (list.md 7). LSP
+   * `FileChangeType`: Created = 1, Changed = 2, Deleted = 3. Returns whether
+   * the event touched the index — the server revalidates only then.
+   *
+   * The file is RE-READ from disk here; the point of the watcher is that the
+   * closed file's current bytes matter, so this never trusts the snapshot.
+   * An over-cap or unreadable file raises `skippedCount` instead of silently
+   * vanishing: consumers whose honesty depends on `skipped` (the rename
+   * refusal gate) then widen their refusal rather than over-trusting the
+   * index. `skippedCount` only resets on a full rescan, which is the
+   * conservative direction.
+   */
+  async applyWatchEvent(uri: string, type: number): Promise<boolean> {
+    if (!this.hasRoot() || !/\.esql$/i.test(uri)) return false;
+    let full: string;
+    try {
+      full = fileURLToPath(uri);
+    } catch {
+      return false; // a malformed URI is indistinguishable from "not ours"
+    }
+    if (!this.underRoots(full)) return false; // the client may watch more than we asked
+    // Never mutate while a walk is building a replacement map — it would be
+    // clobbered when the walk lands. The walk reads the same disk this event
+    // points at, so waiting costs the event's freshness nothing.
+    if (this.scanning) await this.scanning.promise;
+    const key = this.entryKey(full);
+    if (type === 3 /* Deleted */) {
+      if (key === undefined) return false;
+      this.removeEntry(key);
+      return true;
+    }
+    let text: string;
+    try {
+      const stat = await fs.promises.stat(full);
+      if (stat.size > MAX_FILE_BYTES) {
+        if (key !== undefined) this.removeEntry(key);
+        this.skippedCount++;
+        return true;
+      }
+      text = await fs.promises.readFile(full, 'utf8');
+    } catch {
+      // Gone or unreadable between event and read: treat as the removal the
+      // client would send next, and be conservative about the bounds — the
+      // scan's own read-failure path counts a skip for exactly this file too.
+      if (key !== undefined) this.removeEntry(key);
+      this.skippedCount++;
+      return true;
+    }
+    if (key !== undefined) this.removeEntry(key); // path spelling may differ
+    try {
+      this.addEntry(full, extractFileFacts(text, pathToFileURL(full).href));
+    } catch {
+      // A file must never take the index down with it — same rule as the scan.
+      this.skippedCount++;
+      return true;
+    }
+    return true;
+  }
+
+  private underRoots(full: string): boolean {
+    const f = path.resolve(full);
+    return this.roots.some((r) => {
+      const rel = path.relative(path.resolve(r), f);
+      return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+    });
+  }
+
+  /** The map key holding this path — exact first, then a Windows case match. */
+  private entryKey(full: string): string | undefined {
+    if (this.files.has(full)) return full;
+    if (process.platform !== 'win32') return undefined;
+    for (const k of this.files.keys()) if (samePath(k, full)) return k;
+    return undefined;
+  }
+
+  private removeEntry(key: string): void {
+    const facts = this.files.get(key);
+    this.files.delete(key);
+    if (!facts) return;
+    for (const s of facts.symbols) {
+      if (s.kind === 'routine')
+        removeFromNameKeyed(this.routinesByName, s.name, (e) => e.uri === facts.uri);
+    }
+    for (const v of facts.sharedVars)
+      removeFromNameKeyed(this.sharedVarsByName, v.name, (e) => e.uri === facts.uri);
+  }
+
+  private addEntry(full: string, facts: FileFacts): void {
+    this.files.set(full, facts);
+    for (const s of facts.symbols) {
+      if (s.kind !== 'routine') continue;
+      addToNameKeyed(this.routinesByName, s.name, s);
+    }
+    for (const v of facts.sharedVars) addToNameKeyed(this.sharedVarsByName, v.name, v);
+  }
+
+  private resetEmpty(): void {
+    this.files = new Map();
+    this.routinesByName = new Map();
+    this.sharedVarsByName = new Map();
+    this.scannedCount = 0;
+    this.skippedCount = 0;
+  }
+
+  private async scanNow(gen: number): Promise<void> {
+    const roots = [...this.roots];
+    if (roots.length === 0) return;
     const found = new Map<string, FileFacts>();
     let scanned = 0;
     let skipped = 0;
-    const stack: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
-    while (stack.length > 0 && scanned < MAX_FILES) {
-      const { dir, depth } = stack.pop()!;
-      let entries: fs.Dirent[];
-      try {
-        entries = await fs.promises.readdir(dir, { withFileTypes: true });
-      } catch {
-        continue; // unreadable subdirectory: the scan is bounded and partial
-      }
-      for (const entry of entries) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          if (SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
-          if (depth + 1 <= MAX_DEPTH) stack.push({ dir: full, depth: depth + 1 });
-          continue;
-        }
-        if (!entry.isFile() || !/\.esql$/i.test(entry.name)) continue;
-        if (scanned >= MAX_FILES) {
-          skipped++;
-          continue;
-        }
-        let text: string;
+    for (const root of roots) {
+      const stack: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
+      while (stack.length > 0 && scanned < MAX_FILES) {
+        const { dir, depth } = stack.pop()!;
+        let entries: fs.Dirent[];
         try {
-          const stat = await fs.promises.stat(full);
-          if (stat.size > MAX_FILE_BYTES) {
+          entries = await fs.promises.readdir(dir, { withFileTypes: true });
+        } catch {
+          continue; // unreadable subdirectory: the scan is bounded and partial
+        }
+        for (const entry of entries) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+            if (depth + 1 <= MAX_DEPTH) stack.push({ dir: full, depth: depth + 1 });
+            continue;
+          }
+          if (!entry.isFile() || !/\.esql$/i.test(entry.name)) continue;
+          if (found.has(full)) continue; // overlapping roots: the file is already indexed
+          if (scanned >= MAX_FILES) {
             skipped++;
             continue;
           }
-          text = await fs.promises.readFile(full, 'utf8');
-        } catch {
-          skipped++;
-          continue;
-        }
-        scanned++;
-        const uri = pathToFileURL(full).href;
-        try {
-          found.set(full, extractFileFacts(text, uri));
-        } catch {
-          // A file must never take the index down with it.
+          let text: string;
+          try {
+            const stat = await fs.promises.stat(full);
+            if (stat.size > MAX_FILE_BYTES) {
+              skipped++;
+              continue;
+            }
+            text = await fs.promises.readFile(full, 'utf8');
+          } catch {
+            skipped++;
+            continue;
+          }
+          scanned++;
+          const uri = pathToFileURL(full).href;
+          try {
+            found.set(full, extractFileFacts(text, uri));
+          } catch {
+            // A file must never take the index down with it.
+          }
         }
       }
+    }
+    if (gen !== this.rootsGeneration) {
+      // The workspace folders changed while this walk ran — its file set was
+      // assembled against roots that no longer describe the workspace. Drop
+      // it; whoever changed the roots has already queued a matching rescan.
+      return;
     }
     this.files = found;
     // Rebuild the name-keyed views atomically with the file map, so a lookup

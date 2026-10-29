@@ -55,6 +55,7 @@ import {
   ResponseError,
   ErrorCodes,
   MarkupKind,
+  DidChangeWatchedFilesNotification,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
@@ -72,6 +73,13 @@ import {
   wordAtPosition,
   modulesFromSource,
   schemaFromSource,
+  callTargetAt,
+  callSitesForName,
+  qualifierMatchesModule,
+  moduleOwnedRoutines,
+  routineTargetsFor,
+  routineSitesForAnchors,
+  unqualifiedUnguardedSites,
 } from './definitions';
 import { mergeSettings, unwrapSettings, EsqlSettings, DEFAULT_SETTINGS } from './settings';
 import {
@@ -99,9 +107,11 @@ const textDocuments = new TextDocuments<TextDocument>(TextDocument);
 let settings: EsqlSettings = DEFAULT_SETTINGS;
 
 /**
- * Cross-file view (ISSUES.md I-13): the bounded `.esql` scan under the
- * client's workspace root, consulted by the undeclared-variable check and
- * `workspace/symbol`. Empty and inert when no root was given.
+ * Cross-file view (ISSUES.md I-13): the bounded `.esql` scan under EVERY
+ * client workspace folder, consulted by the undeclared-variable check and
+ * `workspace/symbol`. Refreshed incrementally from watched-file events when
+ * the client supports them (list.md 7+8). Empty and inert when no root was
+ * given.
  */
 const workspaceIndex = new WorkspaceIndex();
 
@@ -139,6 +149,18 @@ let clientWantsSnippets = false;
 /** Whether the client accepts `documentChanges` in a WorkspaceEdit (rename
 * needs it for per-edit change annotations; `changes` stays the fallback). */
 let clientSupportsDocumentChanges = false;
+
+/**
+ * Whether the *client* accepts a dynamic `workspace/didChangeWatchedFiles`
+ * registration (list.md 7). Same discipline as `clientWantsSemanticTokensRefresh`:
+ * a server→client request the client never offered invites a `-32601` whose
+ * promise nobody catches, which killed the process once already (ISSUES.md
+ * I-14) — so ask only when the capability says asking is legal, and catch
+ * anyway.
+ */
+let clientWantsWatchedFiles = false;
+/** One registration per process; repeating it would re-prompt capable clients. */
+let watchedFilesRegistered = false;
 
 /**
  * Pending validation timers, one per document. This MUST be keyed by URI: with
@@ -226,7 +248,7 @@ function workspaceRoutineSig(s: WorkspaceSymbol): string {
 }
 
 function workspaceFacts(): { sharedVars: SharedVarFact[]; routines: WorkspaceSymbol[] } | undefined {
-  if (!workspaceIndex.rootPath()) return undefined;
+  if (!workspaceIndex.hasRoot()) return undefined;
   const sharedVars: SharedVarFact[] = [];
   const routines: WorkspaceSymbol[] = [];
   const openUris = new Set<string>();
@@ -277,7 +299,7 @@ function sharedNamesFromWorkspace(): ReadonlySet<string> | undefined {
  * exactly the deploy-time lie this check exists to prevent.
  */
 function routineNamesFromWorkspace(): ReadonlySet<string> | undefined {
-  if (!workspaceIndex.rootPath()) return undefined;
+  if (!workspaceIndex.hasRoot()) return undefined;
   if (workspaceIndex.stats().skipped > 0) return undefined;
   const facts = workspaceFacts();
   if (!facts) return undefined;
@@ -286,9 +308,19 @@ function routineNamesFromWorkspace(): ReadonlySet<string> | undefined {
 
 /** The word under the cursor exactly as the extractors see it (masked, quoted-aware). */
 function cursorWord(text: string, line: number, character: number): string | null {
-  const { lines, rawLines } = scan(text);
-  const at = wordAtPosition(lines, rawLines, line, character);
+  const { lines, rawLines, quotedTokens } = scan(text);
+  const at = wordAtPosition(lines, rawLines, line, character, quotedTokens);
   return at ? at.word : null;
+}
+
+/**
+ * The module qualifier of a CALL target under the cursor (issue 3 / issue 5):
+ * [] for anything that is not a qualified call's name segment, the spelled
+ * segments otherwise — the value every workspace lookup gets filtered by.
+ */
+function cursorQualifier(text: string, line: number, character: number): string[] {
+  const call = callTargetAt(text, line, character);
+  return call && call.cursorOnName && call.qualifier.length ? call.qualifier : [];
 }
 
 /** `file:///x/helper.esql` → `helper.esql` — the hover's human location line. */
@@ -303,11 +335,16 @@ function baseName(uri: string): string {
  * document itself answered NOTHING, so a same-file declaration shadows the
  * workspace exactly like a same-scope ESQL declaration shadows a SHARED one.
  */
-function workspaceDefinition(word: string, fromUri: string): Location[] {
+function workspaceDefinition(word: string, fromUri: string, qualifiedIn: string[] = []): Location[] {
   const out: Location[] = [];
+  // A qualified call (`CALL Sales.Helper(`) points at the module: a same-named
+  // routine in any OTHER module is a different symbol (issue 3 / issue 5).
   for (const r of lookupRoutine(word)) {
-    if (r.uri !== fromUri) out.push(Location.create(r.uri, r.range));
+    if (r.uri === fromUri) continue;
+    if (qualifiedIn.length && !qualifierMatchesModule(qualifiedIn, r.container)) continue;
+    out.push(Location.create(r.uri, r.range));
   }
+  if (qualifiedIn.length) return out; // SHARED names are never module-qualified
   for (const v of lookupSharedVar(word)) {
     if (v.uri !== fromUri) out.push(Location.create(v.uri, v.range));
   }
@@ -319,20 +356,34 @@ function workspaceDefinition(word: string, fromUri: string): Location[] {
  * the located facts — the hover promises what the index actually knows. The
  * `workspace —` prefix marks the path taken (the plan's assertion hook).
  */
-function workspaceHover(word: string, fromUri: string): Hover | null {
+function workspaceHover(word: string, fromUri: string, qualifiedIn: string[] = []): Hover | null {
   const md = (code: string, where: string): Hover => ({
     contents: {
       kind: MarkupKind.Markdown,
       value: '```esql\n' + code + '\n```\n\n*workspace — ' + where + '*',
     },
   });
-  for (const r of lookupRoutine(word)) {
-    if (r.uri === fromUri) continue;
-    return md(
-      workspaceRoutineSig(r),
-      `defined in ${baseName(r.uri)}${r.container ? ` (module ${r.container})` : ''}`
-    );
+  const candidates = lookupRoutine(word).filter(
+    (r) => r.uri !== fromUri && (!qualifiedIn.length || qualifierMatchesModule(qualifiedIn, r.container))
+  );
+  const where = (r: { container: string; uri: string; name: string }): string =>
+    `defined in ${baseName(r.uri)}${r.container ? ` (module ${r.container})` : ''}`;
+  if (candidates.length > 1) {
+    // Enhancement 36: several workspace routines share the name and the call
+    // does not spell a module — say so and show them all rather than silently
+    // presenting one as THE declaration.
+    const list = candidates.map((r) => `\n> - \`${workspaceRoutineSig(r)}\` — ${where(r)}`).join('');
+    return {
+      contents: {
+        kind: MarkupKind.Markdown,
+        value:
+          '```esql\n' + workspaceRoutineSig(candidates[0]) + '\n```\n\n*workspace — ' +
+          `${candidates.length} routines named ${word} (the call is not module-qualified):` + list + '*',
+      },
+    };
   }
+  if (candidates.length === 1) return md(workspaceRoutineSig(candidates[0]), where(candidates[0]));
+  if (qualifiedIn.length) return null; // a qualified miss does not fall through to SHARED names
   for (const v of lookupSharedVar(word)) {
     if (v.uri === fromUri) continue;
     return md(`DECLARE ${v.name} SHARED;`, `defined in ${baseName(v.uri)} (${v.detail})`);
@@ -371,7 +422,7 @@ async function workspaceOccurrences(
   const files = new Map<string, Range[]>();
   // No root: the visible world is one file, and that file's features never
   // ask (every caller gates on a SHARED/routine name, which needs the index).
-  if (!workspaceIndex.rootPath()) return { files, refusal: null };
+  if (!workspaceIndex.hasRoot()) return { files, refusal: null };
   await workspaceIndex.whenSettled();
   const { skipped } = workspaceIndex.stats();
   if (skipped > 0 && !allowStale) return { files, refusal: renameBoundRefusal(name, skipped) };
@@ -404,6 +455,56 @@ async function workspaceOccurrences(
     add(facts.uri, text);
   }
   return { files, refusal: null };
+}
+
+/**
+ * Live text of every visible workspace file (open buffers first, disk files
+ * re-read fresh), the same visible world `workspaceOccurrences` sweeps. For
+ * the reference shapes that need more than a word hit — a qualified CALL must
+ * be read as `Module.name(`, which the whole-word finder skips by design.
+ * Reads that fail are skipped: references tolerate incompleteness exactly as
+ * the occurrence sweep does (only RENAMES refuse).
+ */
+async function workspaceTexts(fromUri: string): Promise<Array<{ uri: string; text: string }>> {
+  const out: Array<{ uri: string; text: string }> = [];
+  if (!workspaceIndex.hasRoot()) return out;
+  await workspaceIndex.whenSettled();
+  for (const doc of textDocuments.all()) {
+    if (doc.uri !== fromUri) out.push({ uri: doc.uri, text: doc.getText() });
+  }
+  const openUris = new Set(textDocuments.keys());
+  for (const facts of workspaceIndex.factsFromDisk(openUris)) {
+    try {
+      out.push({ uri: facts.uri, text: fs.readFileSync(fileURLToPath(facts.uri), 'utf8') });
+    } catch {
+      // deleted or unreadable since the scan: the answer may miss it, and the
+      // references contract allows that (renames do not, see renameBoundRefusal)
+    }
+  }
+  return out;
+}
+
+/**
+ * The module owning the routine DECLARATION under the cursor, '' otherwise
+ * (issue 3/5): a module-owned routine is only callable across files through
+ * its qualifier, so its module name is the filter the workspace half needs
+ * when the cursor sits on the declaration rather than on a call site.
+ */
+function routineDeclModule(
+  text: string,
+  word: string,
+  line: number,
+  character: number,
+  analysis: DocAnalysis | undefined
+): string {
+  const routines = analysis?.routines.length ? analysis.routines : routinesFromSource(text);
+  for (const r of routines) {
+    if (r.name.toUpperCase() !== word.toUpperCase() || !r.moduleName) continue;
+    const s = r.range.start;
+    const e = r.range.end;
+    if (line === s.line && character >= s.character && character <= e.character) return r.moduleName;
+  }
+  return '';
 }
 
 /** The rename refusal for a workspace the bounded index could not fully read. */
@@ -439,16 +540,70 @@ async function crossFileReferences(
   fromUri: string,
   localRanges: Range[],
   includeDeclaration: boolean,
-  hereSharedOrRoutine: boolean
+  hereSharedOrRoutine: boolean,
+  qualifiedIn: string[] = [],
+  declaredModule = ''
 ): Promise<Location[]> {
+  // A qualified call names its module: candidates outside that module are
+  // different symbols, and SHARED variables are never module-qualified.
+  const routines = lookupRoutine(word).filter(
+    (r) => r.uri !== fromUri && (!qualifiedIn.length || qualifierMatchesModule(qualifiedIn, r.container))
+  );
+  if (qualifiedIn.length) {
+    // A qualified CALL resolves by module + name, so the whole-word workspace
+    // sweep is WRONG here — it would report every same-named word in other
+    // modules as a reference. This file's half is already qualifier-resolved
+    // (referencesAt); the remaining honest answer is the declarations the
+    // qualifier names, and a uses-only request narrows that to nothing.
+    if (!includeDeclaration) return [];
+    return routines.map((r) => Location.create(r.uri, r.range));
+  }
   const vars = lookupSharedVar(word).filter((v) => v.uri !== fromUri);
-  const routines = lookupRoutine(word).filter((r) => r.uri !== fromUri);
   if (vars.length === 0 && routines.length === 0 && !hereSharedOrRoutine) return [];
   // A ROUTINE answered by the file itself (while a sibling ALSO declares it)
   // stays file-local (local shadow, same rule as definition); a SHARED name
   // always sweeps the workspace.
   const localRoutineAnswer = routines.length > 0 && vars.length === 0 && localRanges.length > 0;
-  if (localRoutineAnswer) return [];
+  if (localRoutineAnswer && !declaredModule) return [];
+  if (localRoutineAnswer) {
+    // The cursor is on a MODULE-OWNED routine declaration while a sibling
+    // declares the same name: the whole-word sweep would report the sibling's
+    // unrelated occurrences. The honest cross-file answer is what
+    // routineSitesForAnchors computes per file — `Module.name(` spellings
+    // naming the cursor's module, unqualified uses inside it, and unqualified
+    // uses outside every declaring module, which are ambiguous between the
+    // same-named routines (the same rule that makes definition and hover show
+    // all of them). Never the sibling's declaration or its qualified uses.
+    const hits: Location[] = [];
+    const seen = new Set<string>();
+    const dummy = Range.create(0, 0, 0, 0);
+    for (const { uri, text } of await workspaceTexts(fromUri)) {
+      for (const r of routineSitesForAnchors(
+        text,
+        [{ name: word, range: dummy, moduleName: declaredModule }],
+        undefined,
+        includeDeclaration
+      )) {
+        const key = `${uri}|${r.start.line}:${r.start.character}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        hits.push(Location.create(uri, r));
+      }
+    }
+    if (includeDeclaration) {
+      // the same module's declaration of the routine in ANOTHER file (module
+      // fragments); the routines list already excludes `fromUri`
+      for (const r of routines) {
+        if (!qualifierMatchesModule([declaredModule], r.container)) continue;
+        const key = `${r.uri}|${r.range.start.line}:${r.range.start.character}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        hits.push(Location.create(r.uri, r.range));
+      }
+    }
+    hits.sort((a, b) => (a.uri === b.uri ? 0 : a.uri < b.uri ? -1 : 1));
+    return hits;
+  }
 
   const out: Location[] = [];
   const seen = new Set<string>();
@@ -604,6 +759,41 @@ function requestSemanticTokensRefresh(): void {
   });
 }
 
+/** A `file:` URI as an absolute path; undefined for VFS schemes and malformed URIs. */
+function uriToFsPath(uri: string | undefined | null): string | undefined {
+  if (!uri || !/^file:\/\//i.test(uri)) return undefined;
+  try {
+    return fileURLToPath(uri);
+  } catch {
+    return undefined; // a malformed file: URI is indistinguishable from no workspace
+  }
+}
+
+/** Cap on simultaneously indexed workspace folders; more is a mis-set-up editor. */
+const MAX_ROOTS = 16;
+
+/**
+ * Every workspace folder, in client order (list.md 8): `workspaceFolders` is
+ * the modern field and carries ALL roots — the old code read only `[0]`, so a
+ * multi-folder editor workspace silently lost its other projects. The
+ * deprecated `rootUri`/`rootPath` fields answer for single-root clients.
+ * Non-`file:` schemes get no index; every feature then behaves exactly as it
+ * did before the index existed.
+ */
+function collectRoots(params: InitializeParams): string[] {
+  const out: string[] = [];
+  const push = (p: string | undefined): void => {
+    if (p && !out.includes(p) && out.length < MAX_ROOTS) out.push(p);
+  };
+  for (const folder of params.workspaceFolders ?? []) push(uriToFsPath(folder.uri));
+  if (out.length === 0) push(uriToFsPath(params.rootUri));
+  if (out.length === 0 && params.rootPath) {
+    // The pre-3.1 field is inconsistently a URI or a plain path across clients.
+    push(/^file:\/\//i.test(params.rootPath) ? uriToFsPath(params.rootPath) : params.rootPath);
+  }
+  return out;
+}
+
 connection.onInitialize((params: InitializeParams): InitializeResult => {
   settings = mergeSettings(unwrapSettings(params.initializationOptions));
   clientWantsSemanticTokensRefresh =
@@ -614,21 +804,26 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
     params.capabilities?.textDocument?.completion?.completionItem?.snippetSupport === true;
   clientSupportsDocumentChanges =
     params.capabilities?.workspace?.workspaceEdit?.documentChanges === true;
-  // Workspace root for the I-13 index: `workspaceFolders` is the modern field,
-  // `rootUri` the deprecated one — clients that send both agree, so whichever
-  // arrives wins. Non-`file:` schemes (a VFS workspace) get no index; every
-  // feature then behaves exactly as it did before the index existed.
-  const root = params.workspaceFolders?.[0]?.uri ?? params.rootUri ?? undefined;
-  if (root && /^file:\/\//i.test(root)) {
-    try {
-      workspaceIndex.setRoot(fileURLToPath(root));
-    } catch {
-      // A malformed file: URI is indistinguishable from no workspace.
-    }
-  }
+  clientWantsWatchedFiles =
+    params.capabilities?.workspace?.didChangeWatchedFiles?.dynamicRegistration === true;
+  // Truthy, mirroring the library's own dispatch-building condition: it
+  // creates the emitter for any truthy value, so installing on the same test
+  // means we can never touch the throwing getter.
+  const clientReportsFolders = !!params.capabilities?.workspace?.workspaceFolders;
+  // Workspace roots for the I-13 index — ALL folders, not just the first.
+  workspaceIndex.setRoots(collectRoots(params));
   connection.console.info(
-    `esql-lsp: initialized (diagnostics: ${settings.diagnostics.enabled ? 'on' : 'off'})`
+    `esql-lsp: initialized (diagnostics: ${settings.diagnostics.enabled ? 'on' : 'off'}` +
+      (workspaceIndex.hasRoot() ? `, ${workspaceIndex.rootPaths().length} workspace folder(s)` : '') +
+      ')'
   );
+  // The folder-change listener exists only once the client has proven it can
+  // send the event: with the pinned library, touching the getter BEFORE that
+  // capability is seen throws outright (the feature builds its dispatch at
+  // initialize time), so this is the earliest legal installation point.
+  if (clientReportsFolders) {
+    connection.workspace.onDidChangeWorkspaceFolders(handleWorkspaceFoldersChange);
+  }
   return {
     capabilities: {
       textDocumentSync: {
@@ -674,16 +869,49 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         // The bundled ServerCapabilities['workspace'] type predates the
         // semanticTokens section (LSP 3.16), so it needs the cast.
         semanticTokens: { refreshSupport: clientWantsSemanticTokensRefresh },
+        // Multi-root (list.md 8): this server indexes EVERY folder and answers
+        // `workspace/didChangeWorkspaceFolders`, so it advertises folder
+        // changes — but only to a client that reported folder support;
+        // rootUri-only clients get no promise they cannot exercise.
+        ...(clientReportsFolders ? { workspaceFolders: { supported: true, workspaceChanges: true } } : {}),
+        // Consumes `workspace/didChangeWatchedFiles` (list.md 7) via the
+        // dynamic registration below; advertised only when the client offered
+        // it, matching how semanticTokens.refreshSupport is gated.
+        didChangeWatchedFiles: { dynamicRegistration: clientWantsWatchedFiles },
       } as unknown as NonNullable<InitializeResult['workspace']>,
     },
   };
 });
+
+/**
+ * Ask the client to watch `.esql` files (list.md 7), once. Mirrors
+ * `requestSemanticTokensRefresh` exactly: only after the client finished
+ * initializing, only when its capability makes the request legal, and the
+ * promise is caught either way — a client that declines (or dies mid-request)
+ * costs nothing but the freshness, because the initial scan plus live buffers
+ * keeps every feature working the way it did before watchers existed.
+ */
+function registerWatchedFiles(): void {
+  if (watchedFilesRegistered || !clientIsReady || !clientWantsWatchedFiles) return;
+  if (!workspaceIndex.hasRoot()) return;
+  watchedFilesRegistered = true;
+  void connection.client
+    .register(DidChangeWatchedFilesNotification.type, {
+      watchers: [{ globPattern: '**/*.esql', kind: 1 | 2 | 4 /* Created|Changed|Deleted */ }],
+    })
+    .catch((err) => {
+      connection.console.info(
+        `esql-lsp: didChangeWatchedFiles registration declined by the client: ${String(err)}`
+      );
+    });
+}
 
 connection.onNotification('initialized', () => {
   // From here on a server→client request is legal; the grammar may well have
   // loaded before this arrived, so this is where the owed refresh actually goes.
   clientIsReady = true;
   requestSemanticTokensRefresh();
+  registerWatchedFiles();
   // Re-validate any document already open (some clients open before initialized).
   revalidateAll();
   // The I-13 scan runs after the handshake so it can never block the first
@@ -691,7 +919,7 @@ connection.onNotification('initialized', () => {
   // names in hand — the moment `FailureCount` stops being reported as
   // undeclared. An open document edited before the scan finishes may flash the
   // false positive first; the rescan re-publishes it away.
-  if (workspaceIndex.rootPath()) {
+  if (workspaceIndex.hasRoot()) {
     void workspaceIndex.rescan().then(() => {
       const s = workspaceIndex.stats();
       connection.console.info(
@@ -701,6 +929,69 @@ connection.onNotification('initialized', () => {
     });
   }
 });
+
+/**
+ * Closed-file freshness (list.md 7): `workspace/didChangeWatchedFiles` applied
+ * straight to the index. The handler never throws — an async notification
+ * handler whose promise rejects is how the process died once before (I-14).
+ * Revalidation follows only when an event actually changed the index, so a
+ * client that saves through temp files and touches nothing relevant does not
+ * cause a re-publish storm.
+ */
+connection.onDidChangeWatchedFiles(async ({ changes }) => {
+  if (!workspaceIndex.hasRoot()) return;
+  try {
+    let applied = 0;
+    for (const change of changes) {
+      if (await workspaceIndex.applyWatchEvent(change.uri, change.type)) applied++;
+    }
+    if (applied === 0) return;
+    const s = workspaceIndex.stats();
+    connection.console.info(
+      `esql-lsp: watched files — ${applied} change(s) applied, ${s.files} .esql files indexed`
+    );
+    revalidateAll();
+  } catch (err) {
+    connection.console.error(`esql-lsp: watched-files handling failed: ${String(err)}`);
+  }
+});
+
+/**
+ * Multi-root changes (list.md 8): the client added and/or removed workspace
+ * folders at runtime. The index roots follow the event exactly, then a
+ * bounded rescan refreshes the facts — the same post-scan revalidation the
+ * initial scan gets. Removing the LAST folder clears the index; features
+ * degrade to open-buffers-only, which is the no-workspace behaviour.
+ */
+function handleWorkspaceFoldersChange(event: {
+  added: ReadonlyArray<{ uri: string; name: string }>;
+  removed: ReadonlyArray<{ uri: string; name: string }>;
+}): void {
+  const before = workspaceIndex.rootPaths().length;
+  for (const folder of event.removed) {
+    const p = uriToFsPath(folder.uri);
+    if (p) workspaceIndex.removeRoot(p);
+  }
+  for (const folder of event.added) {
+    const p = uriToFsPath(folder.uri);
+    if (p) workspaceIndex.addRoot(p);
+  }
+  const after = workspaceIndex.rootPaths().length;
+  if (after === before) return; // nothing of ours moved (VFS folders, duplicates)
+  connection.console.info(`esql-lsp: workspace folders changed — ${after} folder(s) indexed`);
+  if (after > 0) {
+    void workspaceIndex.rescan().then(() => {
+      registerWatchedFiles(); // the FIRST folder may only arrive this way
+      const s = workspaceIndex.stats();
+      connection.console.info(
+        `esql-lsp: workspace index — ${s.files} .esql files indexed, ${s.skipped} skipped`
+      );
+      revalidateAll();
+    });
+  } else {
+    void workspaceIndex.rescan().then(() => revalidateAll()); // clears the index
+  }
+}
 
 // Runtime settings updates (push-style). Clients send either the section
 // keyed by its name ({ esql: {...} }) or the settings object itself; both are
@@ -869,7 +1160,7 @@ connection.onCompletion((params: CompletionParams): CompletionItem[] => {
   // the reading untrustworthy — every one of those keeps today's line-prefix
   // answer, which is the degradation promise, not an accident.
   const clausePrefix = pd.tree
-    ? clausePrefixAt(pd.tree, scan(text).masked, doc.offsetAt(pos)) ?? undefined
+    ? clausePrefixAt(pd.tree, scan(text).masked, doc.offsetAt(pos), text) ?? undefined
     : undefined;
   const declarations = analysis ? analysis.declaredNames : declarationsFromSource(text);
   // C-1/C-2: the file's own routines plus the workspace's sibling routines and
@@ -909,7 +1200,7 @@ connection.onHover((params: HoverParams): Hover | null => {
   // G-2: hover a CALL target or SHARED name that lives in a sibling file.
   const word = cursorWord(text, position.line, position.character);
   if (!word) return null;
-  return workspaceHover(word, doc.uri);
+  return workspaceHover(word, doc.uri, cursorQualifier(text, position.line, position.character));
 });
 
 connection.onDocumentSymbol(
@@ -940,7 +1231,7 @@ connection.onDefinition((params: DefinitionParams): Location[] | null => {
   // G-1: nothing in this file — sibling routines and SHARED variables next.
   const word = cursorWord(text, position.line, position.character);
   if (!word) return null;
-  const cross = workspaceDefinition(word, doc.uri);
+  const cross = workspaceDefinition(word, doc.uri, cursorQualifier(text, position.line, position.character));
   return cross.length ? cross : null;
 });
 
@@ -969,13 +1260,19 @@ connection.onReferences(async (params: ReferenceParams): Promise<Location[] | nu
   if (word) {
     const here = renameTargetAt(text, position, analysis);
     const hereSharedOrRoutine = !!here && (here.shared || here.kind === 'routine');
+    const qualifiedIn = cursorQualifier(text, position.line, position.character);
+    const declaredModule = qualifiedIn.length
+      ? ''
+      : routineDeclModule(text, word, position.line, position.character, analysis);
     const local = new Set(out.map((l) => `${l.range.start.line}:${l.range.start.character}`));
     for (const loc of await crossFileReferences(
       word,
       doc.uri,
       ranges,
       includeDeclaration,
-      hereSharedOrRoutine
+      hereSharedOrRoutine,
+      qualifiedIn,
+      declaredModule
     )) {
       const key = `${loc.range.start.line}:${loc.range.start.character}`;
       if (loc.uri !== doc.uri || !local.has(key)) out.push(loc);
@@ -1031,8 +1328,8 @@ function renameTargetAt(
   position: Position,
   doc: DocAnalysis | undefined
 ): RenameTarget | null {
-  const { lines, rawLines } = scan(text);
-  const at = wordAtPosition(lines, rawLines, position.line, position.character);
+  const { lines, rawLines, quotedTokens } = scan(text);
+  const at = wordAtPosition(lines, rawLines, position.line, position.character, quotedTokens);
   if (!at) return null;
   const eq = (n: string) => n.toUpperCase() === at.word.toUpperCase();
   const routines = doc ? doc.routines : routinesFromSource(text);
@@ -1108,9 +1405,10 @@ connection.onPrepareRename(
     const position = viewPosition(doc, params.position);
     if (!position) return null;
     const text = doc.getText();
-    const target = renameTargetAt(text, position, parsedDocument(doc.uri, text).analysis ?? undefined);
+    const analysis = parsedDocument(doc.uri, text).analysis ?? undefined;
+    const target = renameTargetAt(text, position, analysis);
     if (!target) return null; // the cursor is not on a declared name — greyed out, no error dialog
-    const refusal = await renameRefusal(target);
+    const refusal = await renameRefusal(target, { uri: doc.uri, text, position, analysis });
     if (refusal) return refusal;
     // Placeholder = the BARE name (quoted declarations record their name
     // unquoted in both paths), so the client's input box prefills a name the
@@ -1134,7 +1432,7 @@ connection.onRenameRequest(
           'parameter or routine name'
       );
     }
-    const refusal = await renameRefusal(target);
+    const refusal = await renameRefusal(target, { uri: doc.uri, text, position, analysis });
     if (refusal) return refusal;
 
     // New-name validation, against the SAME name universe the rename edits:
@@ -1175,7 +1473,11 @@ connection.onRenameRequest(
     // decided (a root exists; without one this file is the entire visible
     // world, so the file-local edit is complete — task 15's rule, kept).
     const sweeping =
-      workspaceIndex.rootPath() !== undefined && (target.shared || target.kind === 'routine');
+      workspaceIndex.hasRoot() && (target.shared || target.kind === 'routine');
+    // The module a routine rename is anchored on ('' for variables,
+    // document-level routines and ambiguous cursors — all pinned paths).
+    const anchorModule =
+      target.kind === 'routine' ? routineRenameAnchor(text, position, analysis).module : '';
     if (sweeping && upper !== target.name.toUpperCase()) {
       // The workspace half of the collision rule: SHARED `Counter` renamed to a
       // name a SIBLING declares SHARED (or a routine name a sibling declares)
@@ -1217,7 +1519,38 @@ connection.onRenameRequest(
     // (the scan is pattern-based by construction). This file keeps
     // referencesAt's scope-aware ranges from above.
     const crossFiles: string[] = [];
-    if (sweeping) {
+    if (sweeping && anchorModule) {
+      // A module-owned routine (Enh 17): the sweep is qualification-filtered,
+      // never name-blind — `Module.name(` spellings naming the module,
+      // unqualified sites inside it, and the module's declarations in files
+      // that carry a fragment of it. A sibling module's same-named routine
+      // (and its uses) are a DIFFERENT symbol and stay untouched; the
+      // ambiguous-name hazard was already refused above.
+      const dummy = Range.create(0, 0, 0, 0);
+      const upper = target.name.toUpperCase();
+      const modUpper = anchorModule.toUpperCase();
+      for (const f of await workspaceTexts(doc.uri)) {
+        const at: Range[] = [];
+        const seenAt = new Set<string>();
+        const addAt = (r: Range) => {
+          const k = `${r.start.line}:${r.start.character}`;
+          if (seenAt.has(k)) return;
+          seenAt.add(k);
+          at.push(r);
+        };
+        for (const r of routineSitesForAnchors(f.text, [{ name: target.name, range: dummy, moduleName: anchorModule }])) {
+          addAt(r);
+        }
+        for (const r of routinesFromSource(f.text)) {
+          if (r.name.toUpperCase() === upper && r.moduleName && r.moduleName.toUpperCase() === modUpper) {
+            addAt(r.range);
+          }
+        }
+        if (!at.length) continue;
+        changes.set(f.uri, at.map((r) => ({ range: r, newText: params.newName })));
+        crossFiles.push(f.uri);
+      }
+    } else if (sweeping) {
       const scan = await workspaceOccurrences(target.name, false);
       if (scan.refusal) return scan.refusal;
       for (const [uri, at] of scan.files) {
@@ -1238,8 +1571,12 @@ connection.onRenameRequest(
       ? `esql-lsp: renamed '${target.name}' in ${crossFiles.length + 1} workspace files. ACE ` +
         `keeps SHARED variables visible application-wide — files outside this workspace ` +
         `may still use '${target.name}'.`
-      : `esql-lsp: renamed '${target.name}' in ${crossFiles.length + 1} workspace files. The ` +
-        `application may have files outside this workspace that still call '${target.name}'.`;
+      : anchorModule
+        ? `esql-lsp: renamed '${target.name}' in ${crossFiles.length + 1} workspace files, ` +
+          `module-scoped: only uses resolving to ${anchorModule}.${target.name} changed. Files ` +
+          `outside this workspace may still call '${anchorModule}.${target.name}'.`
+        : `esql-lsp: renamed '${target.name}' in ${crossFiles.length + 1} workspace files. The ` +
+          `application may have files outside this workspace that still call '${target.name}'.`;
     connection.window.showInformationMessage(scopeNote);
     if (!clientSupportsDocumentChanges) return { changes: Object.fromEntries(changes) };
     return {
@@ -1264,7 +1601,91 @@ connection.onRenameRequest(
  * from `renameTargetAt` instead: modules, schemas, namespace aliases,
  * undeclared names, built-ins, path elements.
  */
-async function renameRefusal(target: RenameTarget): Promise<ResponseError<void> | null> {
+/**
+ * The routine declaration(s) a rename cursor resolves to, and the module
+ * name when that resolution is a SINGLE module-owned routine ('' otherwise).
+ * Same resolution rules as definition/references/hover (routineTargetsFor),
+ * which is the point: rename must edit exactly what find-references showed.
+ */
+function routineRenameAnchor(
+  text: string,
+  position: Position,
+  analysis: DocAnalysis | undefined
+): { count: number; module: string } {
+  const { lines, rawLines, quotedTokens } = scan(text);
+  const at = wordAtPosition(lines, rawLines, position.line, position.character, quotedTokens);
+  if (!at) return { count: 0, module: '' };
+  const targets = routineTargetsFor(text, position.line, position.character, at.word, at.range, analysis);
+  if (!targets.length) return { count: 0, module: '' };
+  if (targets.length > 1) return { count: targets.length, module: '' };
+  return { count: 1, module: targets[0].moduleName ?? '' };
+}
+
+/**
+ * Enhancement 17 (issue 2's rename half, module edition): renaming a
+ * MODULE-OWNED routine by workspace name would rewrite a same-named sibling
+ * in another module — a different symbol — and any bare `name(` call site
+ * resolves ambiguously, so renaming ONE routine silently retargets it at
+ * another. Refuse exactly when BOTH conditions hold; otherwise the sweep
+ * below is qualification-filtered, never name-blind.
+ */
+async function moduleRoutineRenameRefusal(
+  name: string,
+  uri: string,
+  text: string,
+  position: Position,
+  analysis: DocAnalysis | undefined
+): Promise<ResponseError<void> | null> {
+  const anchor = routineRenameAnchor(text, position, analysis);
+  if (!anchor.count) return null; // not a routine word: the existing rules decide
+  if (anchor.count > 1) {
+    return new ResponseError(
+      ErrorCodes.InvalidParams,
+      `esql-lsp: cannot rename '${name}' from an ambiguous call — ${anchor.count} routines ` +
+        `share this name and the call spells no module. Place the cursor on the DECLARATION ` +
+        `of the routine you mean and rename it there.`
+    );
+  }
+  if (!anchor.module) return null; // a document-level routine keeps the pinned workspace sweep
+  const upper = name.toUpperCase();
+  const module = anchor.module.toUpperCase();
+  const rivals: string[] = [];
+  const bare: string[] = [];
+  const here =
+    analysis && analysis.routines.length ? analysis.routines : routinesFromSource(text);
+  for (const r of here) {
+    if (r.name.toUpperCase() !== upper) continue;
+    if (r.moduleName && r.moduleName.toUpperCase() === module) continue; // our module's own (a fragment included)
+    rivals.push(`${baseName(uri)} line ${r.range.start.line + 1}`);
+  }
+  for (const r of unqualifiedUnguardedSites(text, name)) bare.push(`${baseName(uri)} line ${r.start.line + 1}`);
+  if (workspaceIndex.hasRoot()) {
+    for (const f of await workspaceTexts(uri)) {
+      for (const r of routinesFromSource(f.text)) {
+        if (r.name.toUpperCase() !== upper) continue;
+        if (r.moduleName && r.moduleName.toUpperCase() === module) continue;
+        rivals.push(`${baseName(f.uri)} line ${r.range.start.line + 1}`);
+      }
+      for (const r of unqualifiedUnguardedSites(f.text, name)) {
+        bare.push(`${baseName(f.uri)} line ${r.start.line + 1}`);
+      }
+    }
+  }
+  if (!rivals.length || !bare.length) return null;
+  const list = (xs: string[]) => xs.slice(0, 3).join(', ') + (xs.length > 3 ? ', …' : '');
+  return new ResponseError(
+    ErrorCodes.InvalidParams,
+    `esql-lsp: cannot rename '${name}' — it is also declared outside module ${anchor.module} ` +
+      `(${list(rivals)}) and ${bare.length} unqualified call site(s) (${list(bare)}) could ` +
+      `resolve to either routine. Qualify those calls as '${anchor.module}.${name}(' first, ` +
+      `or rename only a name no other module declares.`
+  );
+}
+
+async function renameRefusal(
+  target: RenameTarget,
+  ctx?: { uri: string; text: string; position: Position; analysis: DocAnalysis | undefined }
+): Promise<ResponseError<void> | null> {
   // `Main()` is not a user-chosen name: the ACE runtime calls exactly that
   // routine in every compute module (12.0.x: a module "must contain a
   // Main() function"). Renaming it is never what the user wants, in any
@@ -1276,10 +1697,23 @@ async function renameRefusal(target: RenameTarget): Promise<ResponseError<void> 
         'compute module; renaming it makes the module unexecutable'
     );
   }
+  // Module-name ambiguity first (Enh 17): this hazard exists inside ONE file
+  // too (two modules, one name), so it is checked whether or not a root makes
+  // the rename workspace-wide.
+  if (ctx && target.kind === 'routine') {
+    const mod = await moduleRoutineRenameRefusal(
+      target.name,
+      ctx.uri,
+      ctx.text,
+      ctx.position,
+      ctx.analysis
+    );
+    if (mod) return mod;
+  }
   // Without a root this file is the whole visible world: even a SHARED
   // rename is complete here (task 15's rule, kept). A file-scope variable
   // never reaches a second file in either world.
-  if (!workspaceIndex.rootPath()) return null;
+  if (!workspaceIndex.hasRoot()) return null;
   if (target.kind === 'variable' && !target.shared) return null;
   // SHARED / routine with a root: the edit goes workspace-wide, so the
   // scan's bounds are the rename's bounds. A scan that SKIPPED files could

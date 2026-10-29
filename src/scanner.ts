@@ -15,6 +15,28 @@
 
 type State = 'code' | 'line-comment' | 'block-comment' | 'sq-string' | 'dq-string';
 
+/**
+ * A double-quoted ESQL identifier seen by the scanner as a first-class token
+ * (list.md enhancement 20): where it sits AND what it names, normalized. In
+ * ESQL `"…"` is always a quoted identifier (strings are `'…'`), so every
+ * closed dq-string span is one. Consumers get the IDENTIFIER — a `"…"`
+ * inside a comment or a `'…'` string never appears here, and `""` escapes
+ * are collapsed exactly once (the old raw-line regexes got both wrong).
+ */
+export interface QuotedToken {
+  /** The named thing, quotes removed, `""` → `"` (unquoteESQLName). */
+  value: string;
+  /** Row of the OPENING quote, client line conventions (linesOf). */
+  line: number;
+  /** Column of the opening quote. */
+  startCol: number;
+  /** Column just after the CLOSING quote. */
+  endCol: number;
+  /** Raw string-index span including the quotes: [from, to). */
+  from: number;
+  to: number;
+}
+
 export interface ScanResult {
   /** Same length and line structure as the input, comments/strings blanked. */
   masked: string;
@@ -22,6 +44,8 @@ export interface ScanResult {
   lines: string[];
   /** The *unmasked* input, split the same way — for quoted names the mask blanks. */
   rawLines: string[];
+  /** Every complete `"…"` identifier span, in source order. */
+  quotedTokens: QuotedToken[];
 }
 
 /**
@@ -42,6 +66,14 @@ export function linesOf(text: string): string[] {
 export function scan(source: string): ScanResult {
   const out: string[] = new Array(source.length);
   let state: State = 'code';
+  // Row accounting with linesOf's convention ('\n', or '\r' not before '\n')
+  // so token columns are the columns an LSP client counts.
+  let row = 0;
+  let rowStart = 0;
+  let qFrom = -1; // start of the open "…" identifier span, -1 outside one
+  let qLine = 0;
+  let qCol = 0;
+  const quotedTokens: QuotedToken[] = [];
 
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
@@ -64,6 +96,9 @@ export function scan(source: string): ScanResult {
           state = 'sq-string';
         } else if (c === '"') {
           out[i] = ' ';
+          qFrom = i;
+          qLine = row;
+          qCol = i - rowStart;
           state = 'dq-string';
         } else {
           out[i] = c;
@@ -100,6 +135,7 @@ export function scan(source: string): ScanResult {
         if (c === '\n' || c === '\r') {
           // ESQL string literals do not span lines; recover defensively.
           out[i] = c;
+          qFrom = -1; // an unterminated "… is not an identifier token
           state = 'code';
         } else if (c === quote && n === quote) {
           // Escaped quote ('' or "").
@@ -108,6 +144,18 @@ export function scan(source: string): ScanResult {
           i++;
         } else if (c === quote) {
           out[i] = ' ';
+          if (quote === '"' && qFrom >= 0) {
+            const raw = source.slice(qFrom, i + 1);
+            quotedTokens.push({
+              value: unquoteESQLName(raw),
+              line: qLine,
+              startCol: qCol,
+              endCol: i + 1 - rowStart,
+              from: qFrom,
+              to: i + 1,
+            });
+          }
+          qFrom = -1;
           state = 'code';
         } else {
           out[i] = ' ';
@@ -115,10 +163,15 @@ export function scan(source: string): ScanResult {
         break;
       }
     }
+
+    if (c === '\n' || (c === '\r' && n !== '\n')) {
+      row++;
+      rowStart = i + 1;
+    }
   }
 
   const masked = out.join('');
-  return { masked, lines: linesOf(masked), rawLines: linesOf(source) };
+  return { masked, lines: linesOf(masked), rawLines: linesOf(source), quotedTokens };
 }
 
 /**

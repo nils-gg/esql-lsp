@@ -20,6 +20,7 @@ import { linesOf, scan, unquoteESQLName } from './scanner';
 import { ESQL_KEYWORDS } from './data/esqlData';
 import { didYouMean } from './suggest';
 import { bareTargetsFromSource, declarationsFromSource, routinesFromSource } from './definitions';
+import { byteOffsetsFor, setTreePositionEncoding } from './positions';
 
 /** Minimal structural view of a tree-sitter node (avoids pulling the
  *  runtime's types into the server's compile). */
@@ -271,6 +272,7 @@ async function doInit(): Promise<boolean> {
     const path = require('path');
     const scm = fs.readFileSync(path.join(located.dir, 'queries', 'highlights.scm'), 'utf8');
     highlightsQuery = new ParserClass.Query(runtimeLanguage, scm);
+    probeTreePositionEncoding();
     return true;
   } catch (err) {
     // stderr, never stdout (stdio carries the LSP protocol).
@@ -284,6 +286,59 @@ async function doInit(): Promise<boolean> {
 
 export function grammarReady(): boolean {
   return runtimeParser !== null && runtimeLanguage !== null;
+}
+
+/**
+ * Measure what THIS binding reports in (positions.ts / list.md issue 1):
+ * parse a line holding CJK and emoji before a known identifier, then compare
+ * that identifier's `startIndex` and `startPosition.column` to the UTF-16
+ * and UTF-8 candidates. node-tree-sitter 0.25.1 measures as utf16-index +
+ * byte-column — two different spaces inside one node — which is exactly the
+ * trap this probe exists to catch, on every binding, at startup.
+ */
+function probeTreePositionEncoding(): void {
+  try {
+    const src = "SET a = '\u4f60\u597d\ud83d\ude00'; SET bb = 2;";
+    // Measure the parser documents are ACTUALLY parsed with: several native
+    // tree-sitter libraries can be loaded in one process (the runtime
+    // package, the grammar's bundled copy) and they may disagree.
+    const tree: any = runtimeParser.parse(src, undefined);
+    const wantIdx = src.indexOf('bb = 2');
+    const idxUtf8 = Buffer.byteLength(src.slice(0, wantIdx), 'utf8');
+    const colUtf16 = wantIdx; // single-line document
+    const colUtf8 = Buffer.byteLength(src.slice(0, wantIdx), 'utf8');
+    let start = -1;
+    let column = -1;
+    // Manual stack walk over children: the cursor API differs between the
+    // native tree-sitter copies that may load, plain node access does not.
+    const stack: any[] = [tree.rootNode];
+    while (stack.length) {
+      const n = stack.pop();
+      if (n.type === 'identifier' && n.text === 'bb') {
+        start = n.startIndex;
+        column = n.startPosition.column;
+        break;
+      }
+      for (let c = n.childCount - 1; c >= 0; c--) {
+        const ch = n.children[c];
+        if (ch) stack.push(ch);
+      }
+    }
+    if (start >= 0) {
+      const indexes = start === idxUtf8 && idxUtf8 !== wantIdx ? 'utf8' : 'utf16';
+      let byteCols: boolean;
+      if (column === colUtf8 && colUtf8 !== colUtf16) byteCols = true;
+      else if (column === colUtf16) byteCols = false;
+      else byteCols = true; // unrecognised: keep the measured regime
+      setTreePositionEncoding(indexes, byteCols);
+    }
+    console.error(
+      `esql-lsp: position probe start=${start} column=${column} (utf16 wants ${wantIdx}/${colUtf16}, utf8 wants ${idxUtf8}/${colUtf8})`
+    );
+  } catch (err) {
+    console.error('esql-lsp: position probe failed:', String(err));
+    /* keep the defaults (measured regime) */
+  }
 }
 
 /**
@@ -307,22 +362,23 @@ export function parse(text: string): Tree | null {
   }
 }
 
-function rangeOf(node: SyntaxNode): Range {
-  return Range.create(
-    node.startPosition.row,
-    node.startPosition.column,
-    node.endPosition.row,
-    node.endPosition.column
-  );
-}
+/**
+ * A node → LSP-Range mapper. `analyzeDocument` builds one bound to the
+ * document's UTF-8 offset map (positions.ts); every range the tree path
+ * publishes goes through it, because a raw `node.startPosition.column` is a
+ * BYTE column and a raw `node.startIndex` a byte offset — both meaningless to
+ * an LSP client the moment the document holds a single non-ASCII character.
+ */
+type NodeRange = (node: SyntaxNode) => Range;
 
 /**
  * The quoted_identifier token WITHOUT its quotes, positions included — the
  * range a cursor in the name agrees with, and what QUOTED_DECLARE_RE
- * records on the pattern path (G-5 parity).
+ * records on the pattern path (G-5 parity). The ±1 trims are quote characters
+ * (always ASCII), so they stay valid in the converted character space.
  */
-function innerQuotedRange(node: SyntaxNode): Range {
-  const r = rangeOf(node);
+function innerQuotedRange(node: SyntaxNode, toRange: NodeRange): Range {
+  const r = toRange(node);
   return Range.create(
     r.start.line,
     r.start.character + 1,
@@ -362,21 +418,26 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-function moduleInfo(node: SyntaxNode, kids: readonly SyntaxNode[]): ModuleInfo | null {
+function moduleInfo(
+  node: SyntaxNode,
+  kids: readonly SyntaxNode[],
+  toRange: NodeRange
+): ModuleInfo | null {
   const nameNode = childOf(kids, 'identifier');
   if (!nameNode) return null;
   return {
     name: nameNode.text,
     kind: moduleKind(kids),
-    range: rangeOf(node),
-    nameRange: rangeOf(nameNode),
+    range: toRange(node),
+    nameRange: toRange(nameNode),
   };
 }
 
 function routineInfo(
   node: SyntaxNode,
   kids: readonly SyntaxNode[],
-  moduleName?: string
+  moduleName: string | undefined,
+  toRange: NodeRange
 ): RoutineInfo | null {
   const nameNode = childOf(kids, 'identifier');
   if (!nameNode) return null;
@@ -402,9 +463,9 @@ function routineInfo(
     kind: isFunction ? 'FUNCTION' : 'PROCEDURE',
     params,
     returnType: returnNode ? oneLine(returnNode.text).toUpperCase() : undefined,
-    range: rangeOf(nameNode),
-    declRange: rangeOf(node),
-    bodyRange: body ? rangeOf(body) : undefined,
+    range: toRange(nameNode),
+    declRange: toRange(node),
+    bodyRange: body ? toRange(body) : undefined,
     moduleName,
   };
 }
@@ -461,7 +522,7 @@ interface WalkScope {
  * still being typed. Recognise the sequence from the surviving tokens so the
  * module keeps showing up in the outline and stays navigable.
  */
-function damagedModuleInfo(node: SyntaxNode): ModuleInfo | null {
+function damagedModuleInfo(node: SyntaxNode, toRange: NodeRange): ModuleInfo | null {
   const children = node.children;
   for (let i = 1; i + 1 < children.length; i++) {
     if (children[i].type !== 'kw_MODULE') continue;
@@ -473,8 +534,8 @@ function damagedModuleInfo(node: SyntaxNode): ModuleInfo | null {
     return {
       name: nameNode.text,
       kind,
-      range: rangeOf(node),
-      nameRange: rangeOf(nameNode),
+      range: toRange(node),
+      nameRange: toRange(nameNode),
     };
   }
   return null;
@@ -690,15 +751,40 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
   let docText: string | undefined = source;
   const text = (): string => (docText ??= tree.rootNode.text);
 
+  // The byte→UTF-16 translator for every tree offset this analysis touches
+  // (positions.ts). Building it costs one pass over the text — the same
+  // laziness rule as `text()` above: pure-ASCII documents pay nothing.
+  let posMap: ReturnType<typeof byteOffsetsFor> | undefined;
+  const pos = (): ReturnType<typeof byteOffsetsFor> =>
+    (posMap ??= byteOffsetsFor(text()));
+
+  /** The node's LSP Range — the ONLY sanctioned way to leave tree space. */
+  const toRange = (node: SyntaxNode): Range => {
+    const p = pos();
+    const s = p.point(node.startPosition.row, node.startPosition.column);
+    const e = p.point(node.endPosition.row, node.endPosition.column);
+    return Range.create(s.line, s.character, e.line, e.character);
+  };
+
+  /** The node's span as string indices into `text()` (regex/slice space). */
+  const toSlice = (node: SyntaxNode): { from: number; to: number } => ({
+    from: pos().index(node.startIndex),
+    to: pos().index(node.endIndex),
+  });
+
   /** The end of the line `node` starts on (same row, one line at most). */
   const endOfLineAt = (node: SyntaxNode): { row: number; column: number } => {
     const src = text();
-    const nl = src.indexOf('\n', node.startIndex);
+    const p = pos();
+    const startStr = p.index(node.startIndex);
+    const nl = src.indexOf('\n', startStr);
+    const endStr = nl === -1 ? src.length : nl;
+    const anchor = p.point(node.startPosition.row, node.startPosition.column);
     return {
-      row: node.startPosition.row,
-      column:
-        node.startPosition.column +
-        (nl === -1 ? src.length - node.startIndex : nl - node.startIndex),
+      row: anchor.line,
+      // String-index difference = character count between two codepoint
+      // boundaries, which is the column distance the client counts.
+      column: anchor.character + (endStr - startStr),
     };
   };
 
@@ -709,9 +795,11 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
   let maskedText: string | undefined;
   const masked = (): string => (maskedText ??= scan(text()).masked);
 
-  /** The masked text of `node`'s span. */
-  const maskedRegion = (node: SyntaxNode): string =>
-    masked().slice(node.startIndex, node.endIndex);
+  /** The masked text of `node`'s span (tree bytes → string indices first). */
+  const maskedRegion = (node: SyntaxNode): string => {
+    const { from, to } = toSlice(node);
+    return masked().slice(from, to);
+  };
 
   /** The word a region opens with; '' when it opens with anything else. */
   const regionFirstWord = (node: SyntaxNode): string =>
@@ -721,17 +809,10 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
   const regionQuotedToken = (node: SyntaxNode): string =>
     maskedRegion(node).match(/^\s*([A-Za-z_]\w*|[^\w\s]+)/)?.[1] ?? '';
 
-  /** {row, column} of a character offset, matching node positions. */
-  const positionAt = (src: string, offset: number): { row: number; column: number } => {
-    let row = 0;
-    let lineStart = 0;
-    for (let i = 0; i < offset; i++) {
-      if (src.charCodeAt(i) === 10) {
-        row++;
-        lineStart = i + 1;
-      }
-    }
-    return { row, column: offset - lineStart };
+  /** {row, column} of a STRING INDEX into `src` (regex/slice space). */
+  const positionAt = (stringIndex: number): { row: number; column: number } => {
+    const p = pos().positionOfStringIndex(stringIndex);
+    return { row: p.line, column: p.character };
   };
 
   /**
@@ -759,7 +840,8 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
       )
         return null;
       if (a.type === 'esql_statement' || !a.type.endsWith('_statement')) continue;
-      if (!masked().slice(a.startIndex, a.endIndex).trimEnd().endsWith(';')) return null;
+      const aSlice = toSlice(a);
+      if (!masked().slice(aSlice.from, aSlice.to).trimEnd().endsWith(';')) return null;
       // E-2a: the cascade. When the region's text holds ANOTHER statement
       // opener past its first word, recovery swallowed more than the next
       // statement — one forgotten `;` ate a whole run of them. That shape
@@ -777,22 +859,22 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
         .trim()
         .toUpperCase();
       // The terminator's slot: from just past the last non-blank character
-      // before the region, through the whitespace the `;` belongs in.
+      // before the region, through the whitespace the `;` belongs in. The
+      // walk runs in string-index space (a byte walk of a JS string would
+      // land mid-codepoint the moment the line holds non-ASCII).
       const src = text();
-      let idx = node.startIndex - 1;
-      while (idx > a.startIndex && /\s/.test(src[idx])) idx--;
-      if (idx <= a.startIndex || /\s/.test(src[idx])) return null;
-      const from = positionAt(src, idx + 1);
+      const nodeStartStr = pos().index(node.startIndex);
+      const aStartStr = aSlice.from;
+      let idx = nodeStartStr - 1;
+      while (idx > aStartStr && /\s/.test(src[idx])) idx--;
+      if (idx <= aStartStr || /\s/.test(src[idx])) return null;
+      const from = positionAt(idx + 1);
+      const nodeStart = pos().point(node.startPosition.row, node.startPosition.column);
       return {
         message: cascaded
           ? `This ${kind} statement is not terminated — expected ';' before '${first}'.`
           : "Statement is not terminated — expected ';' here.",
-        range: Range.create(
-          from.row,
-          from.column,
-          node.startPosition.row,
-          node.startPosition.column
-        ),
+        range: Range.create(from.row, from.column, nodeStart.line, nodeStart.character),
       };
     }
     return null;
@@ -889,10 +971,10 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
     // 3. Nothing names the region, but its opening token still says what the
     //    parser tripped over — quote it (E-1).
     const tok = regionQuotedToken(node);
-    if (tok) return { message: `Unexpected '${tok}' here.${hint}`, range: rangeOf(node) };
+    if (tok) return { message: `Unexpected '${tok}' here.${hint}`, range: toRange(node) };
     // A region whose masked text holds no token (comment-only damage) has no
     // name and nothing to quote: the one residue where bare text is honest.
-    return { message: 'Syntax error.', range: rangeOf(node) };
+    return { message: 'Syntax error.', range: toRange(node) };
   };
 
   /**
@@ -911,19 +993,19 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
         if (schemaNode) {
           schemas.push({
             name: schemaNode.text.replace(/^\./, ''),
-            range: rangeOf(schemaNode),
+            range: toRange(schemaNode),
           });
         }
         return scope;
       }
       case 'create_module_statement': {
-        const info = moduleInfo(node, kids);
+        const info = moduleInfo(node, kids, toRange);
         if (!info) return scope;
         modules.push(info);
         return { visible: info.range, moduleName: info.name };
       }
       case 'create_routine_statement': {
-        const info = routineInfo(node, kids, scope.moduleName);
+        const info = routineInfo(node, kids, scope.moduleName, toRange);
         if (!info) return scope;
         routines.push(info);
         return {
@@ -949,7 +1031,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
       if (!underDamaged) {
         syntaxIssues.push(
           isInsertedNode(node)
-            ? { message: insertionMessage(node, parent), range: rangeOf(node) }
+            ? { message: insertionMessage(node, parent), range: toRange(node) }
             : describeDamagedRegion(node)
         );
         if (node.type === 'ERROR') damagedRegions.push(node); // mined after the walk (E-2b)
@@ -971,7 +1053,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
       // scope: the outline and go-to-definition must keep working while the
       // file is incomplete.
       const inner = openScope(node, kids, scope);
-      const moduleInfo = inner === scope ? damagedModuleInfo(node) : null;
+      const moduleInfo = inner === scope ? damagedModuleInfo(node, toRange) : null;
       if (moduleInfo) modules.push(moduleInfo);
       const damagedScope: WalkScope = moduleInfo
         ? { visible: moduleInfo.range, moduleName: moduleInfo.name }
@@ -1017,7 +1099,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
               declaredNames.push({
                 name: quoted ? unquoteESQLName(child.text) : child.text,
                 detail,
-                range: quoted ? innerQuotedRange(child) : rangeOf(child),
+                range: quoted ? innerQuotedRange(child, toRange) : toRange(child),
                 kind: 'variable',
                 constant,
                 shared: kids.some((c) => c.type === 'kw_SHARED'),
@@ -1046,7 +1128,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
               namespaceAliases.push({
                 name: quoted ? unquoteESQLName(child.text) : child.text,
                 detail: 'NAMESPACE',
-                range: quoted ? innerQuotedRange(child) : rangeOf(child),
+                range: quoted ? innerQuotedRange(child, toRange) : toRange(child),
                 kind: 'variable',
                 constant: true,
                 shared: false,
@@ -1070,7 +1152,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
               detail: typeNode
                 ? `parameter ${oneLine(typeNode.text).toUpperCase()}`
                 : 'parameter',
-              range: rangeOf(child),
+              range: toRange(child),
               kind: 'parameter',
               constant: kids.some((c) => c.type === 'kw_CONSTANT'),
               scope: visible,
@@ -1085,14 +1167,14 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
           const only = target.children[0];
           if (only.type === 'identifier') {
             // Bare `SET x = …` (not a message-tree path like `SET a.b = …`).
-            setTargets.push({ name: only.text, range: rangeOf(only) });
+            setTargets.push({ name: only.text, range: toRange(only) });
           }
         }
         break; // descend (harmless: SET contains no nested statements)
       }
       case 'select_expression': {
         // Column/table/alias words inside are NOT variable reads (E-5).
-        selectExpressions.push(rangeOf(node));
+        selectExpressions.push(toRange(node));
         break; // descend: the expressions there still hold real variable refs
       }
       case 'field_reference': {
@@ -1110,7 +1192,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
           const quoted = only.type === 'quoted_identifier';
           references.push({
             name: quoted ? unquoteESQLName(only.text) : only.text,
-            range: quoted ? innerQuotedRange(only) : rangeOf(only),
+            range: quoted ? innerQuotedRange(only, toRange) : toRange(only),
             kind: 'variable',
           });
         }
@@ -1124,7 +1206,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
           (c) => c.type === 'identifier' || c.type.startsWith('kw_')
         );
         if (name) {
-          references.push({ name: name.text, range: rangeOf(name), kind: 'routine' });
+          references.push({ name: name.text, range: toRange(name), kind: 'routine' });
         }
         break; // descend into the arguments
       }
@@ -1139,7 +1221,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
       case 'substring_clause_function':
       case 'asbitstream_clause_function': {
         const word = kids[0];
-        references.push({ name: word.text, range: rangeOf(word), kind: 'routine' });
+        references.push({ name: word.text, range: toRange(word), kind: 'routine' });
         break; // descend into the arguments
       }
       case 'call_statement': {
@@ -1152,7 +1234,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
           if (last) {
             references.push({
               name: last.text,
-              range: rangeOf(last),
+              range: toRange(last),
               kind: 'routine',
               qualified: qualified.text.replace(/^\./, ''),
             });
@@ -1165,7 +1247,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
     for (const child of kids) visit(child, scope, node, underDamaged);
   };
 
-  visit(tree.rootNode, { visible: rangeOf(tree.rootNode) });
+  visit(tree.rootNode, { visible: toRange(tree.rootNode) });
   // Two sibling damage clusters inside one construct get clamped to the same
   // named line (I-12) — from here they are indistinguishable, and a doubled
   // identical diagnostic is I-17 noise again. Keep the first of each.
@@ -1194,20 +1276,23 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
   // win any position clash: the padding re-reads clean neighbours at region
   // edges, and for text the parser handled normally the tree's answer is
   // the authoritative one.
-  const fileEnd = rangeOf(tree.rootNode);
+  const fileEnd = toRange(tree.rootNode);
   const src = text();
   const minedKey = (name: string, r: Range) => `${name.toUpperCase()}@${r.start.line}:${r.start.character}`;
   const knownDecl = new Set(declaredNames.map((d) => minedKey(d.name, d.range)));
   const knownRoutine = new Set(routines.map((r) => minedKey(r.name, r.range)));
   const knownTarget = new Set(setTargets.map((t) => minedKey(t.name, t.range)));
   for (const region of damagedRegions) {
-    let from = region.startIndex;
+    // Line padding in string-index space: the region's tree bytes land on
+    // string indices first, and the walk then reads real characters even on
+    // lines that hold non-ASCII (a byte walk would read mid-codepoint).
+    let from = pos().index(region.startIndex);
     while (from > 0 && src[from - 1] !== '\n') from--;
-    let to = region.endIndex;
+    let to = pos().index(region.endIndex);
     while (to < src.length && src[to] !== '\n') to++;
     const regionText = src.slice(from, to);
     if (!regionText.trim()) continue;
-    const rowShift = positionAt(src, from).row;
+    const rowShift = positionAt(from).row;
     const shift = (r: Range): Range =>
       Range.create(r.start.line + rowShift, r.start.character, r.end.line + rowShift, r.end.character);
 
@@ -1259,7 +1344,7 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
     references,
     selectExpressions,
     namespaceAliases,
-    errorRegions: damagedRegions.map(rangeOf),
+    errorRegions: damagedRegions.map(toRange),
   };
 }
 
@@ -1334,6 +1419,9 @@ export function semanticTokensForTree(tree: Tree, source: string): number[] | nu
     return null;
   }
 
+  // Capture positions are byte columns; the quintuples and the line-length
+  // clamp must all be in the characters the client counts (positions.ts).
+  const p = byteOffsetsFor(source);
   const lineLengths = linesOf(source).map((l) => l.length);
   const tokens: RawToken[] = [];
   for (const cap of captures) {
@@ -1342,10 +1430,12 @@ export function semanticTokensForTree(tree: Tree, source: string): number[] | nu
     const s = cap.node.startPosition;
     const e = cap.node.endPosition;
     if (s.row !== e.row) continue; // single-line tokens only
+    const start = p.point(s.row, s.column).character;
+    const endChar = p.point(e.row, e.column).character;
     const lineLength = lineLengths[s.row];
-    const end = lineLength === undefined ? e.column : Math.min(e.column, lineLength);
-    if (end <= s.column) continue;
-    tokens.push({ line: s.row, start: s.column, end, type });
+    const end = lineLength === undefined ? endChar : Math.min(endChar, lineLength);
+    if (end <= start) continue;
+    tokens.push({ line: s.row, start, end, type });
   }
 
   // Start ascending; for the same start the longest (outermost) first.
@@ -1405,13 +1495,25 @@ export function semanticTokensForTree(tree: Tree, source: string): number[] | nu
  *  - empty prefixes and undamaged-but-headless cursors (offset at or before
  *    the statement's first token) return null: nothing to report.
  */
-export function clausePrefixAt(tree: Tree, maskedText: string, offset: number): string | null {
+export function clausePrefixAt(
+  tree: Tree,
+  maskedText: string,
+  offset: number,
+  source?: string
+): string | null {
   if (offset <= 0) return null;
+  // `offset` is a client/UTF-16 offset, `statement.startIndex` a tree byte
+  // offset, and `maskedText` a JS string — the third place this document is
+  // measured. The byte map must come from the ORIGINAL text (`source`): the
+  // mask rewrites non-ASCII comment/string characters to spaces, changing
+  // the byte layout the tree's offsets speak.
+  const p = byteOffsetsFor(source ?? maskedText);
+  const byteOffset = p.byte(offset);
   let node = tree.rootNode;
   descend: while (node.childCount > 0) {
     for (let i = node.childCount - 1; i >= 0; i--) {
       const child = node.children[i];
-      if (child.startIndex < offset) {
+      if (child.startIndex < byteOffset) {
         node = child;
         continue descend;
       }
@@ -1425,9 +1527,11 @@ export function clausePrefixAt(tree: Tree, maskedText: string, offset: number): 
       break;
     }
   }
-  if (!statement || offset <= statement.startIndex) return null;
-  if (hasDamageBetween(tree.rootNode, statement.startIndex, offset)) return null;
-  const collapsed = maskedText.slice(statement.startIndex, offset).replace(/\s+/g, ' ');
+  if (!statement || byteOffset <= statement.startIndex) return null;
+  if (hasDamageBetween(tree.rootNode, statement.startIndex, byteOffset)) return null;
+  const collapsed = maskedText
+    .slice(p.index(statement.startIndex), offset)
+    .replace(/\s+/g, ' ');
   return collapsed === '' ? null : collapsed;
 }
 

@@ -171,6 +171,17 @@ class LspClient {
     this.write({ jsonrpc: '2.0', method, params });
   }
 
+  /**
+   * All server notifications so far for `method`, in arrival order. The
+   * history view a `waitFor` predicate cannot give: a predicate that is true
+   * of an EARLY notification (say, a diagnostics publish that was silent for
+   * some other reason) must be distinguished from the later one the test
+   * actually waits for.
+   */
+  notificationsFor(method: string): any[] {
+    return this.notifications.filter((n) => n.method === method).map((n) => n.params);
+  }
+
   request(method: string, params: any): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
@@ -2781,6 +2792,368 @@ test('grammar mode completes a wrapped clause on the continuation line (C-6)', a
       ['=', 'TYPE', 'NAMESPACE', 'NAME', 'VALUE'],
       'the closed set-clauses list — the tree read `SET` from the line above'
     );
+  } finally {
+    await client.close();
+  }
+});
+
+// ── issue 3 / issue 5 (Enh 34/36): module-qualified CALL resolution ────────
+// Three modules in one workspace folder: Alpha and Beta each declare a
+// `Helper`; the caller module calls both qualified and the bare name once.
+// Every literal below was MEASURED from a real session (scripts/probe/
+// qualified-cross-module.js) and is IDENTICAL in both analysis modes — the
+// qualification filter is scanner-driven by design, so a mode disagreement
+// here is a bug, not a tolerated divergence.
+const QUALIFY_ALPHA = [
+  '-- Module Alpha',
+  'CREATE COMPUTE MODULE Alpha',
+  '',
+  '    CREATE PROCEDURE Helper(IN name CHARACTER)', // 3  Helper 21-27
+  '    BEGIN',
+  '        DECLARE x CHARACTER(64);',
+  '        SET x = name;',
+  '    END;',
+  '',
+  '    CREATE PROCEDURE Worker()',
+  '    BEGIN',
+  '        DECLARE v CHARACTER(32);',
+  "        SET v = 'a';",
+  '        CALL Helper(v);', //                     13  unqualified, same module
+  '    END;',
+  '',
+  'END MODULE;',
+].join('\n');
+
+const QUALIFY_BETA = [
+  '-- Module Beta: same routine name as Alpha',
+  'CREATE COMPUTE MODULE Beta',
+  '',
+  '    CREATE PROCEDURE Helper(IN name CHARACTER)', // 3  Helper 21-27
+  '    BEGIN',
+  '        DECLARE z CHARACTER(64);',
+  '        SET z = name;',
+  '    END;',
+  '',
+  'END MODULE;',
+].join('\n');
+
+const QUALIFY_CALLER = [
+  '-- Module caller: uses both Helpers',
+  'CREATE COMPUTE MODULE Caller',
+  '',
+  '    CREATE FUNCTION Main() RETURNS BOOLEAN',
+  '    BEGIN',
+  "        CALL Alpha.Helper('one');", //            5  Helper 19-25
+  "        CALL Beta.Helper('two');", //             6  Helper 18-24
+  "        CALL Helper('three');", //                7  Helper 13-19 (ambiguous)
+  '        RETURN TRUE;',
+  '    END;',
+  '',
+  'END MODULE;',
+].join('\n');
+
+async function qualifySession(env?: Record<string, string>) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-qualify-'));
+  const uri = (n: string) => pathToFileURL(path.join(dir, n)).href;
+  const client = new LspClient(env ? { env } : {});
+  try {
+    fs.writeFileSync(path.join(dir, 'alpha.esql'), QUALIFY_ALPHA);
+    fs.writeFileSync(path.join(dir, 'beta.esql'), QUALIFY_BETA);
+    fs.writeFileSync(path.join(dir, 'caller.esql'), QUALIFY_CALLER);
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: pathToFileURL(dir).href,
+      workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'qualify' }],
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    for (const [n, text] of [
+      ['alpha.esql', QUALIFY_ALPHA],
+      ['beta.esql', QUALIFY_BETA],
+      ['caller.esql', QUALIFY_CALLER],
+    ] as Array<[string, string]>) {
+      client.notify('textDocument/didOpen', {
+        textDocument: { uri: uri(n), languageId: 'esql', version: 1, text },
+      });
+    }
+    await client.waitFor('textDocument/publishDiagnostics', (p: any) => p.uri === uri('caller.esql'), 15000);
+    const pos = (file: string, line: number, character: number) => ({
+      textDocument: { uri: uri(file) },
+      position: { line, character },
+    });
+    const def = async (file: string, line: number, ch: number) => {
+      const r = await client.request('textDocument/definition', pos(file, line, ch));
+      return ((r.result ?? []) as any[]).map(
+        (l) => `${baseName(l.uri)} ${l.range.start.line}:${l.range.start.character}-${l.range.end.line}:${l.range.end.character}`
+      );
+    };
+    const refs = async (file: string, line: number, ch: number) => {
+      const r = await client.request('textDocument/references', {
+        ...pos(file, line, ch),
+        context: { includeDeclaration: true },
+      });
+      return ((r.result ?? []) as any[]).map((l) => `${baseName(l.uri)} ${l.range.start.line}:${l.range.start.character}`);
+    };
+    const hoverValue = async (file: string, line: number, ch: number) => {
+      const r = await client.request('textDocument/hover', pos(file, line, ch));
+      return (r.result?.contents?.value ?? null) as string | null;
+    };
+    return {
+      // a qualified call resolves through the module: exactly one target
+      defAlphaTarget: await def('caller.esql', 5, 20),
+      defBetaTarget: await def('caller.esql', 6, 20),
+      // the bare name with two candidates shows BOTH (ambiguous is shown, not guessed)
+      defAmbiguous: await def('caller.esql', 7, 14),
+      hoverAlphaTarget: await hoverValue('caller.esql', 5, 20),
+      // Enh 36: an ambiguous call lists every candidate with its module
+      hoverAmbiguous: await hoverValue('caller.esql', 7, 14),
+      // references from Alpha's Helper: its own call site, the Alpha-qualified
+      // site and the ambiguous bare one — never Beta's declaration or Beta's
+      // qualified site. Symmetrically for Beta (Alpha's same-module call site
+      // belongs to Alpha's Helper, not to the bare name's caller).
+      refsAlphaHelper: await refs('alpha.esql', 3, 24),
+      refsBetaHelper: await refs('beta.esql', 3, 24),
+    };
+  } finally {
+    await client.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const QUALIFY_EXPECTED = {
+  defAlphaTarget: ['alpha.esql 3:21-3:27'],
+  defBetaTarget: ['beta.esql 3:21-3:27'],
+  defAmbiguous: ['alpha.esql 3:21-3:27', 'beta.esql 3:21-3:27'],
+  hoverAlphaTarget:
+    '```esql\nPROCEDURE Helper()\n```\n\n*workspace — defined in alpha.esql (module Alpha)*',
+  hoverAmbiguous:
+    '```esql\nPROCEDURE Helper()\n```\n\n*workspace — 2 routines named Helper (the call is not module-qualified):' +
+    '\n> - `PROCEDURE Helper()` — defined in alpha.esql (module Alpha)' +
+    '\n> - `PROCEDURE Helper()` — defined in beta.esql (module Beta)*',
+  refsAlphaHelper: ['alpha.esql 3:21', 'alpha.esql 13:13', 'caller.esql 5:19', 'caller.esql 7:13'],
+  refsBetaHelper: ['beta.esql 3:21', 'caller.esql 6:18', 'caller.esql 7:13'],
+};
+
+test('qualified CALL resolution without the grammar (fallback, issue 3/5)', async () => {
+  assert.deepEqual(await qualifySession({ ESQL_LSP_NO_GRAMMAR: '1' }), QUALIFY_EXPECTED);
+});
+
+test('qualified CALL resolution with the grammar (issue 3/5, Enh 34/36)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  assert.deepEqual(await qualifySession(), QUALIFY_EXPECTED);
+});
+
+// ── Enh 17/33: the rename half of module qualification ─────────────────────
+// Same three-file workspace. With the bare call present the name is ambiguous
+// and the rename must REFUSE (F2 blocks at prepare, not after the edit); with
+// every use qualified, the rename lands exactly on the sites that resolve to
+// Alpha's Helper — never Beta's. Measured literals, identical in both modes.
+const QUALIFY_CALLER_CLEAN = [
+  'CREATE COMPUTE MODULE Caller',
+  '',
+  '    CREATE FUNCTION Main() RETURNS BOOLEAN',
+  '    BEGIN',
+  "        CALL Alpha.Helper('one');",
+  "        CALL Beta.Helper('two');",
+  '        RETURN TRUE;',
+  '    END;',
+  '',
+  'END MODULE;',
+].join('\n');
+
+async function qualifyRenameSession(callerText: string, env?: Record<string, string>) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-qren-'));
+  const uri = (n: string) => pathToFileURL(path.join(dir, n)).href;
+  const client = new LspClient(env ? { env } : {});
+  try {
+    fs.writeFileSync(path.join(dir, 'alpha.esql'), QUALIFY_ALPHA);
+    fs.writeFileSync(path.join(dir, 'beta.esql'), QUALIFY_BETA);
+    fs.writeFileSync(path.join(dir, 'caller.esql'), callerText);
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: pathToFileURL(dir).href,
+      workspaceFolders: [{ uri: pathToFileURL(dir).href, name: 'qren' }],
+      capabilities: {},
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+    for (const [n, text] of [
+      ['alpha.esql', QUALIFY_ALPHA],
+      ['beta.esql', QUALIFY_BETA],
+      ['caller.esql', callerText],
+    ] as Array<[string, string]>) {
+      client.notify('textDocument/didOpen', {
+        textDocument: { uri: uri(n), languageId: 'esql', version: 1, text },
+      });
+    }
+    await client.waitFor('textDocument/publishDiagnostics', (p: any) => p.uri === uri('caller.esql'), 15000);
+    const prep = await client.request('textDocument/prepareRename', {
+      textDocument: { uri: uri('alpha.esql') },
+      position: { line: 3, character: 24 },
+    });
+    const ren = await client.request('textDocument/rename', {
+      textDocument: { uri: uri('alpha.esql') },
+      position: { line: 3, character: 24 },
+      newName: 'Assist',
+    });
+    return {
+      prepare: wsShape(prep),
+      rename: wsShape(ren),
+      scopeNotes: client.serverRequestCalls('window/showMessageRequest').map((p) => p.message),
+    };
+  } finally {
+    await client.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// One message, three mouths: prepare blocks F2, rename refuses when asked
+// anyway, and both say the same thing.
+const QREN_AMBIG_MESSAGE =
+  "esql-lsp: cannot rename 'Helper' — it is also declared outside module Alpha (beta.esql line 4)" +
+  " and 1 unqualified call site(s) (caller.esql line 8) could resolve to either routine. Qualify" +
+  " those calls as 'Alpha.Helper(' first, or rename only a name no other module declares.";
+
+const QREN_AMBIG_EXPECTED = {
+  prepare: 'ERR ' + QREN_AMBIG_MESSAGE,
+  rename: 'ERR ' + QREN_AMBIG_MESSAGE,
+  scopeNotes: [],
+};
+
+const QREN_CLEAN_EXPECTED = {
+  // only Alpha's declaration, Alpha's own call site and Alpha-qualified uses;
+  // Beta's Helper keeps its name.
+  prepare: 'prep 3:21-27 "Helper"',
+  rename: [
+    'alpha.esql 3:21-27->"Assist"',
+    'alpha.esql 13:13-19->"Assist"',
+    'caller.esql 4:19-25->"Assist"',
+  ],
+  scopeNotes: [
+    "esql-lsp: renamed 'Helper' in 2 workspace files, module-scoped: only uses resolving to" +
+      " Alpha.Helper changed. Files outside this workspace may still call 'Alpha.Helper'.",
+  ],
+};
+
+test('module-qualified rename refuses an ambiguous name, prepare too (Enh 17/33, fallback)', async () => {
+  assert.deepEqual(await qualifyRenameSession(QUALIFY_CALLER, { ESQL_LSP_NO_GRAMMAR: '1' }), QREN_AMBIG_EXPECTED);
+});
+
+test('module-qualified rename edits only the anchored uses (Enh 17/33, fallback)', async () => {
+  assert.deepEqual(await qualifyRenameSession(QUALIFY_CALLER_CLEAN, { ESQL_LSP_NO_GRAMMAR: '1' }), QREN_CLEAN_EXPECTED);
+});
+
+test('module-qualified rename refuses an ambiguous name, prepare too (Enh 17/33, grammar)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  assert.deepEqual(await qualifyRenameSession(QUALIFY_CALLER), QREN_AMBIG_EXPECTED);
+});
+
+test('module-qualified rename edits only the anchored uses (Enh 17/33, grammar)', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  assert.deepEqual(await qualifyRenameSession(QUALIFY_CALLER_CLEAN), QREN_CLEAN_EXPECTED);
+});
+
+// ── Platform honesty (list.md 9, enhancement 27) ─────────────────────────────
+// Editors on Windows open CRLF files and hand the server drive-letter URIs.
+// The unit pins are in parser.test.ts (line model) and pathsUris.test.ts
+// (paths/URIs); these two are the same contract over the real protocol.
+
+test('a CRLF document keeps every published position honest (list.md 9)', async () => {
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e-crlf/Crlf.esql';
+  // A client counts each \r\n as ONE line break and the CR is not a column of
+  // the next line — the contract I-18 broke in three different places.
+  const CRLF_TEXT = [
+    'BROKER SCHEMA com.acme;',
+    'CREATE COMPUTE MODULE CrlfModule',
+    'CREATE FUNCTION Main() RETURNS BOOLEAN',
+    'BEGIN',
+    '  DECLARE counter INTEGER 0;',
+    '  SET counter = counter + 1;',
+    '  RETURN TRUE;',
+    'END;',
+    'END MODULE;',
+    '',
+  ].join('\r\n');
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: null,
+      capabilities: {},
+    });
+    client.notify('initialized', {});
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: CRLF_TEXT },
+    });
+
+    // Whole file clean: no phantom syntax errors from the CR bytes (both modes
+    // must agree — no skipWithoutGrammar gate here on purpose).
+    const diags = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.every((d: any) => d.severity !== 1)
+    );
+    assert.deepEqual(diags.diagnostics, [], `CRLF file is clean, got: ${JSON.stringify(diags.diagnostics)}`);
+
+    // Cursor on the USE of counter (line 5, inside the word) → lands exactly on
+    // the DECLARE's NAME (line 4, characters 10..17) in client coordinates.
+    const def = await client.request('textDocument/definition', {
+      textDocument: { uri },
+      position: { line: 5, character: 8 },
+    });
+    assert.deepEqual(def.result, [
+      {
+        uri,
+        range: {
+          start: { line: 4, character: 10 },
+          end: { line: 4, character: 17 },
+        },
+      },
+    ]);
+
+    const shutdown = await client.request('shutdown', null);
+    assert.ok('result' in shutdown || 'error' in shutdown);
+    client.notify('exit', undefined);
+  } finally {
+    await client.close();
+  }
+});
+
+test('a Windows-style rootUri cannot sink the server on an OS that cannot read it (list.md 9)', async () => {
+  const client = new LspClient();
+  const uri = 'file:///tmp/esql-e2e-winroot/TestModule.esql';
+  try {
+    // On Windows this decodes to C:\Project; on POSIX fileURLToPath yields the
+    // harmless string '/C:/Project' that matches no real folder. Either way the
+    // workspace index must degrade to EMPTY — never an uncaught throw on the
+    // initialize path (uriToFsPath's try/catch is the pin).
+    const init = await client.request('initialize', {
+      processId: process.pid,
+      rootUri: 'file:///C%3A/Project',
+      capabilities: {},
+      workspaceFolders: [{ uri: 'file:///C%3A/Project', name: 'Project' }],
+    });
+    assert.ok(init.result.capabilities.documentSymbolProvider, 'initialize answered normally');
+    client.notify('initialized', {});
+
+    // Same-file features must still work with the unusable root in place.
+    client.notify('textDocument/didOpen', {
+      textDocument: { uri, languageId: 'esql', version: 1, text: BAD },
+    });
+    const diags = await client.waitFor(
+      'textDocument/publishDiagnostics',
+      (p) => p.uri === uri && p.diagnostics.some((d: any) => d.severity === 1)
+    );
+    assert.ok(
+      diags.diagnostics.some((d: any) => /missing its closing 'END MODULE'/.test(d.message)),
+      `expected the unclosed-module error, got: ${JSON.stringify(diags.diagnostics.map((d: any) => d.message))}`
+    );
+    const syms = await client.request('textDocument/documentSymbol', { textDocument: { uri } });
+    assert.ok(Array.isArray(syms.result) && syms.result.length > 0, 'outline still answers');
+
+    const shutdown = await client.request('shutdown', null);
+    assert.ok('result' in shutdown || 'error' in shutdown);
+    client.notify('exit', undefined);
   } finally {
     await client.close();
   }

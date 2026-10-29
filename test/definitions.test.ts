@@ -515,3 +515,79 @@ test('a quoted variable use is a reference in both extraction paths (N-1a)', asy
   assert.deepEqual(format(referencesAt(src, 3, 12, true, doc)), want, 'references (grammar)');
   assert.deepEqual(format(referencesAt(src, 3, 12, false, doc)), ['4:7-4:13', '5:22-5:28'], 'uses only (grammar)');
 });
+
+// ─── anchored references / shadowing safety (list.md issue 2, enhancement 33) ──
+
+const SHADOW_SRC = [
+  'CREATE COMPUTE MODULE ShadowMod', // 0
+  '  DECLARE total INTEGER;', // 1 — module-level
+  '  CREATE FUNCTION First() RETURNS BOOLEAN', // 2
+  '  BEGIN', // 3
+  '    DECLARE total INTEGER;', // 4 — routine-local, SHADOWS line 1
+  '    SET total = 1;', // 5 — belongs to the local
+  '    RETURN TRUE;', // 6
+  '  END;', // 7
+  '  CREATE FUNCTION Second() RETURNS BOOLEAN', // 8
+  '  BEGIN', // 9
+  '    SET total = 2;', // 10 — belongs to the module-level total
+  '    RETURN TRUE;', // 11
+  '  END;', // 12
+  'END MODULE;', // 13
+  '',
+].join('\n');
+
+const SHADOW_LINES = SHADOW_SRC.split('\n');
+const shAt = (line: number, word: string, from = 0) => SHADOW_LINES[line].indexOf(word, from);
+
+let shadowTree: DocAnalysis | undefined;
+let shadowChecked = false;
+
+async function shadowBoth(t: Parameters<typeof skipWithoutGrammar>[0], label: string, run: (doc: DocAnalysis | undefined) => Range[], expected: string[]): Promise<void> {
+  assert.deepEqual(format(run(undefined)), expected, `${label} (heuristic)`);
+  if (!(await skipWithoutGrammar(t))) {
+    if (!shadowChecked) {
+      shadowChecked = true;
+      await initGrammar();
+      shadowTree = grammarReady() ? analyzeDocument(parse(SHADOW_SRC)!) : undefined;
+    }
+    if (shadowTree) assert.deepEqual(format(run(shadowTree)), expected, `${label} (grammar)`);
+  }
+}
+
+test('references from a routine-local do NOT merge the module-level sibling (issue 2)', async (t) => {
+  // The OLD widest-visibility rule answered all four sites here.
+  await shadowBoth(t, 'from local decl', (doc) => referencesAt(SHADOW_SRC, 4, shAt(4, 'total'), true, doc), [
+    '4:12-4:17',
+    '5:8-5:13',
+  ]);
+});
+
+test('references from the module-level skip the shadowed routine (issue 2)', async (t) => {
+  await shadowBoth(t, 'from module decl', (doc) => referencesAt(SHADOW_SRC, 1, shAt(1, 'total'), true, doc), [
+    '1:10-1:15',
+    '10:8-10:13',
+  ]);
+  await shadowBoth(t, 'uses only', (doc) => referencesAt(SHADOW_SRC, 1, shAt(1, 'total'), false, doc), [
+    '10:8-10:13',
+  ]);
+});
+
+test('a click on a shadowed use anchors on the local it resolves to', async (t) => {
+  await shadowBoth(t, 'from use in First', (doc) => referencesAt(SHADOW_SRC, 5, shAt(5, 'total'), true, doc), [
+    '4:12-4:17',
+    '5:8-5:13',
+  ]);
+  await shadowBoth(t, 'from use in Second', (doc) => referencesAt(SHADOW_SRC, 10, shAt(10, 'total'), true, doc), [
+    '1:10-1:15',
+    '10:8-10:13',
+  ]);
+});
+
+test('definition through a shadow respects the innermost declaration', async (t) => {
+  await shadowBoth(t, 'use in First -> local', (doc) => definitionAt(SHADOW_SRC, 5, shAt(5, 'total'), doc), [
+    '4:12-4:17',
+  ]);
+  await shadowBoth(t, 'use in Second -> module', (doc) =>
+    definitionAt(SHADOW_SRC, 10, shAt(10, 'total'), doc), ['1:10-1:15']
+  );
+});

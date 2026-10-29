@@ -34,6 +34,8 @@ import {
   declarationAt,
   routineByNameAt,
   enclosingRoutine,
+  callTargetAt,
+  qualifierMatchesModule,
 } from './definitions';
 import type { DocAnalysis, DeclaredName, RoutineInfo } from './parser';
 
@@ -104,10 +106,10 @@ export function hoverAt(
   character: number,
   doc?: DocAnalysis
 ): Hover | null {
-  const { lines, rawLines } = scan(source);
+  const { lines, rawLines, quotedTokens } = scan(source);
   // Shared with go-to-definition/references, so a quoted declare name hovers
   // exactly where it is navigable (and vice versa).
-  const w = wordAtPosition(lines, rawLines, line, character);
+  const w = wordAtPosition(lines, rawLines, line, character, quotedTokens);
   if (!w) return null;
 
   const upper = w.word.toUpperCase();
@@ -122,6 +124,26 @@ export function hoverAt(
   const routines: RoutineInfo[] = doc
     ? doc.routines
     : routinesFromSource(source);
+
+  // Issue 3 / issue 5: a qualified CALL (`CALL Sales.Helper(`) names the
+  // OWNER module as well as the routine — a local same-named routine living
+  // in a different module is a different symbol and must not answer. Null
+  // sends the server to the (equally filtered) workspace half.
+  const call = callTargetAt(source, line, character);
+  if (call && call.cursorOnName && call.qualifier.length) {
+    const modules = doc ? doc.modules : modulesFromSource(source);
+    const owned = routines.filter(
+      (r) =>
+        eq(r.name) &&
+        modules.some(
+          (m) =>
+            qualifierMatchesModule(call.qualifier, m.name) &&
+            rangeContains(m.range, r.range.start.line, r.range.start.character)
+        )
+    );
+    return owned.length ? routineHover(owned[0]) : null;
+  }
+
   const routine = routineByNameAt(routines, w.word, line, character);
   if (routine) return routineHover(routine);
 
