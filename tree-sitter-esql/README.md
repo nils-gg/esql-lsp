@@ -15,7 +15,7 @@ e.g. with nvim-treesitter (see the wiring example in
   anything the railroads accept should parse; several constructs the
   diagrams underspecify (terminator placement, clause order) are accepted
   liberally on purpose.
-- 71 corpus tests (`test/corpus/`), all passing on tree-sitter CLI 0.27.
+- 87 corpus tests (`test/corpus/`), all passing on tree-sitter CLI 0.27.
 - Construct-by-construct verification evidence, found gaps and known
   limitations: [VERIFICATION.md](VERIFICATION.md).
 - Node bindings only; the other template bindings were pruned. The C

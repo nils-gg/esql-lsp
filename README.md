@@ -545,13 +545,20 @@ CONTRIBUTING.md        # dev setup, ground rules, PR guide
   go-to-definition / find-references for declared variables, parameters and
   user routines. Every one of these keeps a pattern-based fallback and is tested
   in both modes (`ESQL_LSP_NO_GRAMMAR=1 npm test`).
-- **Grammar coverage.** A handful of constructs are still unadjudicated against
-   the IBM railroad diagrams (catalogued with per-family verdicts in
+- **Grammar coverage.** Adjudicated against the live ACE 12.0.x reference
+   (2026-10-29 pass, verdicts recorded per family in
    [`tree-sitter-esql/VERIFICATION.md`](tree-sitter-esql/VERIFICATION.md)):
-   `COPY`, `LOG … VALUES`, spaced `ELSE IF`, `DECLARE … LIST`,
-   `CALL r(IN a, OUT b)`, `DETERMINISTIC`, and the no-12.0.x-page group
-   (`DECIDEMODE`-style `PROPAGATE` clauses, `ASJSON`/`TOMIME` options).
-   Deciding each one needs the reference, not the test suite.
+   the previously open shapes resolved to deliberate rejections — `COPY` and a
+   `SELECT` *statement* don't exist in ESQL, `LOG TERMINAL`, flat `ELSE IF`,
+   `DECLARE … LIST OF`, `CALL r(IN a, OUT b)` and DB2 routine characteristics
+   (`DETERMINISTIC`, `NO SQL`, …) are not ESQL — while the grammar's one real
+   bug in that set shipped fixed: `LOG … ;` without the optional `VALUES`
+   clause is now accepted. Left open: the plural interval qualifiers
+   (`INTERVAL '1' DAYS`) — that diagram page could not be reached during the
+   pass, and per the ground rule the grammar does not loosen without the
+   reference. The no-12.0.x-page group (`DECIDEMODE`-style `PROPAGATE`
+   clauses, `ASJSON`/`TOMIME` options) stays as the grammar has it. Deciding
+   each one needs the reference, not the test suite.
  - **Phase 3 — model-driven features.** MRM/XSD schema import for message-tree
    field completion, formatting. The workspace index now exists and is used:
    `workspace/symbol`, SHARED-aware undeclared check, cross-file

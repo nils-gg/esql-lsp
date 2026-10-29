@@ -267,7 +267,7 @@ export const NEXT_WORD_RULES: NextWordRule[] = [
     id: 'log-options',
     pattern: /^[ \t]*LOG\s+(?:EVENT|USER\s+TRACE)(?:\s+(?:FULL|EXCEPTION|SEVERITY|CATALOG|MESSAGE)\b[^=;()]*)?\s+$/i,
     words: ['CATALOG', 'EXCEPTION', 'FULL', 'MESSAGE', 'SEVERITY', 'VALUES'],
-    detail: 'LOG … takes FULL/EXCEPTION/SEVERITY/CATALOG/MESSAGE before VALUES ( … )',
+    detail: 'LOG … takes FULL/EXCEPTION/SEVERITY/CATALOG/MESSAGE, then an optional VALUES ( … )',
   },
   {
     id: 'log-statement',

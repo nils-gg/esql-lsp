@@ -540,3 +540,73 @@ END MODULE;
         (kw_END)))
     (kw_END)
     (kw_MODULE)))
+
+===
+log without the optional VALUES clause
+===
+
+CREATE COMPUTE MODULE LogOptional
+CREATE FUNCTION Main() RETURNS BOOLEAN
+BEGIN
+  LOG EVENT;
+  LOG USER TRACE;
+  LOG EVENT MESSAGE 2951;
+  LOG EVENT FULL EXCEPTION SEVERITY 2;
+  RETURN TRUE;
+END;
+END MODULE;
+
+---
+
+(source_file
+  (create_module_statement
+    (kw_CREATE)
+    (kw_COMPUTE)
+    (kw_MODULE)
+    (identifier)
+    (create_routine_statement
+      (kw_CREATE)
+      (kw_FUNCTION)
+      (identifier)
+      (kw_RETURNS)
+      (datatype
+        (kw_BOOLEAN))
+      (routine_body
+        (kw_BEGIN)
+        (esql_statement
+          (log_statement
+            (kw_LOG)
+            (kw_EVENT)))
+        (esql_statement
+          (log_statement
+            (kw_LOG)
+            (kw_USER)
+            (kw_TRACE)))
+        (esql_statement
+          (log_statement
+            (kw_LOG)
+            (kw_EVENT)
+            (kw_MESSAGE)
+            (expression
+              (primary_expression
+                (number_literal)))))
+        (esql_statement
+          (log_statement
+            (kw_LOG)
+            (kw_EVENT)
+            (kw_FULL)
+            (kw_EXCEPTION)
+            (kw_SEVERITY)
+            (expression
+              (primary_expression
+                (number_literal)))))
+        (esql_statement
+          (return_statement
+            (kw_RETURN)
+            (expression
+              (primary_expression
+                (kw_TRUE)))))
+        (kw_END)))
+    (kw_END)
+    (kw_MODULE)))
+

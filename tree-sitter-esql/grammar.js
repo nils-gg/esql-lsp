@@ -653,7 +653,15 @@ export default grammar({
 
     // LOG (EVENT | USER TRACE) [FULL] [EXCEPTION]
     //   [SEVERITY e] [CATALOG e] [MESSAGE e]
-    //   VALUES (e, ...) ;
+    //   [VALUES (e, ...)] ;
+    // VALUES is the OPTIONAL VALUES clause per the 12.0.x LOG page
+    // (ak05075_, fetched verbatim 2026-10-29): "Use the optional VALUES
+    // clause to provide values for the data inserts in your message" —
+    // and every Options clause carries a documented default when omitted
+    // (SEVERITY 1, current-version CATALOG, MESSAGE 2951), so `LOG EVENT;`
+    // stands alone. The clause ORDER stays fixed (Options before VALUES):
+    // the page's diagram and both its examples keep it. LOG TERMINAL is
+    // NOT on the diagram (only EVENT | USER TRACE) and stays rejected.
     log_statement: $ => seq(
       $.kw_LOG,
       choice($.kw_EVENT, seq($.kw_USER, $.kw_TRACE)),
@@ -662,9 +670,12 @@ export default grammar({
       optional(seq($.kw_SEVERITY, $.expression)),
       optional(seq($.kw_CATALOG, $.expression)),
       optional(seq($.kw_MESSAGE, $.expression)),
-      $.kw_VALUES, '(',
-      $.expression, repeat(seq(',', $.expression)),
-      ')', ';',
+      optional(seq(
+        $.kw_VALUES, '(',
+        $.expression, repeat(seq(',', $.expression)),
+        ')',
+      )),
+      ';',
     ),
 
     // THROW USER EXCEPTION

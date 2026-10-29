@@ -160,24 +160,28 @@ Items investigated and confirmed to be **test-sample errors, not grammar bugs**
 
 While building LSP fixtures and tests, these constructs were found to be
 **rejected by the current grammar** (each verified by parsing it and observing an
-`ERROR` node). They are listed as *open questions*, not as bugs: none has been
-compared against the IBM railroad diagram yet, and per the ground rule the
-reference — not the test suite, and not real-world code alone — decides whether
-the grammar or the fixture is wrong. Each row says what the grammar does today,
-so adjudication starts from a known state.
+`ERROR` node). They were listed as *open questions*, not as bugs. The 2026-10-29
+pass adjudicated every row but one against the live ACE 12.0.x pages (each
+fetched verbatim): six verdicts of NOT-ESQL (rejection is now deliberate), one
+grammar fix shipped (VALUES-optional LOG, family detail below), and the spaced
+`ELSE IF` settled as "nested form already parses, shorthand is not ESQL". The
+open one is the plural interval qualifier: its diagram page could not be reached
+that day (the ibm.com egress window closed mid-session after the six pages
+above); per the ground rule the grammar does **not** loosen without it. Each row
+says what the grammar does today, so adjudication starts from a known state.
 
 | Construct | Today | Why it happens in the grammar |
 |---|---|---|
-| `COPY PropertyTree.InputCopy;` / `COPY … TO ref;` | rejected | no `copy_statement` production at all (not in `esql_statement`) |
-| `SELECT … INTO OutputRoot… FROM …` | rejected | `SELECT` exists **only as an expression** (`SET x = SELECT … FROM …`); there is no `select_statement`, so the `INTO` form cannot parse. Correlating with an alias inside the expression form needs `AS` (`FROM Data.Item AS I`) ✓ corpus-covered |
-| `LOG TERMINAL 'out';` | rejected | `log_statement` requires `LOG EVENT` / `LOG USER TRACE` **and** a `VALUES (…)` clause; `LOG EVENT;` without `VALUES` is rejected too |
-| `ELSE IF cond THEN` (two tokens) | rejected | `if_statement` offers `ELSEIF` or `ELSE`-then-statements; no `ELSE` + nested-`IF` alternative |
+| ~~`COPY PropertyTree.InputCopy;` / `COPY … TO ref;`~~ | **NOT-ESQL (2026-10-29)** | adjudicated against the ESQL statements TOC (ak04900_, fetched verbatim 2026-10-29): it enumerates the complete ESQL statement set (ATTACH … WHILE) and **no COPY statement is in it** — tree copying is `SET`/`ATTACH`. Stays rejected on purpose; the absence of `copy_statement` is now the verdict, not a gap |
+| `SELECT … INTO OutputRoot… FROM …` | rejected — **NOT-ESQL as a statement (2026-10-29)** | the statements TOC (ak04900_, fetched verbatim 2026-10-29) has **no `SELECT` statement** — `SELECT` exists **only as an expression** (`SET x = SELECT … FROM …`), exactly as the grammar models it. Correlating with an alias inside the expression form needs `AS` (`FROM Data.Item AS I`) ✓ corpus-covered |
+| `LOG TERMINAL 'out';` | rejected — **NOT-ESQL (2026-10-29)** | the 12.0.x LOG page (ak05075_, fetched verbatim 2026-10-29) has only `LOG EVENT | USER TRACE` on the diagram; `TERMINAL` appears nowhere on the page. Stays rejected. **Its sibling half is fixed: `LOG …` without `VALUES` accepted 2026-10-29** — the page's own words: "Use the optional **VALUES** clause"; with SEVERITY/CATALOG/MESSAGE each documented as optional (defaults 1 / current-version catalog / 2951), so `LOG EVENT;` stands alone. Clause order stays fixed (Options before VALUES) per the diagram and both page examples; corpus: "log without the optional VALUES clause" |
+| `ELSE IF cond THEN` (two tokens) | rejected — **NOT-ESQL as written (2026-10-29)** | the IF page (ak05040_, fetched verbatim 2026-10-29) says verbatim: "**ELSEIF is one word with no space** between the ELSE and the IF. However, you can **nest** an IF statement within an ELSE clause: if you do, you can terminate both statements with END IF." The nested form (`ELSE` + a full `IF … END IF;` + the outer `END IF;`) already parses — ELSE takes statements and `if_statement` is a statement, verified by fixture 2026-10-29; the flat single-`END IF` shorthand is not documented and the analyzer's `expected END IF` already names the damage. Stays rejected |
 | ~~`BEGIN ATOMIC … END;`~~ | **accepted since 2026-10-24** | resolved by round 3 (family K): `ATOMIC` bare + optional labels are in the diagram; see the adjudication table below |
-| `DECLARE nums LIST OF INTEGER;` | rejected | the datatype production has no `LIST OF`; the `LIST{…}` literal is reachable as an expression only |
+| `DECLARE nums LIST OF INTEGER;` | rejected — **NOT-ESQL (2026-10-29)** | the DECLARE page (ak04980_, fetched verbatim 2026-10-29) enumerates DataType **exhaustively** ("The values that you can specify for DataType are:"): BOOLEAN, INT, INTEGER, FLOAT, DECIMAL, DATE, TIME, TIMESTAMP, GMTTIME, GMTTIMESTAMP, INTERVAL, CHAR, CHARACTER, BLOB, BIT, ROW, REFERENCE TO — **no LIST**. The `LIST` mentions on the CREATE PROCEDURE page are negative only ("Parameters cannot be of the ESQL REFERENCE, ROW, LIST, or INTERVAL data types"); the `LIST{…}` literal is reachable as an expression only, as the grammar has it |
 | ~~`DECLARE x LOGICAL [value];`~~ | **accepted since 2026-10-26 (E-3)** | adjudicated against the ACE 12.0.x DECLARE statement page (ak04980_, Syntax railroads + notes) **and** the ESQL non-reserved keywords page, both fetched verbatim 2026-10-26: `LOGICAL` is in neither — it is pre-ACE vocabulary. Real legacy files carry it and ACE 12 still compiles it (round-3 review measurement), so permissive-grammar rule: `kw_LOGICAL` joins `datatype` (no new LR conflicts); the analyzer's `deprecated-type` hint carries the modern preference. Rev-2's `DECLARE TraceEnabled LOGICAL SHARED TRUE;` was a confounded repro: the diagram puts `SHARED` **before** the datatype, and SHARED-after is rejected for every datatype including INTEGER — correct strictness, unrelated to `LOGICAL` |
 | `SET d = CURRENT_DATE + INTERVAL '1' DAYS;` (plural qualifier) | rejected — ERROR over the interval text, the qualifier survives as a bare identifier | `_interval_qualifier` models only singular forms (DAY/MONTH/HOUR/MINUTE/SECOND, TO-ranges); the plurals (DAYS, MONTHS, YEARS, WEEKS, QUARTERS …) ARE on the ESQL non-reserved keywords page (fetched 2026-10-26), so the qualifier rule plausibly misses them — awaiting the interval-literal diagram before loosening. Found 2026-10-26 by the E-5 false-positive sweep; the check's keyword-union skip stops the recovered identifier from being reported as an undeclared read |
-| `CALL AddTwo(IN a, OUT b);` | rejected | `call_statement` arguments are plain expressions; mode keywords are only modelled on `CREATE PROCEDURE/FUNCTION` parameter declarations |
-| `CREATE FUNCTION F() RETURNS INTEGER DETERMINISTIC` / `NO SQL` | rejected | `create_routine_statement` models `LANGUAGE …` and `DYNAMIC RESULT SETS n` but not the DB2 routine-characteristic set (`[NOT] DETERMINISTIC`, `NO SQL`, `READS SQL DATA`, `MODIFIES SQL DATA`) |
+| `CALL AddTwo(IN a, OUT b);` | rejected — **NOT-ESQL (2026-10-29)** | the CALL page (ak04920_, fetched verbatim 2026-10-29) shows `ParameterList` as comma-separated **Expression** only; direction indicators live on the routine *definition* ("Parameters that have been defined as IN or INOUT **on the routine's definition** …"), and the page's own calls are plain expressions (`CALL navigate(InputRoot.XMLNS, answer);`). `INTO` and the qualifier clauses are modelled; modes in CALL args stay rejected |
+| `CREATE FUNCTION F() RETURNS INTEGER DETERMINISTIC` / `NO SQL` | rejected — **NOT-ESQL (2026-10-29)** | the CREATE PROCEDURE/FUNCTION diagram (ak04970_, fetched verbatim 2026-10-29) ends after the parameter list with exactly `[ReturnType] [Language] [ResultSet] [RoutineBody]` — `[NOT] DETERMINISTIC`, `NO SQL`, `READS SQL DATA`, `MODIFIES SQL DATA` are DB2 routine characteristics and appear nowhere in the ESQL reference. Stays rejected |
 
 Adjudicating any of them means: read the railroad for that statement in the IBM
 ACE 12.0.x ESQL reference, extend `grammar.js` (permissive superset, never
