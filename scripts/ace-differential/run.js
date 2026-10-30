@@ -162,6 +162,28 @@ function aceVerdicts(ws) {
 
 (async () => {
   const names = manifest.probes.map((p) => p.file);
+
+  // Ledger completeness (correctness review 2026-10-30): every loop below is
+  // driven by manifest.probes, so a probe file on disk WITHOUT a manifest
+  // entry was copied, compiled and silently never checked — the one coverage
+  // loss this ledger exists to prevent, invisible by construction. Fail closed
+  // in every mode (--list and --ts-only included): the fix is one adjudicated
+  // manifest row, not a quieter check.
+  const onDisk = fs.readdirSync(probeDir).filter((f) => f.endsWith('.esql'));
+  const unmanifested = onDisk.filter((f) => !names.includes(f)).sort();
+  const missingFiles = names.filter((n) => !onDisk.includes(n));
+  if (unmanifested.length || missingFiles.length) {
+    if (unmanifested.length) {
+      console.error(`probes with no manifest.json entry (adjudicate them into the ledger):`);
+      unmanifested.forEach((f) => console.error(`  ${f}`));
+    }
+    if (missingFiles.length) {
+      console.error(`manifest entries with no probe file:`);
+      missingFiles.forEach((f) => console.error(`  ${f}`));
+    }
+    process.exit(1);
+  }
+
   if (listOnly) {
     names.forEach((n) => console.log(n));
     return;

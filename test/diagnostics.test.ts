@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { DiagnosticSeverity } from 'vscode-languageserver';
-import { analyze } from '../src/diagnostics';
+import { analyze, routineCandidateNames } from '../src/diagnostics';
 import { parse, analyzeDocument } from '../src/parser';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import { skipWithoutGrammar } from './grammarStatus';
@@ -178,6 +178,97 @@ test('Main() without RETURN/PROPAGATE is a warning', () => {
   ].join('\n');
   const { warnings } = messages(src);
   assert.ok(warnings.some((w) => /neither RETURN nor PROPAGATE/.test(w)));
+});
+
+/**
+ * Correctness review 2026-10-30: the END-close branch tested
+ * `hasReturnOrPropagate` BEFORE the same iteration's RETURN/PROPAGATE test
+ * set it, so `RETURN TRUE; END;` — the very line that closes Main — flagged
+ * “Main() contains neither RETURN nor PROPAGATE” on legal code. The flag
+ * order is fixed; this fixture pins both directions of that line.
+ */
+test('RETURN TRUE; END; on the closing line is not a missing propagation (review 2026-10-30)', async (t) => {
+  const src = [
+    'CREATE COMPUTE MODULE CompactMain', // 0
+    'CREATE FUNCTION Main() RETURNS BOOLEAN BEGIN RETURN TRUE; END;', // 1 — header, body, close
+    'END MODULE;', // 2
+    '',
+  ].join('\n');
+  assert.deepEqual(
+    analyze(src, D).filter((d) => d.code === 'no-propagation'),
+    [],
+    'the one-line close carries its RETURN'
+  );
+
+  // The true absence still fires with the same compact shape.
+  const empty = src.replace('BEGIN RETURN TRUE; END;', 'BEGIN END;');
+  assert.equal(
+    analyze(empty, D).filter((d) => d.code === 'no-propagation').length,
+    1,
+    'a Main() with genuinely no RETURN still gets the warning'
+  );
+
+  if (!(await skipWithoutGrammar(t))) return;
+  const doc = analyzeDocument(parse(src)!, src);
+  assert.deepEqual(
+    analyze(src, D, doc).filter((d) => d.code === 'no-propagation'),
+    [],
+    'grammar mode agrees (the check is shared by both paths)'
+  );
+});
+
+/**
+ * Correctness review 2026-10-30: a `CREATE MODULE` while a module is still
+ * open overwrote the tracker, and the loop-end check can only report the
+ * LAST unclosed header — so the displaced module's missing END MODULE never
+ * surfaced. The header now flushes its predecessor.
+ */
+test('a second CREATE MODULE flushes the unclosed first one (review 2026-10-30)', () => {
+  const src = [
+    'CREATE COMPUTE MODULE A', // 0
+    'CREATE FUNCTION Main() RETURNS BOOLEAN', // 1
+    'BEGIN', // 2
+    'RETURN TRUE;', // 3
+    'END;', // 4
+    'CREATE COMPUTE MODULE B', // 5 — module A never saw its END MODULE
+    'CREATE FUNCTION Main2() RETURNS BOOLEAN', // 6
+    'BEGIN', // 7
+    'RETURN TRUE;', // 8
+    'END;', // 9
+    'END MODULE;', // 10
+    '',
+  ].join('\n');
+  const diags = analyze(src, D).filter((d) => d.code === 'missing-end-module');
+  assert.equal(
+    diags.length,
+    1,
+    `module A's forgotten END MODULE must surface, got ${JSON.stringify(diags.map((d) => d.message))}`
+  );
+  assert.match(diags[0].message, /'A'/);
+  assert.equal(diags[0].range.start.line, 0, 'flagged on the header that never closed');
+});
+
+/**
+ * Correctness review 2026-10-30: `routineCandidateNames` deduped with a
+ * case-SENSITIVE Set while the server passes both sets as-written and
+ * didYouMean folds case — so a sibling spelling `HELPER` of this file's
+ * `Helper` entered the list twice, and codeActions built two rename actions
+ * for one routine.
+ */
+test('routine did-you-mean candidates fold case, first spelling wins (review 2026-10-30)', () => {
+  const src = [
+    'CREATE COMPUTE MODULE Home',
+    'CREATE FUNCTION Helper() RETURNS BOOLEAN',
+    'BEGIN RETURN TRUE; END;',
+    'END MODULE;',
+    '',
+  ].join('\n');
+  const cands = routineCandidateNames(src, undefined, new Set(['HELPER', 'Other']));
+  assert.deepEqual(
+    cands.filter((n) => n.toUpperCase() === 'HELPER'),
+    ['Helper'],
+    `one row per routine, this file's own spelling: ${JSON.stringify(cands)}`
+  );
 });
 
 test('undeclared variable in SET is a warning (case-insensitive)', () => {

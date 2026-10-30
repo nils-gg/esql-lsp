@@ -91,6 +91,24 @@ export const ESQL_TYPES: EsqlTypeDoc[] = [
   { name: 'ROW', description: 'Compound type (typed row).' },
   { name: 'REFERENCE', description: 'Reference to a node in the message tree.' },
   { name: 'NAMESPACE', description: 'XML namespace (prefix + URI).' },
+  // The words the grammar's `datatype` rule accepts (tree-sitter-esql/grammar.js
+  // is the source of truth for this table). The list used
+  // to carry only the spelled-out forms, so `DECLARE x IN…` never completed
+  // `INT` — the most-typed type word there is — and `CAST (x AS <cursor>)`
+  // offers exactly this list (correctness review 2026-10-30). CLOB is
+  // deliberately NOT among them: DB2 has CLOB, ESQL's datatype rule does not,
+  // and completing a word the grammar rejects would offer text the Toolkit
+  // cannot compile.
+  { name: 'INT', description: 'Whole number (short form of `INTEGER`).' },
+  { name: 'CHAR', description: 'Text string (short form of `CHARACTER`).' },
+  { name: 'VARCHAR', description: 'Variable-length text (`CHARACTER VARYING`).' },
+  { name: 'DEC', description: 'Exact number (short form of `DECIMAL`).' },
+  { name: 'NUMERIC', description: 'Exact number (DECIMAL-equivalent).' },
+  { name: 'GMTTIME', description: 'GMT time with timezone offset.' },
+  { name: 'GMTTIMESTAMP', description: 'GMT date and time with timezone offset.' },
+  { name: 'NAME', description: 'Name of a message-tree field.' },
+  { name: 'NAMEVALUE', description: 'Name/value pair with its type.' },
+  { name: 'NONE', description: 'Uninitialised placeholder — no value yet.' },
 ];
 
 // ─── Message tree variables ──────────────────────────────────────────────────

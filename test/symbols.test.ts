@@ -319,6 +319,59 @@ test('empty source yields no symbols', () => {
 });
 
 /**
+ * Correctness review 2026-10-30: the heuristic path carried its own copy of
+ * MODULE_RE that omitted DATABASEEVENT — the outline (and every position the
+ * outline advertises) simply lacked those modules while the tree path listed
+ * them, the exact E-6/T-4 re-typed-matcher failure the exported MODULE_RE
+ * exists to prevent. The fallback assertion runs in BOTH modes.
+ */
+test('DATABASEEVENT modules are outlined, identically in both paths (review 2026-10-30)', async () => {
+  const src = [
+    'BROKER SCHEMA com.example.de;', //               0
+    'CREATE DATABASEEVENT MODULE AuditTrail', //      1
+    'CREATE FUNCTION Main() RETURNS BOOLEAN', //      2
+    'BEGIN', //                                       3
+    'RETURN TRUE;', //                               4
+    'END;', //                                       5
+    'END MODULE;', //                                6
+    '',
+  ].join('\n');
+  const fallback = outline(documentSymbols(src));
+  assert.ok(
+    fallback.some((l) => l.trim() === '2:AuditTrail [DATABASEEVENT MODULE]'),
+    `the module is in the fallback outline, got ${JSON.stringify(fallback)}`
+  );
+  assert.ok(
+    fallback.some((l) => l.trim() === '12:Main [FUNCTION() RETURNS BOOLEAN]' && l.startsWith('  ')),
+    `Main nests inside it, got ${JSON.stringify(fallback)}`
+  );
+  const tree = await treeOutline(src);
+  if (tree) assert.deepEqual(tree, fallback, 'both paths outline the same file');
+});
+
+/**
+ * Correctness review 2026-10-30: nameRange located the name with
+ * `match[0].indexOf(name)`, which finds the FIRST occurrence — in
+ * `CREATE COMPUTE MODULE M` the first `M` sits inside COMPUTE, so a short
+ * module name advertised a selectionRange inside the module KIND word, and
+ * hover/definition/references asked at the outline's own position resolved
+ * the wrong span (the I-4 bug, other half).
+ */
+test('a module name that recurs earlier in the header still selects its own span (review 2026-10-30)', () => {
+  for (const [header, name] of [
+    ['CREATE COMPUTE MODULE M', 'M'], // M also in COMPUTE
+    ['CREATE FILTER MODULE FILTER', 'FILTER'], // FILTER also as the module kind
+  ] as const) {
+    const syms = documentSymbols([header, 'END MODULE;', ''].join('\n'));
+    const mod = syms.find((s) => s.kind === SymbolKind.Module);
+    assert.ok(mod, `outline has the module: ${JSON.stringify(header)}`);
+    const keywordCol = header.indexOf('MODULE') + 'MODULE '.length;
+    assert.equal(mod!.selectionRange.start.character, keywordCol, `selection start of ${name}`);
+    assert.equal(mod!.selectionRange.end.character, keywordCol + name.length, `selection end of ${name}`);
+  }
+});
+
+/**
  * ISSUES.md I-6: the buffer being typed — a module whose END MODULE (and so
  * whose routine END;) is still missing. Grammar mode used to list only the
  * module: the walk stopped at the ERROR region and semantic checks went quiet,

@@ -246,6 +246,70 @@ test('with two Main() routines, hover names the module the cursor is in', async 
   }
 });
 
+/**
+ * Correctness review 2026-10-30: hover resolved a routine name with
+ * `routineByNameAt`, whose fallback picked the FIRST same-named routine in
+ * file order — so at an unqualified call into a name several other modules
+ * share, hover silently described one module while definition/references/
+ * rename (all on `routineTargetsFor`) listed them all. Hover now goes through
+ * the same resolver and says the name is ambiguous, both modes alike.
+ */
+const AMBIGUOUS_CALL = [
+  'CREATE COMPUTE MODULE CallerA', //                    0
+  'CREATE FUNCTION Main() RETURNS BOOLEAN', //           1
+  'BEGIN', //                                            2
+  '  CALL Helper();', //                                 3 — whose Helper?
+  '  RETURN TRUE;', //                                   4
+  'END;', //                                             5
+  'END MODULE;', //                                      6
+  'CREATE COMPUTE MODULE ModuleB', //                    7
+  'CREATE FUNCTION Helper() RETURNS BOOLEAN', //         8
+  'BEGIN RETURN TRUE; END;', //                          9
+  'END MODULE;', //                                      10
+  'CREATE COMPUTE MODULE ModuleC', //                    11
+  'CREATE FUNCTION Helper() RETURNS BOOLEAN', //         12
+  'BEGIN RETURN TRUE; END;', //                          13
+  'END MODULE;', //                                      14
+  '',
+].join('\n');
+
+test('an ambiguous unqualified CALL hovers as ambiguous, like definition lists it (review 2026-10-30)', async () => {
+  const line = 3;
+  const character = AMBIGUOUS_CALL.split('\n')[line].indexOf('Helper');
+  const heuristic = text(hoverAt(AMBIGUOUS_CALL, line, character));
+  assert.match(heuristic!, /\*\*Ambiguous name\*\*/, 'the card admits it cannot pick');
+  assert.match(heuristic!, /module `ModuleB`/, 'candidate one is named');
+  assert.match(heuristic!, /module `ModuleC`/, 'candidate two is named too');
+
+  await initGrammar();
+  if (grammarReady()) {
+    const tree = analyzeDocument(parse(AMBIGUOUS_CALL)!);
+    const grammar = text(hoverAt(AMBIGUOUS_CALL, line, character, tree));
+    assert.match(grammar!, /\*\*Ambiguous name\*\*/, 'grammar mode says the same');
+    assert.match(grammar!, /module `ModuleB`/);
+    assert.match(grammar!, /module `ModuleC`/);
+  }
+
+  // The single-candidate cross-module shape keeps its old routine card:
+  // nothing about a name only ONE module owns was ever ambiguous.
+  const single = AMBIGUOUS_CALL.split('\n').slice(0, 11).join('\n') + '\n';
+  const card = text(hoverAt(single, line, character));
+  assert.match(card!, /\*\*ESQL function\*\*/);
+  assert.match(card!, /\*in module `ModuleB`\*/);
+  assert.doesNotMatch(card!, /Ambiguous/);
+});
+
+test('the short type words document themselves on hover (review 2026-10-30)', () => {
+  const src = 'DECLARE n INT;\nSET n = CAST(m AS VARCHAR(4));\n';
+  for (const [line, word] of [
+    [0, 'INT'],
+    [1, 'VARCHAR'],
+  ] as const) {
+    const card = text(hoverAt(src, line, src.split('\n')[line].indexOf(word)));
+    assert.match(card!, /\*\*ESQL data type\*\*/, `${word} is documented after the table fix`);
+  }
+});
+
 test('hovering inside a string or comment yields nothing', async () => {
   const inString = hoverAt("SET note = 'isValid here';", 0, 20);
   assert.equal(inString, null);

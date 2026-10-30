@@ -48,14 +48,35 @@ export type CompletionContextKind =
   | 'types'
   | 'general';
 
+/**
+ * Does the word being typed still leave room for a narrowed list? Empty or a
+ * STRICT prefix of one of the list's items: the moment the word is complete
+ * (`InputRoot.JSON.Data`) the position is a finished path segment, and the
+ * general list answers there — the boundary `detectCompletionContext` has
+ * always pinned (completion.test.ts). Without the partial tail, the narrowed
+ * popup vanished the instant its first letter landed (correctness review
+ * 2026-10-30): the item the user was typing disappeared from its own list.
+ */
+function stillNarrowing(partial: string, items: string[]): boolean {
+  if (!partial) return true;
+  const p = partial.toLowerCase();
+  return items.some((i) => i.length > p.length && i.toLowerCase().startsWith(p));
+}
+
+/** The property names the json-data list offers (buildCompletionItems docs them). */
+const JSON_CONTAINER_FIELDS = ['Data', 'Properties'];
+
 /** Determine which completion context the cursor is in. */
 export function detectCompletionContext(linePrefix: string): CompletionContextKind {
-  // `<root>.JSON.` — dot after the domain already typed.
-  if (/\b(InputRoot|OutputRoot)\.JSON\s*\.\s*$/i.test(linePrefix)) {
+  // `<root>.JSON.` — dot after the domain already typed, plus any partial
+  // word still narrowing the container list.
+  const json = linePrefix.match(/\b(InputRoot|OutputRoot)\.JSON\s*\.\s*([A-Za-z0-9_]*)$/i);
+  if (json && stillNarrowing(json[2], JSON_CONTAINER_FIELDS)) {
     return 'json-data';
   }
   // `<root>.XMLNSC.` — dot after the domain already typed.
-  if (/\b(InputRoot|OutputRoot)\.XMLNSC\s*\.\s*$/i.test(linePrefix)) {
+  const xmlns = linePrefix.match(/\b(InputRoot|OutputRoot)\.XMLNSC\s*\.\s*([A-Za-z0-9_]*)$/i);
+  if (xmlns && stillNarrowing(xmlns[2], ['Root'])) {
     return 'xmlns-root';
   }
   // `<root>.` or `<root>.<partial-domain>` — offer parser domains,
@@ -71,10 +92,14 @@ export function detectCompletionContext(linePrefix: string): CompletionContextKi
     }
   }
 
-  if (/\b(InputLocalEnvironment|OutputLocalEnvironment|LocalEnvironment|Environment)\s*\.\s*$/i.test(linePrefix)) {
+  const le = linePrefix.match(
+    /\b(InputLocalEnvironment|OutputLocalEnvironment|LocalEnvironment|Environment)\s*\.\s*([A-Za-z0-9_]*)$/i
+  );
+  if (le && stillNarrowing(le[2], ESQL_LOCAL_ENVIRONMENT_FIELDS.map((f) => f.name))) {
     return 'local-env';
   }
-  if (/\bDatabase\s*\.\s*$/i.test(linePrefix)) {
+  const db = linePrefix.match(/\bDatabase\s*\.\s*([A-Za-z0-9_]*)$/i);
+  if (db && stillNarrowing(db[2], ['DS_YOUR_DATASOURCE'])) {
     return 'datasource';
   }
   if (
@@ -378,7 +403,9 @@ function ruleForMaskedPrefix(maskedPrefix: string): NextWordRule | undefined {
  */
 function nextWordItems(rule: NextWordRule): CompletionItem[] {
   const items: CompletionItem[] = [];
+  const offered = new Set<string>();
   for (const w of rule.words) {
+    offered.add(w);
     const item = ci(
       w,
       w === '=' ? CompletionItemKind.Operator : CompletionItemKind.Keyword
@@ -388,6 +415,11 @@ function nextWordItems(rule: NextWordRule): CompletionItem[] {
     items.push(item);
   }
   for (const t of rule.types ?? []) {
+    // `NAME` is both a clause word of the DECLARE rule and a datatype in
+    // ESQL_TYPES (the grammar's datatype rule carries it) — one row, the
+    // clause form, not two identical-looking ones (the I-17 lesson applied
+    // inside a narrowed list).
+    if (offered.has(t)) continue;
     const item = ci(t, CompletionItemKind.TypeParameter);
     item.detail = 'ESQL data type';
     const doc = ESQL_TYPES.find((d) => d.name === t)?.description;
@@ -507,6 +539,8 @@ export function buildCompletionItems(
 
   switch (context) {
     case 'json-data': {
+      // The labels here must match JSON_CONTAINER_FIELDS, which is what
+      // decides the context stays json-data while the word is being typed.
       const data = ci('Data', CompletionItemKind.Property);
       data.detail = 'JSON payload container';
       data.documentation = markdown('Continue with `.Data.<field>` to address the JSON payload.');

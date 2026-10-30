@@ -1148,23 +1148,12 @@ export function enclosingRoutine(
 }
 
 /**
- * The routine to hover when the word under the cursor is a routine *name*: the
- * one with that name which the cursor belongs to, when there is one — a file
- * with two modules each holding a `Main()` must not hover the second module's
- * `Main` as if it were the first's (I-15). Falls back to file order.
+ * `routineByNameAt` was removed (correctness review 2026-10-30): its
+ * first-match-in-file-order fallback let hover pick a routine the cursor's
+ * module does not own whenever several modules shared the name, disagreeing
+ * with what `routineTargetsFor` — definition, references, rename — answers at
+ * the same position. One resolver per question: use `routineTargetsFor`.
  */
-export function routineByNameAt(
-  routines: RoutineInfo[],
-  name: string,
-  line: number,
-  character: number
-): RoutineInfo | undefined {
-  const named = routines.filter((r) => eqName(r.name, name));
-  if (!named.length) return undefined;
-  const owner = enclosingRoutine(routines, line, character);
-  if (owner && named.includes(owner)) return owner;
-  return named[0];
-}
 
 /**
  * Declaration ranges for the symbol under the cursor; empty when the word is

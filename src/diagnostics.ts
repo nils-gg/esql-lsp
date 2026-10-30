@@ -260,6 +260,27 @@ function checkModuleStructure(lines: string[], out: Diagnostic[]): void {
 
     const mod = MODULE_RE.exec(line);
     if (mod) {
+      // A header while a module is still open DISPLACES it: that module never
+      // saw its END MODULE and, once overwritten, nothing below reports it —
+      // the loop-end check can only ever see the LAST unclosed header
+      // (correctness review 2026-10-30). Flush the displaced module now, with
+      // the same two findings the END MODULE close gives a closing module.
+      if (moduleStart >= 0) {
+        out.push(diag(
+          lineRange(moduleStart, lines[moduleStart]),
+          `Module '${moduleName || '<unnamed>'}' is missing its closing 'END MODULE'.`,
+          DiagnosticSeverity.Error,
+          'missing-end-module'
+        ));
+        if (!hasMain) {
+          out.push(diag(
+            lineRange(i, line),
+            `Module '${moduleName}' contains no Main() function. ACE cannot execute it.`,
+            DiagnosticSeverity.Warning,
+            'module-no-main'
+          ));
+        }
+      }
       moduleStart = i;
       moduleName = mod[2];
       hasMain = false;
@@ -558,6 +579,16 @@ function checkPropagateOrReturn(lines: string[], out: Diagnostic[]): void {
       depth++;
     }
 
+    // The RETURN/PROPAGATE flag is set BEFORE the END-close is evaluated:
+    // `RETURN TRUE; END;` — header, body and close on one line, or just the
+    // closing pair — is exactly the line that closes Main, and testing the
+    // flag first flagged legal code with “Main() contains neither RETURN nor
+    // PROPAGATE” (correctness review 2026-10-30; codeActions.ts treats the
+    // `… ; END;` shape as real).
+    if (/\bRETURN\b/i.test(line) || /\bPROPAGATE\b/i.test(line)) {
+      hasReturnOrPropagate = true;
+    }
+
     if (findEndToken(line) >= 0) {
       depth--;
       if (depth <= 0 && bodySeen) {
@@ -571,10 +602,6 @@ function checkPropagateOrReturn(lines: string[], out: Diagnostic[]): void {
         }
         inMain = false;
       }
-    }
-
-    if (/\bRETURN\b/i.test(line) || /\bPROPAGATE\b/i.test(line)) {
-      hasReturnOrPropagate = true;
     }
   }
 
@@ -705,10 +732,23 @@ export function routineCandidateNames(
 ): string[] {
   if (!workspaceRoutineNames) return [];
   const fileRoutines = (doc ? doc.routines : routinesFromSource(source)).map((r) => r.name);
-  return [
-    ...new Set<string>([...fileRoutines, ...workspaceRoutineNames]),
-    ...ESQL_FUNCTIONS.map((f) => f.name),
-  ];
+  // Dedupe CASE-INSENSITIVELY, first spelling winning (correctness review
+  // 2026-10-30): ESQL names fold case, didYouMean folds case, and the server
+  // passes these sets as-written — so `Helper` here plus `HELPER` from a
+  // sibling file is ONE routine that a case-sensitive Set listed twice. The
+  // duplicate quickened no message (only [0] prints), but codeActions builds
+  // one replace-action per candidate and shipped two rename actions for one
+  // symbol, and on a distance tie the message could name the sibling's
+  // spelling over the file's own.
+  const seen = new Set<string>();
+  const routines: string[] = [];
+  for (const n of [...fileRoutines, ...workspaceRoutineNames]) {
+    const upper = n.toUpperCase();
+    if (seen.has(upper)) continue;
+    seen.add(upper);
+    routines.push(n);
+  }
+  return [...routines, ...ESQL_FUNCTIONS.map((f) => f.name)];
 }
 
 /**

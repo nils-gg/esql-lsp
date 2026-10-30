@@ -26,6 +26,30 @@ test('detects JSON. / XMLNSC. sub-contexts', () => {
   assert.equal(detectCompletionContext('SET x = OutputRoot.XMLNSC.'), 'xmlns-root');
 });
 
+/**
+ * Correctness review 2026-10-30: the narrowed dotted lists were anchored on
+ * end-of-line right after the dot, so the FIRST typed letter dropped the
+ * context to `general` — the item the user was typing disappeared from its
+ * own popup. The `JSON.Data → general` boundary pinned above still holds:
+ * the narrowed context survives only while the word could still grow into
+ * one of the list's items, and the lists FILTER that word, never empty out.
+ */
+test('narrowed dotted lists survive the word being typed (review 2026-10-30)', () => {
+  assert.equal(detectCompletionContext('SET x = InputRoot.JSON.D'), 'json-data');
+  assert.equal(detectCompletionContext('SET x = OutputRoot.JSON.Pr'), 'json-data');
+  assert.equal(detectCompletionContext('SET x = InputRoot.XMLNSC.R'), 'xmlns-root');
+  assert.equal(detectCompletionContext('SET x = OutputLocalEnvironment.M'), 'local-env');
+  assert.equal(detectCompletionContext('CONNECT TO Database.DS_Y'), 'datasource');
+  // A word that can no longer grow into an item falls through as before:
+  assert.equal(detectCompletionContext('SET x = InputRoot.JSON.Datapoint'), 'general');
+  assert.equal(detectCompletionContext('SET x = OutputLocalEnvironment.MyCounter'), 'general');
+  // And the list narrows to the survivor instead of vanishing:
+  assert.deepEqual(
+    buildCompletionItems('json-data', 'SET x = InputRoot.JSON.Pr', '').map((i) => i.label),
+    ['Properties']
+  );
+});
+
 test('detects LocalEnvironment, Database, types and general contexts', () => {
   assert.equal(detectCompletionContext('SET x = OutputLocalEnvironment.'), 'local-env');
   assert.equal(detectCompletionContext('SET x = Environment.'), 'local-env');
@@ -386,6 +410,32 @@ test('clause words narrow inside expressions too', () => {
   assert.ok(isPos.includes('NOT') && isPos.includes('NULL') && isPos.includes('NAN'));
   assert.ok(!isPos.includes('WHILE'));
   assert.ok(!labelSet('IF a IS NOT ').includes('NOT'), 'one NOT only');
+});
+
+/**
+ * Correctness review 2026-10-30: ESQL_TYPES carried only the spelled-out
+ * types, so the words the grammar’s datatype rule actually accepts were
+ * uncompletable — `DECLARE x IN…` never offered INT (the most-typed type
+ * word in real ESQL), and `CAST (x AS <cursor>)` offers exactly this list.
+ * The table now mirrors the grammar rule; CLOB stays out because the GRAMMAR
+ * has no CLOB (it is DB2’s), and completing a word the parser rejects would
+* offer text the Toolkit cannot compile.
+ */
+test('the completion type table carries the grammar’s datatype words (review 2026-10-30)', () => {
+  const castAs = labelSet('SET x = CAST(y AS ');
+  for (const word of [
+    'INT', 'VARCHAR', 'CHAR', 'DEC', 'NUMERIC', 'GMTTIME', 'GMTTIMESTAMP', 'NAME', 'NAMEVALUE', 'NONE',
+  ]) {
+    assert.ok(castAs.includes(word), `CAST … AS offers ${word}`);
+  }
+  assert.ok(!castAs.includes('CLOB'), 'no CLOB: ESQL has none, the grammar proves it');
+  const declares = labelSet('DECLARE x ');
+  assert.ok(declares.includes('INT'), 'DECLARE offers the short forms too');
+  assert.equal(
+    declares.filter((l) => l === 'NAME').length,
+    1,
+    'NAME is a DECLARE clause word AND a datatype — one row, not two'
+  );
 });
 
 test('additive rules keep the general list where an expression is equally legal', () => {

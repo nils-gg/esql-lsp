@@ -32,7 +32,7 @@ import {
   schemaFromSource,
   matchesSchemaName,
   declarationAt,
-  routineByNameAt,
+  routineTargetsFor,
   enclosingRoutine,
   callTargetAt,
   qualifierMatchesModule,
@@ -61,6 +61,28 @@ function routineHover(r: RoutineInfo): Hover {
       (r.kind === 'FUNCTION' && !r.returnType
         ? '\n\n_No RETURNS clause — ACE cannot use its value._'
         : '')
+  );
+}
+
+/**
+ * Hover for an unqualified name that several modules own and none of them is
+ * the cursor's — genuinely ambiguous (Enh 36: shown, not silently chosen).
+ * Listing every candidate is what definition/references/rename answer for the
+ * same position, so the three features can no longer disagree about it.
+ */
+function ambiguousRoutineHover(targets: RoutineInfo[]): Hover {
+  const list = targets
+    .map(
+      (r) =>
+        `- ${routineSignature(r)} — ${
+          r.moduleName ? `module \`${r.moduleName}\`` : 'document level'
+        }, line ${r.range.start.line + 1}`
+    )
+    .join('\n');
+  return markdown(
+    `### \`${targets[0].name}\`\n\n**Ambiguous name** — ${targets.length} routines share it ` +
+      `and the cursor's module declares none:\n\n${list}\n\n` +
+      '_Go to definition lists all of them; rename refuses on ambiguity._'
   );
 }
 
@@ -144,8 +166,20 @@ export function hoverAt(
     return owned.length ? routineHover(owned[0]) : null;
   }
 
-  const routine = routineByNameAt(routines, w.word, line, character);
-  if (routine) return routineHover(routine);
+  // Issue 3 / issue 5 / Enh 36, the hover side: resolved through the SAME
+  // routineTargetsFor that definition, references and rename use — module-local
+  // resolution for an unqualified use, the declaration itself when the cursor
+  // sits on one. `routineByNameAt` here used to fall back to the FIRST
+  // same-named routine in file order, so hovering a call into an ambiguous name
+  // silently picked one module while definition listed them all (correctness
+  // review 2026-10-30). An ambiguous name now says so, like definition shows
+  // them.
+  // `RoutineDecl` is the resolver's narrowed view; the objects themselves are
+  // full `RoutineInfo`s from the shared extractors (the same cast
+  // `routineDecls()` performs in the other direction).
+  const targets = routineTargetsFor(source, line, character, w.word, w.range, doc) as RoutineInfo[];
+  if (targets.length === 1) return routineHover(targets[0]);
+  if (targets.length > 1) return ambiguousRoutineHover(targets);
 
   const declarations: DeclaredName[] = doc
     ? doc.declaredNames

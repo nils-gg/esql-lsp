@@ -4,7 +4,7 @@
  * Structure:
  *
  *   Namespace (BROKER SCHEMA)
- *   Module          CREATE COMPUTE|FILTER|DATABASE MODULE ... END MODULE
+ *   Module          CREATE COMPUTE|FILTER|DATABASE|DATABASEEVENT MODULE ... END MODULE
  *     Function      CREATE FUNCTION|PROCEDURE ... (body bounded by BEGIN/END)
  *       Variable    parameter + DECLARE inside the routine body
  *     Variable      module-level DECLARE
@@ -21,12 +21,17 @@ import {
   rangeContains,
   declarationsFromSource,
   routinesFromSource,
+  // The module-boundary matchers come from definitions.ts, NOT a local copy:
+  // the near-identical re-typed regex this file used to carry omitted
+  // DATABASEEVENT, so the heuristic outline was blind to DATABASEEVENT modules
+  // while the tree path listed them (the exact E-6/T-4 failure the note above
+  // the exported MODULE_RE warns about; correctness review 2026-10-30).
+  MODULE_RE,
+  END_MODULE_RE,
 } from './definitions';
 import type { DocAnalysis, RoutineInfo } from './parser';
 
 const BROKER_RE = /\bBROKER\s+SCHEMA\s+([A-Za-z0-9_.]+)/i;
-const MODULE_RE = /\bCREATE\s+(COMPUTE|FILTER|DATABASE)\s+MODULE\s+([A-Za-z_]\w*)/i;
-const END_MODULE_RE = /\bEND\s+MODULE\b/i;
 
 function lineRange(line: number, length: number): Range {
   return Range.create(line, 0, line, length);
@@ -40,9 +45,18 @@ function lineRange(line: number, length: number): Range {
  * every indented routine's `selectionRange` one character left of the name —
  * which made hover/definition/references fail when asked at the position the
  * outline itself advertised (ISSUES.md I-4).
+ *
+ * `indexOf(name)` alone was the OTHER half of that bug (correctness review
+ * 2026-10-30): when the name recurs earlier inside the match text it finds the
+ * wrong span — in `CREATE COMPUTE MODULE M` the first `M` sits in `COMPUTE`,
+ * so a one-letter module name advertised a selectionRange 13 columns off.
+ * Both patterns this helper serves (BROKER_RE, MODULE_RE) END on their
+ * capture, so the capture is a suffix of the match text and the suffix
+ * offset is exact; `indexOf` stays as the fallback for a future pattern that
+ * does not.
  */
 function nameRange(line: number, name: string, match: RegExpExecArray): Range {
-  const idx = match[0].indexOf(name);
+  const idx = match[0].endsWith(name) ? match[0].length - name.length : match[0].indexOf(name);
   const start = idx >= 0 ? match.index + idx : match.index;
   return Range.create(line, start, line, start + name.length);
 }
