@@ -3158,3 +3158,75 @@ test('a Windows-style rootUri cannot sink the server on an OS that cannot read i
     await client.close();
   }
 });
+
+/**
+ * list.md 8, the rename shape (correctness review 2026-10-29): a folder swap
+ * arrives as ONE event with equal-size removed+added arrays, and the
+ * root-COUNT comparison in handleWorkspaceFoldersChange read that as "nothing
+ * moved" — no rescan was queued, so the index kept answering workspace/symbol
+ * from the detached folder and the new folder's files never entered it (the
+ * watcher cannot heal this: their first scan never ran, and events for the
+ * detached folder's files still counted as its own).
+ */
+test('a workspace folder swap in one event rescans; the old folder leaves the index (list.md 8)', async () => {
+  const dirOld = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-fold-swap-old-'));
+  const dirNew = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-fold-swap-new-'));
+  const client = new LspClient();
+  const moduleFile = (name: string) =>
+    [
+      `CREATE COMPUTE MODULE ${name}`,
+      'CREATE FUNCTION Main() RETURNS BOOLEAN',
+      'BEGIN',
+      '  RETURN TRUE;',
+      'END;',
+      'END MODULE;',
+      '',
+    ].join('\n');
+  fs.writeFileSync(path.join(dirOld, 'Alpha.esql'), moduleFile('Alpha'));
+  fs.writeFileSync(path.join(dirNew, 'Beta.esql'), moduleFile('Beta'));
+  try {
+    await client.request('initialize', {
+      processId: process.pid,
+      rootUri: pathToFileURL(dirOld).href,
+      workspaceFolders: [{ uri: pathToFileURL(dirOld).href, name: 'old' }],
+      // The server installs the folder-change listener only once the client
+      // proves it can send the event (the pinned library's throwing getter).
+      capabilities: { workspace: { workspaceFolders: true } },
+      initializationOptions: {},
+    });
+    client.notify('initialized', {});
+
+    const symbolsNamed = async (query: string): Promise<any[]> => {
+      const r = await client.request('workspace/symbol', { query });
+      return r.result ?? [];
+    };
+    const poll = async (query: string, present: boolean, why: string) => {
+      const deadline = Date.now() + 15000;
+      for (;;) {
+        const hits = await symbolsNamed(query);
+        if ((hits.length > 0) === present) return;
+        if (Date.now() > deadline) throw new Error(`${why}: query '${query}' → ${JSON.stringify(hits)}`);
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    };
+
+    // The initial scan has settled: Alpha is visible from disk alone.
+    await poll('alpha', true, 'initial scan');
+
+    client.notify('workspace/didChangeWorkspaceFolders', {
+      event: {
+        removed: [{ uri: pathToFileURL(dirOld).href, name: 'old' }],
+        added: [{ uri: pathToFileURL(dirNew).href, name: 'new' }],
+      },
+    });
+
+    // Same-count event: the count guard used to call this "nothing moved" —
+    // pre-fix, Beta never appeared and Alpha never left.
+    await poll('beta', true, 'the folder swap indexed the new folder');
+    await poll('alpha', false, 'the detached folder left the index along with its symbols');
+  } finally {
+    await client.close();
+    fs.rmSync(dirOld, { recursive: true, force: true });
+    fs.rmSync(dirNew, { recursive: true, force: true });
+  }
+});

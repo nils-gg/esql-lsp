@@ -411,6 +411,42 @@ test('roots that change mid-scan REPLACE the stale walk instead of merging into 
   }
 });
 
+/**
+ * The other half of list.md 8, guard-order edition (correctness review
+ * 2026-10-29): with a snapshot ALREADY installed, the last root is removed
+ * while a rescan for a just-added folder is still walking. The generation
+ * guard discards that walk — and if the empty-roots reset is skipped because
+ * a walk is technically in flight, NOTHING writes to the index, so the old
+ * snapshot survives forever and `workspace/symbol` keeps answering from a
+ * folder the user detached.
+ */
+test('detaching the last root mid-walk clears the INSTALLED snapshot too (L8)', async () => {
+  const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-clear-A-'));
+  const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-clear-B-'));
+  try {
+    fs.writeFileSync(path.join(dirA, 'A.esql'), LIB('RoutineA'));
+    fs.writeFileSync(path.join(dirB, 'B.esql'), LIB('RoutineB'));
+    const idx = new WorkspaceIndex();
+    idx.addRoot(dirA);
+    await idx.rescan(); // A's snapshot is installed
+    idx.addRoot(dirB);
+    const walk = idx.rescan(); // …a walk for B is in flight…
+    idx.removeRoot(dirB);
+    idx.removeRoot(dirA); // …and the workspace fully detaches while it runs
+    await idx.rescan(); // must clear NOW, not defer to the doomed walk
+    await walk; // the discarded walk must not resurrect anything afterwards
+    assert.equal(idx.hasRoot(), false);
+    assert.deepEqual(idx.stats(), { files: 0, skipped: 0 }, 'the detached workspace left with it');
+    assert.deepEqual(idx.symbolsFromDisk(), []);
+    assert.deepEqual(idx.routinesNamed('RoutineA'), []);
+    assert.deepEqual(idx.routinesNamed('RoutineB'), [], 'the discarded walk installed nothing either');
+    assert.equal(idx.sharedNamesFromDisk().size, 0);
+  } finally {
+    fs.rmSync(dirA, { recursive: true, force: true });
+    fs.rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
 test('a watch event arriving mid-scan lands on top of the scan, not under it (L7)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'esql-watch-race-'));
   try {

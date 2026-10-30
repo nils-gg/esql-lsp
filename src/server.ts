@@ -84,6 +84,7 @@ import {
 import { mergeSettings, unwrapSettings, EsqlSettings, DEFAULT_SETTINGS } from './settings';
 import {
   initGrammar,
+  grammarReady,
   parse,
   clausePrefixAt,
   analyzeDocument,
@@ -199,8 +200,16 @@ interface ParsedDocument {
 const parseCache = new Map<string, ParsedDocument>();
 
 function parsedDocument(uri: string, text: string): ParsedDocument {
+  // A cached null tree is trustworthy only while the grammar was unavailable
+  // when it was stored. initGrammar is async and non-blocking, so requests
+  // arriving during startup cached `tree: null` for the buffer's exact text —
+  // and every later hit on that same text (the grammar-ready revalidation
+  // included) reused it, keeping grammar syntax errors, tree analysis and
+  // semantic tokens off an UNTOUCHED buffer until its first edit. Treating
+  // "grammar since became ready, cached tree is null" as a miss costs exactly
+  // one re-parse per document, after which the cache holds the tree.
   const hit = parseCache.get(uri);
-  if (hit && hit.text === text) return hit;
+  if (hit && hit.text === text && !(hit.tree === null && grammarReady())) return hit;
   const tree = parse(text);
   const entry: ParsedDocument = { text, tree, analysis: tree ? analyzeDocument(tree, text) : null };
   parseCache.set(uri, entry);
@@ -962,22 +971,29 @@ connection.onDidChangeWatchedFiles(async ({ changes }) => {
  * bounded rescan refreshes the facts — the same post-scan revalidation the
  * initial scan gets. Removing the LAST folder clears the index; features
  * degrade to open-buffers-only, which is the no-workspace behaviour.
+ *
+ * "Did anything move" is answered by the add/remove booleans, NOT by a root
+ * COUNT comparison: a folder rename or swap arrives as one event with a
+ * `removed` and an `added` of the same size, and the count guard used to
+ * early-return on exactly that — leaving the index serving the removed
+ * folder's files forever, since nothing else rescans and the watcher rejects
+ * the new folder's events as foreign (correctness review 2026-10-29).
  */
 function handleWorkspaceFoldersChange(event: {
   added: ReadonlyArray<{ uri: string; name: string }>;
   removed: ReadonlyArray<{ uri: string; name: string }>;
 }): void {
-  const before = workspaceIndex.rootPaths().length;
+  let changed = false;
   for (const folder of event.removed) {
     const p = uriToFsPath(folder.uri);
-    if (p) workspaceIndex.removeRoot(p);
+    if (p && workspaceIndex.removeRoot(p)) changed = true;
   }
   for (const folder of event.added) {
     const p = uriToFsPath(folder.uri);
-    if (p) workspaceIndex.addRoot(p);
+    if (p && workspaceIndex.addRoot(p)) changed = true;
   }
+  if (!changed) return; // nothing of ours moved (VFS folders, duplicates, caps)
   const after = workspaceIndex.rootPaths().length;
-  if (after === before) return; // nothing of ours moved (VFS folders, duplicates)
   connection.console.info(`esql-lsp: workspace folders changed — ${after} folder(s) indexed`);
   if (after > 0) {
     void workspaceIndex.rescan().then(() => {

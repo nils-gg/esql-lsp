@@ -267,7 +267,14 @@ export class WorkspaceIndex {
    */
   rescan(): Promise<void> {
     if (this.roots.length === 0) {
-      if (!this.scanning) this.resetEmpty();
+      // Reset UNCONDITIONALLY, even with a walk in flight. Emptying the roots
+      // bumped `rootsGeneration`, so that walk's result is already doomed to
+      // the generation guard in `scanNow` — nothing it lands can resurrect the
+      // removed roots' files. Gating the reset on `!this.scanning` was the
+      // hole that kept a fully-detached workspace's symbols in the index
+      // (correctness review 2026-10-29): the discarded walk was the only
+      // writer, so the stale snapshot survived forever.
+      this.resetEmpty();
       return Promise.resolve();
     }
     if (!this.scanning || this.scanning.gen !== this.rootsGeneration) {

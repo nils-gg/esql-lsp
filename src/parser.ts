@@ -777,8 +777,18 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
     const src = text();
     const p = pos();
     const startStr = p.index(node.startIndex);
-    const nl = src.indexOf('\n', startStr);
-    const endStr = nl === -1 ? src.length : nl;
+    // End the line where the CLIENT ends it: LF, CRLF or lone CR. Scanning
+    // for '\n' alone trusted a property `src` may not have — `text()` is the
+    // client's ORIGINAL text (parse() normalises lone CRs for the tree only),
+    // so on a CR-only document the search ran to the next LF or EOF and the
+    // "one line at most" clamp emitted an end column past the end of the
+    // line. Stopping at the CR of a CRLF pair also trims the '\r' the old
+    // search had included — I-18's rule for tokens applies to these ranges
+    // too (correctness review 2026-10-29).
+    const termRe = /[\n\r]/g;
+    termRe.lastIndex = startStr;
+    const term = termRe.exec(src);
+    const endStr = term ? term.index : src.length;
     const anchor = p.point(node.startPosition.row, node.startPosition.column);
     return {
       row: anchor.line,
@@ -914,16 +924,21 @@ export function analyzeDocument(tree: Tree, source?: string): DocAnalysis {
     // covers every naming path at once — the leading-keyword one below and
     // the ancestor one — and a damaged header of a CLOSED module keeps its
     // message: nothing else reports that shape.
-    const named = (phrase: string, anchor: SyntaxNode): SyntaxIssue => ({
-      message: `Syntax error in ${phrase}.${hint}`,
-      ...(phrase === 'a module definition' ? { kind: 'module-definition' as const } : {}),
-      range: Range.create(
-        anchor.startPosition.row,
-        anchor.startPosition.column,
-        endOfLineAt(anchor).row,
-        endOfLineAt(anchor).column
-      ),
-    });
+    const named = (phrase: string, anchor: SyntaxNode): SyntaxIssue => {
+      // BOTH ends in the character space the client counts (positions.ts).
+      // The start used to be the raw tree point — a BYTE column — while the
+      // end was converted, so on a line with non-ASCII before the damage the
+      // highlight began (bytes − UTF-16) columns too far right, breaking the
+      // `toRange`-is-the-only-way-out invariant documented above (correctness
+      // review 2026-10-29).
+      const start = pos().point(anchor.startPosition.row, anchor.startPosition.column);
+      const eol = endOfLineAt(anchor);
+      return {
+        message: `Syntax error in ${phrase}.${hint}`,
+        ...(phrase === 'a module definition' ? { kind: 'module-definition' as const } : {}),
+        range: Range.create(start.line, start.character, eol.row, eol.column),
+      };
+    };
     // 1. A region that opens with a statement keyword IS the failed
     //    statement (error recovery left it as raw tokens): name it and
     //    keep its own — precise — position.

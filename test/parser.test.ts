@@ -768,6 +768,44 @@ test('no symbol or diagnostic range reaches past the end of its line', async () 
   }
 });
 
+test('named damage ranges: converted start, line-clamped end, every line-ending kind', async (t) => {
+  if (!(await skipWithoutGrammar(t))) return;
+  // Correctness review 2026-10-29, two holes in ONE builder (named()): the
+  // START was the raw tree point — a BYTE column — so non-ASCII earlier on
+  // the line slid the highlight's start right of the word it names, and the
+  // one-line clamp searched only for '\n' in the client's ORIGINAL text, so
+  // CR-terminated documents got an end running past the line: CRLF included
+  // the '\r', lone CR ran on to the next LF or EOF. The damaged line opens
+  // with a complete statement, so the `IF x = THEN` region starts mid-line —
+  // after the ü — which is exactly where the two position spaces disagree.
+  const damaged = "SET y = 'ü'; IF x = THEN";
+  const { linesOf } = await import('../src/scanner');
+  for (const [name, eol] of [
+    ['LF', '\n'],
+    ['CRLF', '\r\n'],
+    ['lone CR', '\r'],
+  ] as Array<[string, string]>) {
+    const src = i12wrap(damaged, '  SET z = 1;', '  RETURN TRUE;').split('\n').join(eol);
+    const doc = analyzeDocument(parse(src)!, src);
+    const named = doc.syntaxIssues.find((i) => /IF statement/.test(i.message));
+    assert.ok(named, `${name}: ${JSON.stringify(doc.syntaxIssues.map((i) => i.message))}`);
+    const line = linesOf(src)[3];
+    assert.equal(line, damaged, `${name}: the client counts the damaged line as its own line 3`);
+    assert.equal(named!.range.start.line, 3, `${name}: at the IF itself`);
+    assert.equal(
+      named!.range.start.character,
+      damaged.indexOf('IF'),
+      `${name}: the UTF-16 column of the IF, not the byte column`
+    );
+    assert.equal(named!.range.end.line, 3, `${name}: clamped to one line`);
+    assert.equal(
+      named!.range.end.character,
+      line.length,
+      `${name}: ends at the client's line end, with no '\\r' tail and nothing beyond it`
+    );
+  }
+});
+
 test('declarations and SET targets are mined from inside the damaged region (I-6)', async (t) => {
   if (!(await skipWithoutGrammar(t))) return;
   const src = [
